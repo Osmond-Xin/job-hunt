@@ -1,0 +1,47 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "job-hunt"
+version = "0.1.0"
+description = "A personal job search operations system built with Python, LangGraph, LangSmith, and pluggable model/browser adapters."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+authors = [
+  { name = "Job Hunt Contributors" }
+]
+dependencies = [
+  "apscheduler>=3.10",
+  "httpx>=0.27",
+  "jinja2>=3.1",
+  "langchain-core>=0.3",
+  "langgraph>=0.2",
+  "langsmith>=0.1",
+  "playwright>=1.45",
+  "pydantic>=2.7",
+  "pyyaml>=6.0",
+  "filelock>=3.14",
+  "rapidfuzz>=3.9",
+  "rich>=13.7",
+  "typer>=0.12",
+]
+
+[project.optional-dependencies]
+gmail = [
+  "google-api-python-client>=2.130",
+  "google-auth-oauthlib>=1.2",
+]
+dev = [
+  "pytest>=8.2",
+  "ruff>=0.5",
+]
+
+[project.scripts]
+job-hunt = "job_hunt.cli:app"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+

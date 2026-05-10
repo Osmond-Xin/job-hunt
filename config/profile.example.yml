@@ -1,0 +1,40 @@
+# Candidate profile example.
+#
+# Copy to profile/profile.yml or run `job-hunt init` / `job-hunt import-resume`
+# to create local candidate files.
+
+candidate:
+  full_name: "Example Candidate"
+  email: "candidate@example.com"
+  phone: "555-0100"
+  location: "Toronto, ON, Canada"
+  linkedin: "https://www.linkedin.com/in/example-candidate/"
+  github: "https://github.com/example-candidate"
+  portfolio_url: "https://candidate.example.com"
+  target_roles:
+    - "AI Engineer"
+    - "Data Scientist"
+    - "Software Engineer"
+  target_locations:
+    - "Canada"
+    - "Remote Canada"
+
+narrative:
+  superpower: "Example: translating ambiguous product goals into reliable software systems."
+  energizes: "Example: building useful AI tools with clear human review points."
+  drains: "Example: high-volume applications with little role fit."
+  deal_breakers: "Example: roles that require unsupported legal claims or unsafe automation."
+  best_achievement: "Example: shipped a production workflow automation that saved measurable time."
+  exit_story: "Example: seeking a role focused on production AI systems."
+
+apply:
+  cover_letter_default: false
+  auto_submit_enabled: false
+
+workday:
+  consent_terms_and_conditions: false
+
+cowork:
+  eligibility_category: ""
+  transcript_pdf: ""
+  academic_distinction_pdf: ""

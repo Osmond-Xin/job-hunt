@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>{{ profile.name or "Candidate" }} - Cover Letter - {{ company }}</title>
+  <style>
+    @font-face {
+      font-family: 'Space Grotesk';
+      src: url('file://{{ fonts_dir }}/space-grotesk-latin.woff2') format('woff2');
+      font-weight: 300 700;
+      font-display: swap;
+    }
+    @font-face {
+      font-family: 'Space Grotesk';
+      src: url('file://{{ fonts_dir }}/space-grotesk-latin-ext.woff2') format('woff2');
+      font-weight: 300 700;
+      font-display: swap;
+    }
+    @font-face {
+      font-family: 'DM Sans';
+      src: url('file://{{ fonts_dir }}/dm-sans-latin.woff2') format('woff2');
+      font-weight: 100 1000;
+      font-display: swap;
+    }
+    @font-face {
+      font-family: 'DM Sans';
+      src: url('file://{{ fonts_dir }}/dm-sans-latin-ext.woff2') format('woff2');
+      font-weight: 100 1000;
+      font-display: swap;
+    }
+
+    @page { size: {{ paper_size | default('letter') }}; margin: 0.6in; }
+    html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    body {
+      color: #1a1a2e;
+      font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 11px;
+      line-height: 1.6;
+    }
+    h1 {
+      font-family: 'Space Grotesk', sans-serif;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      color: #1a1a2e;
+      font-size: 24px;
+      margin: 0 0 4px;
+    }
+    .meta { color: #4b5563; margin-bottom: 14px; }
+    .meta a { color: inherit; text-decoration: none; }
+    .gradient-rule {
+      background: linear-gradient(to right, hsl(187, 74%, 32%), hsl(270, 70%, 45%));
+      height: 2px;
+      margin: 4px 0 14px;
+    }
+    .date { color: #4b5563; margin-bottom: 14px; }
+    .recipient { margin-bottom: 14px; }
+    .recipient strong {
+      font-family: 'Space Grotesk', sans-serif;
+      font-weight: 600;
+      color: hsl(270, 70%, 45%);
+    }
+    .salutation { margin-bottom: 10px; }
+    .body p { margin: 0 0 10px; line-height: 1.6; color: #333; }
+    .closing { margin-top: 14px; }
+    .signature {
+      font-family: 'Space Grotesk', sans-serif;
+      margin-top: 6px;
+      color: #1a1a2e;
+      font-weight: 600;
+    }
+    a { white-space: nowrap; }
+  </style>
+</head>
+<body>
+  <h1>{{ profile.name or "Candidate" }}</h1>
+  <div class="meta">
+    {% if profile.email %}<a href="mailto:{{ profile.email }}">{{ profile.email }}</a>{% endif %}{% if profile.phone %} | {{ profile.phone }}{% endif %}
+    {% if profile.location %} | {{ profile.location }}{% endif %}
+    {% if profile.website %} | <a href="{{ profile.website }}">{{ profile.website | replace("https://", "") | replace("http://", "") | trim("/") }}</a>{% endif %}
+    {% if profile.linkedin %} | <a href="{{ profile.linkedin }}">{{ profile.linkedin | replace("https://", "") | replace("http://", "") | trim("/") }}</a>{% endif %}
+  </div>
+  <div class="gradient-rule"></div>
+
+  <div class="date">{{ date }}</div>
+
+  <div class="recipient">
+    <strong>{{ company }}</strong>{% if role %}<br>Re: {{ role }}{% endif %}
+  </div>
+
+  <div class="salutation">{{ greeting or "Dear Hiring Team," }}</div>
+
+  <div class="body">
+    {% for paragraph in paragraphs %}
+    <p>{{ paragraph }}</p>
+    {% endfor %}
+  </div>
+
+  <div class="closing">{{ closing or "Sincerely," }}</div>
+  <div class="signature">{{ profile.name or "Candidate" }}</div>
+</body>
+</html>

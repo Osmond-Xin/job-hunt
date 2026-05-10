@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="{{ language | default('en') }}">
+<head>
+<meta charset="utf-8">
+<title>{{ profile.name or "Candidate" }} — {{ role or "Resume" }}</title>
+<style>
+  @font-face {
+    font-family: 'Space Grotesk';
+    src: url('file://{{ fonts_dir }}/space-grotesk-latin.woff2') format('woff2');
+    font-weight: 300 700;
+    font-style: normal;
+    font-display: swap;
+  }
+  @font-face {
+    font-family: 'Space Grotesk';
+    src: url('file://{{ fonts_dir }}/space-grotesk-latin-ext.woff2') format('woff2');
+    font-weight: 300 700;
+    font-style: normal;
+    font-display: swap;
+  }
+  @font-face {
+    font-family: 'DM Sans';
+    src: url('file://{{ fonts_dir }}/dm-sans-latin.woff2') format('woff2');
+    font-weight: 100 1000;
+    font-style: normal;
+    font-display: swap;
+  }
+  @font-face {
+    font-family: 'DM Sans';
+    src: url('file://{{ fonts_dir }}/dm-sans-latin-ext.woff2') format('woff2');
+    font-weight: 100 1000;
+    font-style: normal;
+    font-display: swap;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  body {
+    font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-size: 11px;
+    line-height: 1.5;
+    color: #1a1a2e;
+    background: #ffffff;
+  }
+  @page { size: {{ paper_size | default('letter') }}; margin: 0.6in; }
+
+  /* === HEADER === */
+  .header { margin-bottom: 16px; }
+  .header h1 {
+    font-family: 'Space Grotesk', sans-serif;
+    font-size: 24px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    margin-bottom: 4px;
+    color: #1a1a2e;
+  }
+  .header-gradient {
+    height: 2px;
+    background: linear-gradient(to right, hsl(187, 74%, 32%), hsl(270, 70%, 45%));
+    border-radius: 1px;
+    margin-bottom: 8px;
+  }
+  .contact-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 16px;
+    font-size: 10px;
+    color: #555;
+  }
+  .contact-row a { color: #555; text-decoration: none; white-space: nowrap; }
+  .contact-row .separator { color: #ccc; }
+
+  /* === SECTIONS === */
+  .section { margin-bottom: 14px; }
+  .section-title {
+    font-family: 'Space Grotesk', sans-serif;
+    font-size: 13px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: hsl(187, 74%, 32%);
+    border-bottom: 1px solid #e5e5e5;
+    padding-bottom: 3px;
+    margin-bottom: 8px;
+  }
+
+  /* === TARGET BANNER === */
+  .target {
+    background: hsl(187, 40%, 96%);
+    border-left: 3px solid hsl(187, 74%, 32%);
+    padding: 8px 10px;
+    margin-bottom: 14px;
+    font-size: 11px;
+  }
+  .target strong {
+    font-family: 'Space Grotesk', sans-serif;
+    font-weight: 600;
+    color: hsl(270, 70%, 45%);
+  }
+
+  /* === SUMMARY === */
+  .summary-text { font-size: 11px; line-height: 1.6; color: #333; }
+  a { white-space: nowrap; }
+
+  /* === CORE COMPETENCIES === */
+  .competencies-grid { display: flex; flex-wrap: wrap; gap: 6px; }
+  .competency-tag {
+    font-size: 10px;
+    font-weight: 500;
+    color: hsl(187, 74%, 28%);
+    background: hsl(187, 40%, 95%);
+    padding: 3px 10px;
+    border-radius: 3px;
+    border: 1px solid hsl(187, 40%, 88%);
+  }
+
+  /* === HIGHLIGHTS / BULLETS === */
+  ul { padding-left: 18px; margin-top: 4px; }
+  li { font-size: 10.5px; line-height: 1.5; color: #333; margin-bottom: 3px; }
+
+  /* === RESUME BODY === */
+  .cv {
+    white-space: pre-wrap;
+    font-size: 10.5px;
+    line-height: 1.5;
+    color: #333;
+  }
+
+  /* === COVER LETTER === */
+  .cover-letter p { margin-bottom: 8px; font-size: 10.5px; line-height: 1.6; color: #333; }
+
+  .avoid-break { break-inside: avoid; }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <div class="header">
+    <h1>{{ profile.name or "Candidate" }}</h1>
+    <div class="header-gradient"></div>
+    <div class="contact-row">
+      {% if profile.email %}<span><a href="mailto:{{ profile.email }}">{{ profile.email }}</a></span><span class="separator">|</span>{% endif %}
+      {% if profile.phone %}<span>{{ profile.phone }}</span><span class="separator">|</span>{% endif %}
+      {% if profile.location %}<span>{{ profile.location }}</span><span class="separator">|</span>{% endif %}
+      {% if profile.linkedin %}<span><a href="{{ profile.linkedin }}">{{ profile.linkedin | replace("https://", "") | replace("http://", "") | trim("/") }}</a></span><span class="separator">|</span>{% endif %}
+      {% if profile.github %}<span><a href="{{ profile.github }}">{{ profile.github | replace("https://", "") | replace("http://", "") | trim("/") }}</a></span><span class="separator">|</span>{% endif %}
+      {% if profile.website %}<span><a href="{{ profile.website }}">{{ profile.website | replace("https://", "") | replace("http://", "") | trim("/") }}</a></span>{% endif %}
+    </div>
+  </div>
+
+  <div class="target">
+    <strong>{{ company }}</strong>{% if role %} — {{ role }}{% endif %}<br>
+    {{ summary_angle }}
+  </div>
+
+  {% if top_bullets %}
+  <div class="section avoid-break">
+    <div class="section-title">Relevant Highlights</div>
+    <ul>
+      {% for bullet in top_bullets %}
+      <li>{{ bullet }}</li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+
+  {% if keywords %}
+  <div class="section avoid-break">
+    <div class="section-title">Core Competencies</div>
+    <div class="competencies-grid">
+      {% for kw in keywords %}
+      <span class="competency-tag">{{ kw }}</span>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  <div class="section">
+    <div class="section-title">Resume</div>
+    <div class="cv">{{ cv_raw }}</div>
+  </div>
+
+  {% if cover_letter_body %}
+  <div class="section avoid-break">
+    <div class="section-title">Cover Letter Draft</div>
+    <div class="cover-letter">
+      {% for paragraph in cover_letter_body.split("\n\n") %}
+      {% if paragraph.strip() %}<p>{{ paragraph | replace("\n", " ") }}</p>{% endif %}
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+</div>
+</body>
+</html>

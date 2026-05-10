@@ -1,0 +1,87 @@
+app:
+  name: job-hunt
+  env: local
+  timezone: America/Toronto
+
+paths:
+  data_dir: data
+  cache_dir: cache
+  artifact_dir: artifacts
+  reports_dir: reports
+  output_dir: output
+
+llm:
+  cheap:
+    provider: minimax
+    model: ""
+    invocation: http
+    temperature: 0.2
+    base_url: "https://api.minimax.chat"
+    endpoint_style: minimax
+    api_key_env: MINIMAX_API_KEY
+    proxy_token_env: MINIMAX_PROXY_TOKEN
+    proxy_header_name: X-Proxy-Token
+  premium:
+    provider: local_command
+    model: claude-or-gpt-5.5
+    invocation: local_command
+    command: ["claude", "-p"]
+    timeout_seconds: 180
+
+observability:
+  local_ledger:
+    enabled: true
+  langsmith:
+    enabled: false
+    project: job-hunt-dev
+    respect_env: true
+    fail_closed: false
+    monthly_trace_budget: 5000
+    soft_limit: 4000
+    hard_limit: 4900
+
+activity:
+  sinks:
+    local_log:
+      enabled: true
+      path: data/activity-log.jsonl
+    slack:
+      enabled: false
+      webhook_secret_ref: env:JOB_HUNT_SLACK_WEBHOOK_URL
+      min_level: info
+      include_sensitive: false
+      events:
+        - scheduler.job_completed
+        - scheduler.job_failed
+        - email.tracker_updated
+        - email.imported_entry_created
+        - review.item_created
+        - premium.artifact_generated
+        - apply.submitted
+        - trace.budget_warning
+
+web_search:
+  provider: none              # set to "brave" to enable; otherwise scan/research stay LLM-only
+  api_key_env: BRAVE_API_KEY  # read from .env at call time
+  count: 10                   # results per query (Brave caps at 20)
+  freshness: pw               # pd | pw | pm | py — bias toward recent for comp/news
+  timeout_s: 10.0
+
+email_ingest:
+  enabled: true
+  provider: gmail
+  account: me
+  auth_mode: gcloud_adc
+  mode: polling
+  poll_interval_minutes: 30
+  token_path: "${GMAIL_TOKEN_PATH}"
+  credentials_path: credentials.json
+  query: >
+    newer_than:90d
+    ("thank you for applying" OR "application received" OR "we received your application" OR
+    "interview" OR "assessment" OR "recruiter" OR "unfortunately" OR
+    "not moving forward" OR "offer")
+  labels:
+    processed: JobHunt/Processed
+    needs_review: JobHunt/NeedsReview
+    imported: JobHunt/Imported

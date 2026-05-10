@@ -1,0 +1,39 @@
+# Portal scanner example configuration.
+#
+# Copy to config/portals.yml and adjust the companies/filters for your search.
+
+title_filter:
+  positive:
+    - "AI Engineer"
+    - "LLM Engineer"
+    - "Machine Learning"
+    - "Data Scientist"
+    - "Data Analyst"
+    - "Analytics Engineer"
+    - "Software Engineer"
+    - "Product Manager"
+  negative:
+    - "unpaid"
+    - "sales"
+    - "marketing"
+
+tracked_companies:
+  # Direct ATS examples.
+  - name: "Example Greenhouse Company"
+    enabled: false
+    careers_url: "https://job-boards.greenhouse.io/example"
+
+  - name: "Example Ashby Company"
+    enabled: false
+    careers_url: "https://jobs.ashbyhq.com/example"
+
+  - name: "Example Lever Company"
+    enabled: false
+    careers_url: "https://jobs.lever.co/example"
+
+  # Brave WebSearch example. Requires config/settings.yml web_search.provider=brave
+  # and BRAVE_API_KEY in .env.
+  - name: "Example Search Company"
+    enabled: false
+    scan_method: "websearch"
+    scan_query: 'site:example.com/careers "AI Engineer" OR "Data Scientist"'

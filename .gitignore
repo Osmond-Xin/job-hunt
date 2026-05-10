@@ -1,0 +1,81 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+env/
+dist/
+build/
+*.egg-info/
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+.claude/
+config/*.local.yml
+config/settings.yml
+config/sites.yml
+config/scheduler.yml
+config/portals.yml
+config/auth.yml
+config/secrets.yml
+config/oauth*.json
+storage/
+*.token.json
+token.json
+credentials.json
+
+# Private user data and generated state
+profile/*
+!profile/.gitkeep
+interview-prep/
+data/*.json
+data/*.jsonl
+data/*.md
+data/*.tsv
+data/*.sqlite
+data/*.db
+data/*-state.json
+data/tracker-additions/
+data/locks/
+memory/
+cache/
+artifacts/
+reports/*
+output/*
+jds/*
+
+# Keep placeholder files if added later
+!data/.gitkeep
+!reports/.gitkeep
+!output/.gitkeep
+!jds/.gitkeep
+
+# Browser and automation artifacts
+.playwright/
+playwright-report/
+test-results/
+*.har
+*.trace.zip
+*.webm
+*.mp4
+
+# Generated documents
+*.pdf
+*.docx
+*.html
+
+# OS/editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo

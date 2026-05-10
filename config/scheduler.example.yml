@@ -1,0 +1,38 @@
+scheduler:
+  enabled: false
+  backend: apscheduler
+  timezone: America/Toronto
+  max_concurrent_jobs: 2
+  default_trace: false
+
+  jobs:
+    - id: gmail_poll
+      enabled: true
+      graph: email_ingest_graph
+      schedule:
+        type: interval
+        minutes: 30
+      trace: false
+      lock_key: email_ingest
+
+    - id: portal_scan_daily
+      enabled: true
+      graph: scan_portals_graph
+      schedule:
+        type: cron
+        hour: 8
+        minute: 30
+        weekdays: "mon-fri"
+      trace: false
+      lock_key: portal_scan
+
+    - id: tracker_verify
+      enabled: true
+      command: verify_tracker
+      schedule:
+        type: cron
+        hour: 18
+        minute: 0
+      trace: false
+      lock_key: tracker_verify
+

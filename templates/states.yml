@@ -1,0 +1,28 @@
+states:
+  - id: evaluated
+    label: Evaluated
+    aliases: [evaluada]
+  - id: applied
+    label: Applied
+    aliases: [aplicado, enviada, aplicada, sent]
+  - id: responded
+    label: Responded
+    aliases: [respondido]
+  - id: contacted
+    label: Contacted
+    aliases: [contact, contacto, outreach, outreached, sent_outreach]
+  - id: interview
+    label: Interview
+    aliases: [entrevista]
+  - id: offer
+    label: Offer
+    aliases: [oferta]
+  - id: rejected
+    label: Rejected
+    aliases: [rechazado, rechazada]
+  - id: discarded
+    label: Discarded
+    aliases: [descartado, descartada, cerrada, cancelada]
+  - id: skip
+    label: SKIP
+    aliases: [no_aplicar, no aplicar, skip, monitor]

@@ -1,0 +1,85 @@
+%% Job Hunt closed loop — source for docs/diagrams/closed-loop.svg
+%% Render: ask Claude Code to call the mcp-mermaid `generate` tool with this file
+%% as input and write SVG to docs/diagrams/closed-loop.svg.
+flowchart TD
+    classDef discover fill:#E8F1FF,stroke:#2C5282,color:#1A365D
+    classDef evaluate fill:#FFF5E6,stroke:#B7791F,color:#744210
+    classDef tracker fill:#E6FFFA,stroke:#2C7A7B,color:#234E52
+    classDef apply fill:#FFE8E8,stroke:#9B2C2C,color:#742A2A
+    classDef reconcile fill:#F3E8FF,stroke:#6B46C1,color:#44337A
+    classDef hygiene fill:#F0FFF4,stroke:#2F855A,color:#22543D
+
+    %% --- Discovery ---
+    subgraph Discover["1. Discover"]
+        scan["job-hunt scan<br/>(portal queries + WebSearch)"]:::discover
+        manual["paste / local:jds/*.md"]:::discover
+        pipeline[("data/pipeline.md<br/>URL inbox")]:::discover
+    end
+    scan --> pipeline
+    manual --> pipeline
+
+    %% --- Evaluation ---
+    subgraph Evaluate["2. Evaluate"]
+        sync["cv_sync_check<br/>(profile/cv.md / profile/profile.yml / prompts)"]:::evaluate
+        extract["web_extract<br/>(URL / JD text)"]:::evaluate
+        score["score_and_recommend<br/>(weighted 5-axis)"]:::evaluate
+        sectionG["draft_application_answers<br/>+ update_story_bank"]:::evaluate
+        report["report.md<br/>(Section A-G)"]:::evaluate
+        pdf["cv.pdf + cover-letter.pdf<br/>(Jinja2 -> Playwright)"]:::evaluate
+    end
+    pipeline --> sync
+    sync -->|errors abort| extract
+    extract --> score
+    score --> sectionG
+    sectionG --> report
+    report --> pdf
+
+    %% --- Tracker write ---
+    subgraph Tracker["3. Track"]
+        writeRow["write_tracker_addition<br/>(direct append)"]:::tracker
+        stage[("data/tracker-additions/*.tsv<br/>opt-in deferred staging")]:::tracker
+        appsmd[("data/applications.md")]:::tracker
+        merge["tracker_ops.merge<br/>(dedup by report# + fuzzy role)"]:::tracker
+    end
+    pdf --> writeRow
+    writeRow --> appsmd
+    pdf -. deferred import .-> stage
+    stage --> merge --> appsmd
+
+    %% --- Submission ---
+    subgraph Apply["4. Apply"]
+        applyFill["job-hunt apply --fill-only<br/>(Workday auto-fill loop)"]:::apply
+        answersHelper["job-hunt apply-answers<br/>(non-Workday ATS fallback)"]:::apply
+        manualSubmit["human clicks Submit"]:::apply
+        applyConfirm["apply --confirmed<br/>(record Applied row)"]:::apply
+    end
+    appsmd --> applyFill
+    appsmd --> answersHelper
+    applyFill --> manualSubmit
+    answersHelper --> manualSubmit
+    manualSubmit --> applyConfirm
+    applyConfirm --> appsmd
+
+    %% --- Email reconciliation ---
+    subgraph Reconcile["5. Reconcile"]
+        poll["email poll<br/>(Gmail API + classifier)"]:::reconcile
+        events[("data/email-events.jsonl")]:::reconcile
+        recon["email reconcile<br/>(fuzzy match -> status update)"]:::reconcile
+        review["email review<br/>(low-confidence queue)"]:::reconcile
+    end
+    poll --> events --> recon
+    recon -->|matched| appsmd
+    recon -->|low-conf| review
+    review -->|approve| appsmd
+
+    %% --- Hygiene ---
+    subgraph Hygiene["6. Hygiene"]
+        verify["tracker verify<br/>(canonical states + dup warns)"]:::hygiene
+        dedup["tracker dedup<br/>(promote pipeline rank)"]:::hygiene
+        normalize["tracker normalize<br/>(states.yml aliases)"]:::hygiene
+        checksync["tracker check-sync<br/>(cv freshness gate)"]:::hygiene
+    end
+    appsmd --> verify
+    appsmd --> dedup
+    appsmd --> normalize
+    checksync -.-> sync

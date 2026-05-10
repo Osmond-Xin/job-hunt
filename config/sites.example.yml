@@ -1,0 +1,38 @@
+web_adapters:
+  default_read_order:
+    - http_extract
+    - playwright_browser
+    - manual_assist
+  default_form_order:
+    - deterministic_form_map
+    - playwright_accessibility
+    - manual_assist
+
+sites:
+  - id: greenhouse
+    name: Greenhouse
+    kind: ats
+    enabled: true
+    auth:
+      required: false
+    scraping:
+      preferred_adapter: http_extract
+      fallback_adapters: [playwright_browser]
+
+  - id: linkedin
+    name: LinkedIn Jobs
+    kind: job_board
+    enabled: false
+    auth:
+      required: true
+      storage_state_path: storage/browser/linkedin.json
+      secret_ref: keychain:job-hunt/linkedin
+    scraping:
+      preferred_adapter: playwright_browser
+      fallback_adapters: [manual_assist]
+      rate_limit_seconds: 10
+    automation:
+      allow_login: true
+      allow_fill: true
+      allow_submit: false
+

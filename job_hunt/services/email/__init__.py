@@ -1,0 +1,2 @@
+"""Email ingestion services."""
+
