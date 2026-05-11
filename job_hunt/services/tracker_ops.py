@@ -663,6 +663,43 @@ def normalize_statuses(
 # ----- verify -----
 
 
+_TRACKER_EXPECTED_COLUMNS = 9
+
+
+def _check_tracker_row_columns(line: str) -> str | None:
+    """Return an error string when ``line`` is a tracker data row whose
+    pipe-separated cell count is not exactly 9. Otherwise return None.
+
+    ``format_tracker_entry`` always emits 9 data cells (number, date, company,
+    role, score, status, pdf, report, notes). A hand edit that drops or
+    duplicates a `|` is silent until merge time — this hard check surfaces
+    the corruption at `tracker verify`.
+
+    Non-row lines (header, separator, blank, free-text) return None so prose
+    around the table doesn't trigger false positives.
+    """
+    stripped = line.strip()
+    if not stripped.startswith("|") or not stripped.endswith("|"):
+        return None
+    if "---" in stripped:
+        return None
+    inner = stripped.strip("|")
+    cells = [cell.strip() for cell in inner.split("|")]
+    if cells and cells[0].lower() == "#":
+        # Header row.
+        return None
+    # Skip rows that are obviously not data rows (e.g. all-empty cells from a
+    # half-deleted entry stay flagged as count mismatch below).
+    actual = len(cells)
+    if actual == _TRACKER_EXPECTED_COLUMNS:
+        return None
+    excerpt = stripped[:80]
+    return (
+        f"row has {actual} columns, expected {_TRACKER_EXPECTED_COLUMNS}: "
+        f"{excerpt}"
+    )
+
+
 def verify_pipeline(
     applications_md: Path | None = None,
     additions_dir: Path | None = None,
@@ -681,14 +718,16 @@ def verify_pipeline(
     seen_company_role: dict[tuple[str, str], list[int]] = {}
     by_status: dict[str, int] = {}
 
-    for line in lines:
+    for raw_line in lines:
+        line = raw_line.rstrip()
+        column_error = _check_tracker_row_columns(line)
+        if column_error:
+            result.errors.append(column_error)
+            # Still attempt to parse — a count mismatch may still yield a usable
+            # row, but the error is recorded so the operator can repair it.
+
         entry = parse_tracker_line(line)
         if entry is None:
-            if line.startswith("|") and "---" not in line and not line.lower().startswith("| #"):
-                # malformed row
-                cols = [c for c in line.split("|") if c.strip()]
-                if len(cols) and len(cols) < 8:
-                    result.errors.append(f"row with <9 columns: {line[:80]}")
             continue
         result.entries += 1
         canonical = states.normalize(entry.status)

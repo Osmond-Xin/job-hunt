@@ -242,6 +242,55 @@ def test_verify_clean_tracker_reports_no_errors(tmp_path: Path) -> None:
     assert result.entries == 1
 
 
+def test_verify_flags_row_missing_a_column(tmp_path: Path) -> None:
+    """Hand edit drops the notes cell — verify must catch the column miscount.
+
+    8 cells where 9 are expected; the parser tolerates this (older behaviour)
+    but the row would corrupt later merges. The hard check at verify is the
+    backstop.
+    """
+    apps = tmp_path / "applications.md"
+    _write_apps(
+        apps,
+        [
+            # 8 data cells (notes column removed entirely).
+            "| 1 | 2026-04-01 | Foo | Engineer | 4.0/5 | Evaluated | ❌ | reports/0001.md |",
+        ],
+    )
+    result = tracker_ops.verify_pipeline(applications_md=apps)
+    errs = "\n".join(result.errors)
+    assert "8 columns" in errs and "expected 9" in errs
+
+
+def test_verify_flags_row_with_extra_column(tmp_path: Path) -> None:
+    """A stray `|` in notes adds a 10th cell."""
+    apps = tmp_path / "applications.md"
+    _write_apps(
+        apps,
+        [
+            "| 1 | 2026-04-01 | Foo | Engineer | 4.0/5 | Evaluated | ❌ | reports/0001.md | a | b |",
+        ],
+    )
+    result = tracker_ops.verify_pipeline(applications_md=apps)
+    errs = "\n".join(result.errors)
+    assert "10 columns" in errs and "expected 9" in errs
+
+
+def test_verify_clean_table_with_empty_notes_does_not_false_positive(
+    tmp_path: Path,
+) -> None:
+    """An empty trailing notes cell is still 9 columns. Must not be flagged."""
+    apps = tmp_path / "applications.md"
+    _write_apps(
+        apps,
+        [
+            "| 1 | 2026-04-01 | Foo | Engineer | 4.0/5 | Evaluated | ❌ | reports/0001.md |  |",
+        ],
+    )
+    result = tracker_ops.verify_pipeline(applications_md=apps)
+    assert result.errors == []
+
+
 def test_merge_does_not_dedup_by_number_alone_across_companies(tmp_path: Path) -> None:
     """Regression: a TSV with num=5 / Acme must NOT collide with #5 / Beta."""
     apps = tmp_path / "applications.md"

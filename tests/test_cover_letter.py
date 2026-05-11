@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from jinja2 import Environment, FileSystemLoader
 
+from job_hunt.models.evaluation import EvaluationScores
 from job_hunt.models.job import CandidateProfile
-from job_hunt.nodes.cover_letter import _split_paragraphs
+from job_hunt.nodes.cover_letter import _split_paragraphs, generate_cover_letter
 
 
 def test_cover_letter_template_renders_paragraphs_and_contact() -> None:
@@ -68,3 +71,32 @@ def test_split_paragraphs_strips_headings_and_collapses_whitespace() -> None:
 def test_split_paragraphs_returns_empty_list_for_blank_input() -> None:
     assert _split_paragraphs("") == []
     assert _split_paragraphs("   \n  \n  ") == []
+
+
+# ----- low-score early exit -----
+
+
+def test_cover_letter_skipped_when_flag_off() -> None:
+    """Without the generate_cover_letter flag, the node is a no-op even when
+    a generate_pdf=True score exists."""
+    state = {
+        "generate_cover_letter": False,
+        "scores": EvaluationScores(weighted_total=4.6, generate_pdf=True),
+    }
+    result = asyncio.run(generate_cover_letter(state, None))
+    assert result == {"errors": []}
+
+
+def test_cover_letter_skipped_when_score_says_skip_pdf() -> None:
+    """The flag is on but the scorer marked generate_pdf=False (a SKIP).
+    The cover letter must short-circuit before any LLM or Playwright work."""
+    state = {
+        "generate_cover_letter": True,
+        "scores": EvaluationScores(weighted_total=3.2, generate_pdf=False),
+        # Intentionally omit jd_meta / cv / templates — if the node reached
+        # any LLM render path it would explode here. The short-circuit proves
+        # we never get past the gate.
+    }
+    result = asyncio.run(generate_cover_letter(state, None))
+    assert result["cover_letter_path"] is None
+    assert result["errors"] == []

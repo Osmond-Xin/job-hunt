@@ -20,9 +20,20 @@ _TEMPLATE_NAME = "cover-letter.html.j2"
 
 
 async def generate_cover_letter(state: JobHuntState, config: RunnableConfig) -> dict:
-    """Render an independent cover letter PDF when generate_cover_letter is set."""
+    """Render an independent cover letter PDF when ``generate_cover_letter`` is set.
+
+    Score gate: even with the flag on, skip when the scorer decided this JD
+    doesn't warrant a CV PDF (``scores.generate_pdf == False``). The flag
+    signals "operator wants a cover letter for jobs we're actually applying
+    to" — if we're not applying, the cover letter is pure token waste. This
+    keeps the cover letter consistent with the CV-PDF route and the
+    ``draft_application_answers`` no-op below 4.5.
+    """
     if not state.get("generate_cover_letter"):
         return {"errors": []}
+    scores = state.get("scores")
+    if scores is not None and not getattr(scores, "generate_pdf", True):
+        return {"errors": [], "cover_letter_path": None}
 
     jd_meta = state.get("jd_meta")
     profile = state.get("profile")

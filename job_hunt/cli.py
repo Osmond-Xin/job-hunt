@@ -6608,6 +6608,11 @@ def _apply_profile_values() -> dict[str, object]:
 
 _LOW_SCORE_GATE_THRESHOLD = 4.0
 
+# Bumped when apply-review.json fields are renamed, removed, or change semantics.
+# Additive fields do NOT require a bump. Downstream tooling (`jq`, dashboards)
+# can read this to decide whether to apply migration logic.
+APPLY_REVIEW_SCHEMA_VERSION = 1
+
 
 def _enforce_low_score_gate(report_context: dict | None, *, override: bool) -> None:
     """Abort the apply flow if the matched tracker row has weighted_total < 4.0.
@@ -6896,6 +6901,7 @@ def _write_apply_review_summary(
     validation_issues: list[ReviewIssue] | None = None,
 ) -> Path:
     payload = {
+        "schema_version": APPLY_REVIEW_SCHEMA_VERSION,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "url": url,
         "final_url": final_url,

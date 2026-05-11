@@ -164,6 +164,29 @@ def test_apply_review_json_empty_validation_issues_when_clean(tmp_path) -> None:
     assert payload["pdf"] is None
 
 
+def test_apply_review_json_carries_schema_version(tmp_path) -> None:
+    """`schema_version` lets downstream `jq` / dashboard tooling reason about
+    breaking changes without sniffing field shapes."""
+    import json as _json
+    from job_hunt.cli import _write_apply_review_summary, APPLY_REVIEW_SCHEMA_VERSION
+
+    art = tmp_path / "session"
+    art.mkdir()
+    screenshot = art / "shot.png"
+    screenshot.touch()
+
+    _write_apply_review_summary(
+        artifact_dir=art, url="https://x", final_url="https://x", title="t",
+        company="C", role="R", report_context=None,
+        filled=[], skipped=[], answers=[], required_empty=[], actions=[],
+        screenshot=screenshot, pdf=None, role_warnings=[],
+    )
+
+    payload = _json.loads((art / "apply-review.json").read_text())
+    assert payload["schema_version"] == APPLY_REVIEW_SCHEMA_VERSION
+    assert isinstance(payload["schema_version"], int)
+
+
 def test_record_manual_submission_new_row_with_pdf_marks_check(tmp_path) -> None:
     """Audit fix: a new Applied row created with --pdf must record pdf=✅."""
     tracker_path = tmp_path / "applications.md"

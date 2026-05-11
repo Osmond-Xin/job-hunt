@@ -77,20 +77,22 @@ Last updated: 2026-05-10.
 
 ### C.2 Schema versioning gap
 
-- **Status**: `apply-review.json` has no `schema_version` field.
-  Downstream `jq`/dashboards can break silently if the shape evolves.
-- **Verdict**: small improvement, cheap. Add `schema_version: 1` when next
-  touching the writer.
+- **Status**: `apply-review.json` now carries `schema_version: 1`
+  (2026-05-11). Constant lives in `cli.py::APPLY_REVIEW_SCHEMA_VERSION`.
+- **Rule**: bump on rename / remove / semantic change. Additive fields do
+  NOT require a bump.
+- **Verdict**: complete.
 
 ### C.3 Tracker integrity
 
 - **Status**: filelock + fuzzy match (token_sort_ratio ≥ 0.85) +
   `tracker verify` for status / score / fuzzy-dup checks.
-- **Risk**: a hand edit can silently break column alignment.
-  `tracker_ops` writes a 9-column TSV but `verify` does not enforce
-  9 columns on the canonical markdown table.
-- **Verdict**: small improvement. Add a "every row has 9 columns"
-  hard check in `verify`.
+- **9-column hard check**: shipped 2026-05-11.
+  `tracker_ops._check_tracker_row_columns` runs against every data row in
+  `applications.md` and emits an error when the pipe-separated cell count
+  isn't exactly 9. Hand edits that drop or add a `|` get caught at
+  verify rather than corrupting a later merge.
+- **Verdict**: complete.
 
 ## Section D — External APIs (WebSearch / LLM)
 
@@ -127,12 +129,27 @@ Last updated: 2026-05-10.
 
 ## Section F — Evaluation Flow Cost Control
 
-- **Status**: `evaluate` runs every node end-to-end, even when an early
-  node already implies SKIP.
-- **Test signal**: `tests/test_low_score_gate.py` exists.
-- **Verdict**: confirm whether the low-score early-exit is actually wired
-  into the runtime graph or only tested at the helper level. If not wired,
-  wire it — saves both time and tokens on obviously-bad JDs.
+- **Status**: post-score early-exit fully wired in the runtime graph
+  (2026-05-11).
+- **What runs unconditionally** (pre-score, can't gate on a score that
+  doesn't exist yet): `extract_jd`, `verify_active`, `eligibility_gate`,
+  `classify_archetype`, `cv_match`, `role_summary`, `level_strategy`,
+  `company_comp_research`, `personalization_plan`, `interview_prep`,
+  `score_and_recommend`. The two cheap pre-score gates (`verify_active`
+  → END for dead URLs, `eligibility_gate` → END for mode mismatch)
+  cover the highest-saving early-skip cases.
+- **What's gated on the score after `score_and_recommend`**:
+  - `draft_application_answers` — no-op if `weighted_total < 4.5`.
+  - `_route_pdf` — `skip_pdf` when `scores.generate_pdf == False`.
+  - `generate_cover_letter` — short-circuits when
+    `scores.generate_pdf == False` (added 2026-05-11). Saves the
+    cover-letter LLM call + Playwright PDF render on SKIP-bound JDs.
+- **Apply-side gate**: `_enforce_low_score_gate` blocks `job-hunt apply`
+  on tracker rows below 4.0/5 unless `--low-score-override` is passed.
+- **Verdict**: complete. The remaining unconditional spend is the
+  pre-score analysis, which is necessary to compute the score in the
+  first place. No further gating without a heuristic, which would be
+  brittle (see ADR conversations).
 
 ## Section G — Email Reconcile Edge Cases
 
@@ -174,17 +191,16 @@ Last updated: 2026-05-10.
   of usage as the minimal entry.
 - **Verdict**: maintain. Typer help suffices for discoverability.
 
-## Section L — Top 3 Cheap Wins
+## Section L — Top 3 Cheap Wins (closed 2026-05-11)
 
-If only three improvements are picked from the above:
+All three landed in a single batch:
 
-1. **Add `schema_version` to `apply-review.json`** (Section C.2) — 5
-   minutes; prevents future silent breakage.
-2. **Tighten `tracker verify` with a 9-column hard check** (Section C.3) —
-   30 minutes; defends against silent markdown corruption from hand edits.
-3. **Confirm low-score early-exit is wired in evaluate runtime**
-   (Section F) — investigation before a fix; potentially saves token cost
-   on every SKIP-bound JD.
+1. **`schema_version` in `apply-review.json`** — Section C.2 closed.
+2. **9-column hard check in `tracker verify`** — Section C.3 closed.
+3. **Low-score early-exit confirmed and extended** — Section F closed.
+   Confirmed PDF + draft-answers gates were already wired; added a
+   cover-letter gate on `scores.generate_pdf` so the flag-on/SKIP case
+   stops wasting the cover-letter LLM call and Playwright render.
 
 ## Section M — Explicitly Out Of Scope
 
