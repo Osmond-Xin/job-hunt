@@ -26,6 +26,42 @@ _DEFAULT_MODE: Mode = "full"
 _VALID_MODES: tuple[Mode, ...] = ("student", "full")
 
 
+def discovery_context(profile_path: Path | None = None) -> dict[str, list[str]]:
+    """Return ``{roles, locations}`` lists for discovery-channel query expansion.
+
+    Reads ``candidate.target_roles`` and ``candidate.target_locations`` from
+    ``profile/profile.yml``. Returns empty lists when the file is missing,
+    unreadable, or the candidate block is absent — the scan layer treats empty
+    lists as "skip this channel".
+
+    Kept here (next to ``current_mode``) so every subsystem that needs profile
+    metadata for scan-query expansion reads through one helper.
+    """
+    path = profile_path if profile_path is not None else _PROFILE_PATH
+    if not path.exists():
+        return {"roles": [], "locations": []}
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return {"roles": [], "locations": []}
+    if not isinstance(raw, dict):
+        return {"roles": [], "locations": []}
+    candidate = raw.get("candidate") or {}
+    if not isinstance(candidate, dict):
+        return {"roles": [], "locations": []}
+    roles = [
+        str(item).strip()
+        for item in (candidate.get("target_roles") or [])
+        if str(item).strip()
+    ]
+    locations = [
+        str(item).strip()
+        for item in (candidate.get("target_locations") or [])
+        if str(item).strip()
+    ]
+    return {"roles": roles, "locations": locations}
+
+
 def current_mode(profile_path: Path | None = None) -> Mode:
     """Return the operator's current mode. Defaults to ``"full"`` when missing.
 

@@ -1787,6 +1787,14 @@ def scan(
     limit_companies: int | None = typer.Option(None, help="Limit number of direct ATS companies."),
     include_non_canada: bool = typer.Option(False, help="Include jobs outside Canada in results."),
     apply: bool = typer.Option(False, help="Write new jobs to scan history and pipeline."),
+    channel: str | None = typer.Option(
+        None,
+        "--channel",
+        help=(
+            "Restrict tier-3 discovery to one channel id "
+            "(linkedin / indeed / glassdoor / waterlooworks / talentegg / ...)."
+        ),
+    ),
 ) -> None:
     from job_hunt.services.web_search import build_web_search_provider
 
@@ -1795,7 +1803,7 @@ def scan(
     if web_search_provider is None:
         console.print(
             "[dim]WebSearch tier disabled (set web_search.provider=brave + BRAVE_API_KEY "
-            "to scan companies with scan_method: websearch).[/dim]"
+            "to scan companies with scan_method: websearch and discovery channels).[/dim]"
         )
     result = scan_portals(
         company=company,
@@ -1803,6 +1811,7 @@ def scan(
         include_non_canada=include_non_canada,
         apply=apply,
         web_search_provider=web_search_provider,
+        discovery_channel=channel,
     )
     console.print(f"Scanned companies: {result.scanned_companies}")
     console.print(f"Fetched jobs: {result.fetched_jobs}")

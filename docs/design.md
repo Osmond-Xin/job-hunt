@@ -117,8 +117,27 @@ Mode-aware filtering:
 - Each tracked company may declare optional `eligibility_tags` like
   `[intern, coop]` or `[full]`. Missing tags = scanned in both modes (the
   default; covers ATS boards that mix intern + FT). Explicit tags restrict
-  the company to a specific mode — used to add WaterlooWorks-style channels
-  later without polluting the FT hunt.
+  the company to a specific mode.
+
+### Tier-3 Cross-Employer Discovery Channels
+
+`config/portals.yml::discovery_channels` declares cross-employer search
+channels — LinkedIn / Indeed / Glassdoor / YC Work-at-a-Startup /
+Wellfound for full mode, and WaterlooWorks / TalentEgg / Magnet / Job
+Bank for student mode.
+
+Each channel carries:
+
+- `id` — short slug used as `ScannedJob.portal`.
+- `enabled` — defaults to `false`; explicit opt-in to avoid quota burn.
+- `modes` — list like `[full]` / `[student]`.
+- `query_template` — `{role}` / `{location}` placeholders interpolated
+  against `profile.yml::candidate.target_roles` ×
+  `target_locations`. Empty `target_roles` skips the channel.
+
+Channels run only when a WebSearch provider is configured. Results flow
+through the same title / location / dedup pipeline as tier-1 and tier-2.
+Restrict a single run to one channel via `job-hunt scan --channel <id>`.
 
 ### WebSearch Cache And Quota
 

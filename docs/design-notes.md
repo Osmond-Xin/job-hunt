@@ -265,16 +265,27 @@ status — see Pain Point 2):**
 ### Verdict
 
 Improvement, high priority. The current scan misses the platforms most
-likely to hold roles the operator can actually take. Suggested approach:
+likely to hold roles the operator can actually take. Approach:
 
-1. Treat LinkedIn / Indeed / Glassdoor as WebSearch-driven scan tiers,
-   reusing the Brave provider once phases A–D ship.
-2. Add ATS adapters in priority order driven by *which postings get
-   bookmarked manually*. Don't pre-build adapters for ATSes the operator
-   never sees.
-3. Add a "student channels" scan tier with WaterlooWorks / TalentEgg /
-   Magnet / Job Bank queries — gated by the eligibility window described
-   below.
+1. **Done (2026-05-11)**: LinkedIn / Indeed / Glassdoor / YC Work-at-a-
+   Startup / Wellfound landed as **tier-3 cross-employer discovery
+   channels**. Implementation in
+   ``services.scan.scan_discovery_channels``; schema documented in
+   ``config/portals.example.yml`` under ``discovery_channels:``. Each
+   channel is opt-in (``enabled: false`` default), gated by ``modes:
+   [full]`` / ``[student]``, and expands its ``query_template`` over
+   ``profile.candidate.target_roles`` × ``target_locations``. Results go
+   through the same title / location / dedup pipeline as tier-1 and
+   tier-2.
+2. **Done (2026-05-11)**: Student channels — WaterlooWorks, TalentEgg,
+   Magnet, Job Bank Canada — added in the same batch with
+   ``modes: [student]`` and student-flavoured templates. ``mode``
+   switching (Pain Point 2 / Section N) decides which set activates
+   without a per-command flag.
+3. **Deferred**: ATS-specific adapters (iCIMS, BambooHR,
+   SmartRecruiters, Taleo, Workable, JazzHR, Recruitee). Add in priority
+   order driven by *which postings get bookmarked manually*. Don't
+   pre-build adapters for ATSes the operator never sees.
 
 ## Pain Point 2 — Scoring mechanism does not match the operator's status
 

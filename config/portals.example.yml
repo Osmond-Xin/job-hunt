@@ -37,3 +37,64 @@ tracked_companies:
     enabled: false
     scan_method: "websearch"
     scan_query: 'site:example.com/careers "AI Engineer" OR "Data Scientist"'
+
+# Cross-employer discovery channels — fired via WebSearch (Brave) and dedup'd
+# against scan-history / pipeline / tracker. Each channel expands its
+# `query_template` over `profile.yml::candidate.target_roles` ×
+# `target_locations`, so set those before enabling a channel.
+#
+# All channels default to `enabled: false` to avoid surprise quota burn. The
+# Brave free tier is ~2k queries/month and channels run N (roles) × M
+# (locations) queries each; `job-hunt search-usage` shows the counters.
+#
+# `modes:` gates the channel to one or more of [student, full]. Channel-level
+# behaviour is independent of the per-company `eligibility_tags` filter used
+# for tracked_companies.
+discovery_channels:
+  - id: linkedin
+    enabled: false
+    modes: [full]
+    query_template: '{role} jobs {location} site:linkedin.com/jobs'
+
+  - id: indeed
+    enabled: false
+    modes: [full]
+    query_template: '"{role}" {location} site:indeed.com/jobs'
+
+  - id: glassdoor
+    enabled: false
+    modes: [full]
+    query_template: '"{role}" {location} site:glassdoor.com/Job'
+
+  - id: ycombinator
+    enabled: false
+    modes: [full]
+    query_template: '{role} site:workatastartup.com'
+
+  - id: wellfound
+    enabled: false
+    modes: [full]
+    query_template: '{role} site:wellfound.com'
+
+  # Student-mode channels. Many of these are gated to specific schools or
+  # programs and only show partial results to non-members — leave enabled
+  # only the ones you have access to.
+  - id: waterlooworks
+    enabled: false
+    modes: [student]
+    query_template: '"{role}" co-op site:waterlooworks.uwaterloo.ca'
+
+  - id: talentegg
+    enabled: false
+    modes: [student]
+    query_template: '"{role}" intern co-op site:talentegg.ca'
+
+  - id: magnet
+    enabled: false
+    modes: [student]
+    query_template: 'student "{role}" site:magnet.today'
+
+  - id: jobbank_student
+    enabled: false
+    modes: [student]
+    query_template: '"{role}" co-op site:jobbank.gc.ca'

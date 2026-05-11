@@ -14,7 +14,7 @@ import yaml
 from pydantic import BaseModel, Field
 
 from job_hunt.repositories.tracker_repo import TrackerRepository, normalize
-from job_hunt.services.profile_loader import current_mode
+from job_hunt.services.profile_loader import current_mode, discovery_context
 
 
 class ScannedJob(BaseModel):
@@ -47,7 +47,19 @@ def scan_portals(
     include_non_canada: bool = False,
     web_search_provider=None,
     mode: str | None = None,
+    discovery_channel: str | None = None,
 ) -> ScanResult:
+    """Run the multi-tier scan.
+
+    Tier 1: per-company direct ATS fetch (Greenhouse / Lever / Ashby).
+    Tier 2: per-company WebSearch with `scan_method: websearch`.
+    Tier 3: cross-employer discovery channels (LinkedIn / Indeed / Glassdoor /
+            student boards) — see ``scan_discovery_channels``. These run only
+            when a ``web_search_provider`` is wired in and the channel is
+            both ``enabled: true`` in portals.yml and matches the active mode.
+            Pass ``discovery_channel="<id>"`` to restrict tier 3 to one
+            channel.
+    """
     if not config_path.exists():
         return ScanResult(errors=[f"{config_path} not found. Run `job-hunt init` or create tracked_companies."])
     config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
@@ -120,9 +132,140 @@ def scan_portals(
             if apply:
                 _append_scan_history(job)
 
+    # Tier 3: cross-employer discovery channels (LinkedIn, Indeed, Glassdoor,
+    # WaterlooWorks, TalentEgg, Magnet, ...). Only runs when a provider is
+    # configured; respects per-channel `enabled` + `modes`. The channel ID
+    # filter (--channel) is applied here so users can selectively burn quota.
+    if web_search_provider is not None:
+        channels_raw = config.get("discovery_channels") or []
+        if not company and channels_raw:  # --company restricts to tracked entries
+            channel_jobs = scan_discovery_channels(
+                channels_raw,
+                web_search_provider,
+                mode=active_mode,
+                channel_id=discovery_channel,
+            )
+            for job in channel_jobs:
+                if not _title_matches(job.title, positives, negatives):
+                    continue
+                result.fetched_jobs += 1
+                result.matched_jobs += 1
+                if not include_non_canada and not _location_matches_canada(job.location):
+                    result.skipped_filtered += 1
+                    job.status = "skipped_location"
+                    if apply:
+                        _append_scan_history(job)
+                    continue
+                if (
+                    job.url in known_urls
+                    or (normalize(job.company), normalize(job.title)) in known_company_roles
+                ):
+                    result.skipped_duplicates += 1
+                    job.status = "skipped_duplicate"
+                else:
+                    result.new_jobs += 1
+                    job.status = "new"
+                    result.jobs.append(job)
+                    known_urls.add(job.url)
+                    known_company_roles.add(
+                        (normalize(job.company), normalize(job.title))
+                    )
+                if apply:
+                    _append_scan_history(job)
+
     if apply and result.jobs:
         _append_pipeline(result.jobs)
     return result
+
+
+def scan_discovery_channels(
+    channels_raw: list[dict[str, Any]],
+    provider,
+    *,
+    mode: str | None = None,
+    profile_path: Path | None = None,
+    channel_id: str | None = None,
+) -> list[ScannedJob]:
+    """Tier-3 cross-employer discovery: LinkedIn / Indeed / Glassdoor / student boards.
+
+    Each channel in ``portals.yml::discovery_channels`` declares a
+    ``query_template`` with ``{role}`` / ``{location}`` placeholders. The
+    template expands over ``profile.candidate.target_roles`` ×
+    ``target_locations`` and each query is sent through the provider (which
+    is normally the cached/counted ``CachingProvider``, so repeat queries
+    skip the API).
+
+    Skipped silently:
+    - Channel ``enabled: false`` (the default — opt-in to avoid quota burn).
+    - Channel ``modes`` does not include the active mode.
+    - No ``target_roles`` configured in profile.yml (nothing to interpolate).
+
+    Returns ``[]`` when the channels list is empty or no channel matches.
+    Returned ``ScannedJob.portal`` carries the channel ID; ``source`` carries
+    the original query for audit.
+    """
+    if not channels_raw:
+        return []
+    active_mode = mode or current_mode()
+    ctx = discovery_context(profile_path)
+    roles = ctx.get("roles", [])
+    locations = ctx.get("locations") or ["Canada"]
+    if not roles:
+        return []
+
+    out: list[ScannedJob] = []
+    seen_urls: set[str] = set()
+
+    for raw in channels_raw:
+        if not isinstance(raw, dict):
+            continue
+        cid = str(raw.get("id") or "").strip().lower()
+        if not cid:
+            continue
+        if channel_id and cid != channel_id.lower():
+            continue
+        if not raw.get("enabled", False):
+            continue
+        channel_modes = raw.get("modes") or []
+        if channel_modes and active_mode not in [str(m).lower() for m in channel_modes]:
+            continue
+        template = str(raw.get("query_template") or "").strip()
+        if not template:
+            continue
+
+        for role in roles:
+            for location in locations:
+                query = template.format(role=role, location=location).strip()
+                if not query:
+                    continue
+                try:
+                    hits = provider.search(query)
+                except Exception:
+                    continue
+                for hit in hits:
+                    url = (getattr(hit, "url", "") or "").strip()
+                    if not url or url in seen_urls:
+                        continue
+                    seen_urls.add(url)
+                    title_line = (
+                        getattr(hit, "title", "") or getattr(hit, "description", "") or ""
+                    )
+                    parsed_title, parsed_company = parse_search_result_title(title_line)
+                    title = (parsed_title or getattr(hit, "title", "") or "").strip()
+                    if not title:
+                        continue
+                    company_name = (parsed_company or "Unknown").strip() or "Unknown"
+                    out.append(
+                        ScannedJob(
+                            url=url,
+                            title=title,
+                            company=company_name,
+                            location="",
+                            portal=cid,
+                            source=query,
+                        )
+                    )
+    return out
 
 
 def scan_via_websearch(
