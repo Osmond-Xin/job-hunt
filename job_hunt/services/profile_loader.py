@@ -29,13 +29,20 @@ _VALID_MODES: tuple[Mode, ...] = ("student", "full")
 def discovery_context(profile_path: Path | None = None) -> dict[str, list[str]]:
     """Return ``{roles, locations}`` lists for discovery-channel query expansion.
 
-    Reads ``candidate.target_roles`` and ``candidate.target_locations`` from
-    ``profile/profile.yml``. Returns empty lists when the file is missing,
-    unreadable, or the candidate block is absent — the scan layer treats empty
-    lists as "skip this channel".
+    Reads the active profile.yml. Supports two schemas so existing profiles
+    work without migration:
 
-    Kept here (next to ``current_mode``) so every subsystem that needs profile
-    metadata for scan-query expansion reads through one helper.
+    - **Top-level** (current canonical):
+      ``target_roles.primary`` + ``target_roles.secondary`` (lists merged
+      and de-duped); ``target_roles.locations`` if present, else derived
+      from ``location.city`` / ``location.country``.
+    - **Flat under candidate** (legacy / generic):
+      ``candidate.target_roles: [...]`` and
+      ``candidate.target_locations: [...]``.
+
+    Returns empty lists when the file is missing, unreadable, or no
+    recognized fields are present — the scan layer treats empty lists as
+    "skip this channel".
     """
     path = profile_path if profile_path is not None else _PROFILE_PATH
     if not path.exists():
@@ -46,20 +53,75 @@ def discovery_context(profile_path: Path | None = None) -> dict[str, list[str]]:
         return {"roles": [], "locations": []}
     if not isinstance(raw, dict):
         return {"roles": [], "locations": []}
-    candidate = raw.get("candidate") or {}
-    if not isinstance(candidate, dict):
-        return {"roles": [], "locations": []}
-    roles = [
-        str(item).strip()
-        for item in (candidate.get("target_roles") or [])
-        if str(item).strip()
-    ]
-    locations = [
-        str(item).strip()
-        for item in (candidate.get("target_locations") or [])
-        if str(item).strip()
-    ]
+
+    roles = _collect_roles(raw)
+    locations = _collect_locations(raw)
     return {"roles": roles, "locations": locations}
+
+
+def _collect_roles(raw: dict[str, Any]) -> list[str]:
+    seen: set[str] = set()
+    roles: list[str] = []
+
+    def _add(value: Any) -> None:
+        if isinstance(value, str):
+            cleaned = value.strip()
+            if cleaned and cleaned not in seen:
+                seen.add(cleaned)
+                roles.append(cleaned)
+        elif isinstance(value, list):
+            for item in value:
+                _add(item)
+
+    target_roles = raw.get("target_roles")
+    if isinstance(target_roles, dict):
+        _add(target_roles.get("primary"))
+        _add(target_roles.get("secondary"))
+    elif isinstance(target_roles, list):
+        _add(target_roles)
+
+    candidate = raw.get("candidate")
+    if isinstance(candidate, dict):
+        _add(candidate.get("target_roles"))
+
+    return roles
+
+
+def _collect_locations(raw: dict[str, Any]) -> list[str]:
+    seen: set[str] = set()
+    locations: list[str] = []
+
+    def _add(value: Any) -> None:
+        if isinstance(value, str):
+            cleaned = value.strip()
+            if cleaned and cleaned not in seen:
+                seen.add(cleaned)
+                locations.append(cleaned)
+        elif isinstance(value, list):
+            for item in value:
+                _add(item)
+
+    target_roles = raw.get("target_roles")
+    if isinstance(target_roles, dict):
+        _add(target_roles.get("locations"))
+
+    candidate = raw.get("candidate")
+    if isinstance(candidate, dict):
+        _add(candidate.get("target_locations"))
+
+    if not locations:
+        location_block = raw.get("location")
+        if isinstance(location_block, dict):
+            city = str(location_block.get("city") or "").strip()
+            country = str(location_block.get("country") or "").strip()
+            if city and country and country.lower() not in city.lower():
+                locations.append(f"{city}, {country}")
+            elif city:
+                locations.append(city)
+            elif country:
+                locations.append(country)
+
+    return locations
 
 
 def current_mode(profile_path: Path | None = None) -> Mode:

@@ -253,6 +253,67 @@ def test_provider_exception_is_swallowed(monkeypatch, tmp_path) -> None:
     assert jobs[0].url == "https://example.com/2"
 
 
+def test_discovery_context_reads_top_level_target_roles_and_location(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """Real-world profile schema uses ``target_roles.primary/secondary`` at top
+    level (not under ``candidate.``) and a single ``location.city`` block.
+    Discovery context must collect roles + derive locations from both."""
+    import yaml
+
+    from job_hunt.services.profile_loader import discovery_context
+
+    profile = tmp_path / "profile" / "profile.yml"
+    profile.parent.mkdir(parents=True)
+    profile.write_text(
+        yaml.safe_dump(
+            {
+                "mode": "student",
+                "candidate": {"full_name": "X"},
+                "target_roles": {
+                    "primary": ["AI Engineer", "Data Analyst"],
+                    "secondary": ["Data Scientist", "Data Analyst"],  # duped
+                },
+                "location": {"city": "Niagara Falls, ON", "country": "Canada"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    ctx = discovery_context()
+    assert ctx["roles"] == ["AI Engineer", "Data Analyst", "Data Scientist"]
+    assert ctx["locations"] == ["Niagara Falls, ON, Canada"]
+
+
+def test_discovery_context_legacy_flat_schema_still_works(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """Legacy ``candidate.target_roles: [...]`` continues to read correctly."""
+    import yaml
+
+    from job_hunt.services.profile_loader import discovery_context
+
+    profile = tmp_path / "profile" / "profile.yml"
+    profile.parent.mkdir(parents=True)
+    profile.write_text(
+        yaml.safe_dump(
+            {
+                "candidate": {
+                    "target_roles": ["AI Engineer"],
+                    "target_locations": ["Toronto"],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    ctx = discovery_context()
+    assert ctx["roles"] == ["AI Engineer"]
+    assert ctx["locations"] == ["Toronto"]
+
+
 def test_student_mode_channel_runs_under_student_mode(monkeypatch, tmp_path) -> None:
     monkeypatch.chdir(tmp_path)
     _profile(tmp_path, roles=["Data Analyst"], locations=["Toronto"], mode="student")
