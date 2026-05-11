@@ -2989,6 +2989,27 @@ async def _handle_refill_current_page(
 
 
 async def _enter_application_form(page) -> None:
+    """Navigate from a JD landing page into the editable application form.
+
+    Three strategies, in order:
+
+    1. **URL already on the form** — `/application` / `/apply` suffix → return.
+    2. **Workday `adventureButton`** — direct link to the apply route.
+    3. **Ashby `/application` suffix** — Ashby renders the form as a sibling
+       tab whose URL is just the JD URL with `/application` appended. When
+       a JD URL like `jobs.ashbyhq.com/<co>/<uuid>` is opened, the apply
+       form is one nav away — go there directly instead of relying on the
+       operator to click the tab.
+    4. **Generic "Apply" button/link/tab** — last-resort click on a visible
+       control whose accessible name matches "Apply for this Job" or
+       "Application". Covers ATS templates we haven't profiled yet.
+
+    Each strategy is best-effort; failures fall through to the next one
+    rather than raising. The fill loop downstream re-detects form fields
+    after this returns and reports zero filled if none were found, so a
+    completely missed navigation is visible in the apply-review artifact
+    rather than silently broken.
+    """
     if page.url.rstrip("/").endswith(("/application", "/apply")):
         return
     workday_apply = page.locator('a[data-automation-id="adventureButton"][href$="/apply"]').first
@@ -3002,6 +3023,42 @@ async def _enter_application_form(page) -> None:
             await page.goto(href, wait_until="domcontentloaded", timeout=45000)
             await page.wait_for_timeout(1500)
             return
+
+    # Ashby — JD URL + `/application` is the form route. Confirmed against
+    # https://jobs.ashbyhq.com/<company>/<uuid> 2026-05-11.
+    if "jobs.ashbyhq.com" in page.url:
+        base = page.url.split("?")[0].rstrip("/")
+        if not base.endswith(("/application", "/apply")):
+            target = f"{base}/application"
+            try:
+                await page.goto(target, wait_until="domcontentloaded", timeout=45000)
+                await page.wait_for_timeout(1500)
+                return
+            except Exception:
+                # Fall through to the generic button click below.
+                pass
+
+    # Generic fallback: click a visible "Apply" / "Application" control.
+    # Limited to exact-match labels so we don't click random "Apply with
+    # LinkedIn" / "Apply with Indeed" deep-link buttons.
+    apply_label = re.compile(
+        r"^\s*(Apply for this Job|Application|Apply Now)\s*$", re.IGNORECASE
+    )
+    candidates = [
+        page.get_by_role("tab", name=apply_label),
+        page.get_by_role("link", name=apply_label),
+        page.get_by_role("button", name=apply_label),
+    ]
+    for control in candidates:
+        try:
+            if not await control.count():
+                continue
+            target = control.first
+            await target.click(timeout=5000, force=True)
+            await page.wait_for_timeout(1500)
+            return
+        except Exception:
+            continue
 
 
 async def _advance_application_start(page) -> None:
