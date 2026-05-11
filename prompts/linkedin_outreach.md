@@ -19,6 +19,16 @@ to a contact at **{{ company }}** about the **{{ role }}** opening.
 **Candidate CV excerpt**:
 {{ cv_excerpt[:1500] }}
 {% endif %}
+{% if research_context is defined and research_context %}
+
+## Live web snippets (Brave WebSearch)
+
+Use one of these recent items as the **Hook** sentence — preferring news,
+product announcements, or eng blog posts the recipient is likely to recognise
+as their own work or their team's.
+
+{{ research_context }}
+{% endif %}
 
 ## Task
 

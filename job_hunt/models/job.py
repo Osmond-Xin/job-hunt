@@ -45,3 +45,12 @@ class CandidateProfile(BaseModel):
     avoid_companies: list[str] = Field(default_factory=list)
     skills: list[str] = Field(default_factory=list)
     languages: list[str] = Field(default_factory=list)
+    # Mode-resolved narrative bridge phrase. Populated by ``_normalize_profile``
+    # from the active narrative variant (``narrative.student`` or top-level
+    # ``narrative``) so downstream consumers (cover_letter, scoring) do not
+    # re-derive the mode each time.
+    exit_narrative: str = ""
+    # The mode this profile was loaded under. Allows downstream code that
+    # already has the profile in hand to inspect mode without re-reading
+    # profile.yml. Mirrors what ``current_mode()`` returned at load time.
+    mode: Literal["student", "full"] = "full"

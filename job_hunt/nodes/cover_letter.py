@@ -41,6 +41,7 @@ async def generate_cover_letter(state: JobHuntState, config: RunnableConfig) -> 
         archetype=state.get("archetype"),
         evaluation_blocks=state.get("evaluation_blocks", {}),
         exit_narrative=exit_narrative,
+        mode=state.get("mode", "full"),
     )
 
     result, errors = await call_node_llm_or_fallback(

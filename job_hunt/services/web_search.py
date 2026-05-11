@@ -140,6 +140,62 @@ def _parse_brave_response(payload: dict) -> list[SearchHit]:
     return hits
 
 
+def format_search_hits(
+    provider: WebSearchProvider | None,
+    queries: list[str],
+    *,
+    label: str = "WebSearch results (Brave)",
+    per_query_count: int = 3,
+    description_chars: int = 280,
+) -> str:
+    """Run each query through the provider and format hits as a markdown block.
+
+    Returns an empty string when ``provider`` is ``None``, ``queries`` is
+    empty, or every query yields zero usable hits. Callers wire the return
+    value into prompt context only when non-empty.
+
+    Used by ``cli.py`` ``research --with-search`` and
+    ``linkedin --with-search`` to ground the LLM on real web data, and is
+    reusable by future ``--with-search`` style flags. URL deduping spans
+    the whole call so the same hit on two queries only appears once.
+    """
+    if provider is None or not queries:
+        return ""
+
+    seen_urls: set[str] = set()
+    lines: list[str] = []
+    for query in queries:
+        clean = query.strip()
+        if not clean:
+            continue
+        try:
+            hits = provider.search(clean, count=per_query_count)
+        except Exception:
+            continue
+        for hit in hits:
+            url = (getattr(hit, "url", "") or "").strip()
+            if not url or url in seen_urls:
+                continue
+            seen_urls.add(url)
+            lines.append(_format_hit_line(clean, hit, description_chars))
+
+    if not lines:
+        return ""
+    return f"{label}:\n" + "\n".join(lines)
+
+
+def _format_hit_line(query: str, hit: SearchHit, description_chars: int) -> str:
+    title = (getattr(hit, "title", "") or "Untitled result").strip()
+    url = (getattr(hit, "url", "") or "").strip()
+    desc = (getattr(hit, "description", "") or "").strip()
+    if len(desc) > description_chars:
+        desc = f"{desc[: description_chars - 3].rstrip()}..."
+    age = (getattr(hit, "age", None) or "").strip()
+    suffix = f" ({age})" if age else ""
+    line = f"- [{query}] {title}{suffix}: {url}"
+    return f"{line}\n  {desc}" if desc else line
+
+
 def build_web_search_provider(settings: Settings) -> WebSearchProvider | None:
     """Construct a provider from settings, or return None when disabled."""
     config = getattr(settings, "web_search", None)

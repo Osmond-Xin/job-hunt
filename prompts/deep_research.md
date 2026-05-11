@@ -20,6 +20,16 @@ be self-contained and answerable by following its 6 numbered axes.
 **Candidate CV excerpt** (used in axis 6):
 {{ cv_excerpt[:1500] }}
 {% endif %}
+{% if research_context is defined and research_context %}
+
+## Live web snippets (Brave WebSearch)
+
+These are real recent results pulled from the web. Treat them as primary
+evidence when they conflict with general assumptions, and cite the URL when
+referenced.
+
+{{ research_context }}
+{% endif %}
 
 ## Task
 

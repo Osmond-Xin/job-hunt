@@ -24,6 +24,10 @@ class ActivityEvent(BaseModel):
     summary: str
     application_id: int | None = None
     run_id: str | None = None
+    # Top-level operator mode at emission time. Lets later funnel analysis
+    # slice apply outcomes by student vs full without joining against
+    # profile.yml history. See docs/design-notes.md §N.5.
+    mode: Literal["student", "full"] | None = None
     payload: dict[str, Any] = Field(default_factory=dict)
 
 

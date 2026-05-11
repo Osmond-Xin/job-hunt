@@ -5,7 +5,9 @@ Graph topology (sequential analysis after classify_archetype):
     load_context
         └─> extract_jd
                 └─> verify_active ──(inactive)──> mark_unavailable ──> END
-                        └─(active)─> classify_archetype
+                        └─(active)─> eligibility_gate
+                                        ├─(blocked)─> mark_ineligible ──> END
+                                        └─(eligible | unknown)─> classify_archetype
                                         └─> cv_match
                                              └─> role_summary
                                                   └─> level_strategy
@@ -37,6 +39,7 @@ from job_hunt.models.state import JobHuntState
 from job_hunt.nodes.classify import classify_archetype
 from job_hunt.nodes.context import load_context
 from job_hunt.nodes.cover_letter import generate_cover_letter
+from job_hunt.nodes.eligibility_gate import eligibility_gate, mark_ineligible
 from job_hunt.nodes.evaluate import cv_match, level_strategy, role_summary, score_and_recommend
 from job_hunt.nodes.extract import extract_jd, mark_unavailable, verify_active
 from job_hunt.nodes.pdf import generate_cv_html_pdf, skip_pdf
@@ -51,8 +54,20 @@ from job_hunt.nodes.research import company_comp_research
 from job_hunt.nodes.tracker import merge_or_update_tracker, write_tracker_addition
 
 
-def _route_active(state: JobHuntState) -> Literal["classify_archetype", "mark_unavailable"]:
-    return "classify_archetype" if state.get("jd_active", True) else "mark_unavailable"
+def _route_active(state: JobHuntState) -> Literal["eligibility_gate", "mark_unavailable"]:
+    return "eligibility_gate" if state.get("jd_active", True) else "mark_unavailable"
+
+
+def _route_eligibility(state: JobHuntState) -> Literal["classify_archetype", "mark_ineligible"]:
+    """Block when the JD eligibility class disagrees with the active mode.
+
+    Unknown classification passes through — see docs/design-notes.md §N.3.
+    """
+    mode = state.get("mode", "full")
+    classification = state.get("jd_eligibility", "unknown")
+    if classification == "unknown" or classification == mode:
+        return "classify_archetype"
+    return "mark_ineligible"
 
 
 def _route_pdf(state: JobHuntState) -> Literal["generate_cv_html_pdf", "skip_pdf"]:
@@ -68,6 +83,8 @@ def build_evaluate_job_graph():
     builder.add_node("extract_jd", extract_jd)
     builder.add_node("verify_active", verify_active)
     builder.add_node("mark_unavailable", mark_unavailable)
+    builder.add_node("eligibility_gate", eligibility_gate)
+    builder.add_node("mark_ineligible", mark_ineligible)
     builder.add_node("classify_archetype", classify_archetype)
 
     # analysis nodes. They are intentionally sequential in the first release so
@@ -97,6 +114,8 @@ def build_evaluate_job_graph():
     builder.add_edge("extract_jd", "verify_active")
     builder.add_conditional_edges("verify_active", _route_active)
     builder.add_edge("mark_unavailable", END)
+    builder.add_conditional_edges("eligibility_gate", _route_eligibility)
+    builder.add_edge("mark_ineligible", END)
 
     builder.add_edge("classify_archetype", "cv_match")
     builder.add_edge("cv_match", "role_summary")

@@ -30,6 +30,13 @@ class JobHuntState(TypedDict, total=False):
     article_digest: str | None
     proof_points: str | None
 
+    # --- top-level mode switch (docs/design-notes.md §N) ---
+    # Set by the eligibility_gate node from profile.yml::mode.
+    mode: Literal["student", "full"]
+    # JD classification produced by the gate; pure-heuristic. Default
+    # "unknown" passes through to scoring; mode mismatch routes to SKIP.
+    jd_eligibility: Literal["student", "full", "unknown"]
+
     # --- analysis outputs (parallel fan-in via reducer) ---
     archetype: ArchetypeResult
     evaluation_blocks: Annotated[dict[str, str], _merge_dicts]

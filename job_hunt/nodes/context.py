@@ -43,8 +43,66 @@ async def load_context(state: JobHuntState, config: RunnableConfig) -> dict:
         "errors": errors,
     }
 
+def _resolve_mode(raw: dict) -> str:
+    """Read top-level ``mode`` from the raw profile dict; default ``"full"``."""
+    value = raw.get("mode")
+    if isinstance(value, str) and value.strip().lower() in ("student", "full"):
+        return value.strip().lower()
+    return "full"
+
+
+def _select_narrative(raw_narrative: dict, mode: str) -> dict:
+    """Pick the mode-active narrative block.
+
+    - ``mode == "student"`` and ``narrative.student`` present → use that block.
+    - Otherwise fall back to the top-level ``narrative.*`` fields, which act
+      as the full-mode narrative by convention (see profile/profile.yml).
+    """
+    if not isinstance(raw_narrative, dict):
+        return {}
+    if mode == "student":
+        student_block = raw_narrative.get("student")
+        if isinstance(student_block, dict):
+            return student_block
+    return raw_narrative
+
+
+def _resolve_min_salary(compensation: dict, mode: str) -> int | None:
+    """Pick the mode-appropriate compensation minimum.
+
+    Annual values like ``"CAD 80K"`` parse as 80000. Hourly rates like
+    ``"CAD 22/hr"`` parse as the integer rate (22). The legacy heuristic
+    ``value * 1000 if value < 1000 else value`` is only applied when the
+    surrounding string does not look like an hourly rate.
+    """
+    candidates: list[str] = []
+    if mode == "student":
+        candidates.append(str(compensation.get("student_minimum") or ""))
+    candidates.append(str(compensation.get("minimum") or ""))
+    for raw_value in candidates:
+        digits = "".join(ch for ch in raw_value if ch.isdigit())
+        if not digits:
+            continue
+        value = int(digits)
+        if _looks_hourly(raw_value):
+            return value
+        return value * (1000 if value < 1000 else 1)
+    return None
+
+
+def _looks_hourly(raw: str) -> bool:
+    lower = raw.lower()
+    return any(token in lower for token in ("/hr", "/hour", " hr", " hour", "hourly"))
+
+
 def _normalize_profile(raw: dict) -> dict:
-    """Accept both the flat profile schema and nested profile schema."""
+    """Accept both the flat profile schema and nested profile schema.
+
+    Mode-aware: when ``mode: student`` is set at the top level, the narrative
+    bridge (``exit_narrative``) and the default skills list are sourced from
+    ``narrative.student`` rather than the top-level narrative block. See
+    docs/design-notes.md §N.3.
+    """
     if not isinstance(raw.get("candidate"), dict):
         return raw
 
@@ -52,21 +110,30 @@ def _normalize_profile(raw: dict) -> dict:
     target_roles = raw.get("target_roles") or {}
     location = raw.get("location") or {}
     compensation = raw.get("compensation") or {}
+    mode = _resolve_mode(raw)
+    narrative = _select_narrative(raw.get("narrative") or {}, mode)
 
     primary_roles = target_roles.get("primary") or []
     secondary_roles = target_roles.get("secondary") or []
     archetypes = target_roles.get("archetypes") or []
+    # Filter archetypes by mode: missing eligibility tag defaults to "full"
+    # so legacy entries continue to behave the same way.
     preferred_archetypes = [
         item.get("name", "")
         for item in archetypes
-        if isinstance(item, dict) and item.get("name")
+        if isinstance(item, dict)
+        and item.get("name")
+        and str(item.get("eligibility") or "full").strip().lower() == mode
     ]
-
-    min_salary = None
-    minimum = str(compensation.get("minimum") or "")
-    digits = "".join(ch for ch in minimum if ch.isdigit())
-    if digits:
-        min_salary = int(digits) * (1000 if int(digits) < 1000 else 1)
+    # Backstop: if mode-filtered list is empty (e.g. profile.yml has no
+    # eligibility tags yet), fall back to the unfiltered list so the previous
+    # behaviour is preserved during incremental migration.
+    if not preferred_archetypes:
+        preferred_archetypes = [
+            item.get("name", "")
+            for item in archetypes
+            if isinstance(item, dict) and item.get("name")
+        ]
 
     target_locations = [
         item
@@ -89,9 +156,11 @@ def _normalize_profile(raw: dict) -> dict:
         "website": candidate.get("portfolio_url", ""),
         "target_roles": [*primary_roles, *secondary_roles],
         "target_locations": target_locations,
-        "min_salary": min_salary,
+        "min_salary": _resolve_min_salary(compensation, mode),
         "years_experience": 20,
         "open_to_remote": True,
         "preferred_archetypes": preferred_archetypes,
-        "skills": raw.get("narrative", {}).get("superpowers", []),
+        "skills": narrative.get("superpowers", []),
+        "exit_narrative": narrative.get("exit_story", "") or "",
+        "mode": mode,
     }

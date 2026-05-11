@@ -4,16 +4,50 @@ Reads ``profile/cv-experience.yml`` when present, then embedded defaults. The Wo
 each field (``start_month`` / ``start_year`` are used directly as keyboard input
 on the split-spinbutton date widgets), so values are normalized to strings even
 when the yaml writes them as integers or ISO ``YYYY-MM`` shortcuts.
+
+Also exposes ``current_mode()`` — the single source of truth for the top-level
+student-vs-full switch documented in docs/design-notes.md Section N. Every
+subsystem that branches on mode reads through this helper; nobody else parses
+``profile/profile.yml`` for the ``mode`` field directly.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 
 _CV_EXPERIENCE_PATH = Path("profile/cv-experience.yml")
+_PROFILE_PATH = Path("profile/profile.yml")
+
+Mode = Literal["student", "full"]
+_DEFAULT_MODE: Mode = "full"
+_VALID_MODES: tuple[Mode, ...] = ("student", "full")
+
+
+def current_mode(profile_path: Path | None = None) -> Mode:
+    """Return the operator's current mode. Defaults to ``"full"`` when missing.
+
+    The mode lives at the top level of ``profile/profile.yml`` as a plain
+    string — see docs/design-notes.md Section N.2. Anything other than
+    ``"student"`` or ``"full"`` (including missing file, malformed yaml, or
+    typo) falls back to ``"full"`` so the system stays in its historical
+    behaviour rather than silently switching to student.
+    """
+    path = profile_path if profile_path is not None else _PROFILE_PATH
+    if not path.exists():
+        return _DEFAULT_MODE
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return _DEFAULT_MODE
+    if not isinstance(raw, dict):
+        return _DEFAULT_MODE
+    value = raw.get("mode")
+    if isinstance(value, str) and value.strip().lower() in _VALID_MODES:
+        return value.strip().lower()  # type: ignore[return-value]
+    return _DEFAULT_MODE
 
 
 # Generic placeholder defaults. Real candidate data should come from

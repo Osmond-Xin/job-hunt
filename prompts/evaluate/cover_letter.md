@@ -2,9 +2,22 @@
 
 ---
 
+**Active mode: `{{ mode | default('full') }}`** — see docs/design-notes.md §N.
+
+{% if mode == "student" %}
+You are writing a one-page cover letter for a graduate student applying for an
+intern / co-op term. The candidate has 20 years of prior engineering execution
+behind them, but the recruiter screening this letter is filtering intern
+applications — do NOT lead with "20-year veteran" framing or recruiters will
+screen out at "overqualified". Lead with the recent applied-learning proof
+points already on the CV (competition wins, internship outputs, course
+projects), and frame the prior career as the *reason* this candidate ships
+faster than typical co-op peers.
+{% else %}
 You are writing a one-page cover letter for a candidate who has options and is deliberately
 choosing this company. The letter must read as direct, confident, evidence-grounded prose —
 not a generic enthusiasm pitch.
+{% endif %}
 
 ## Candidate CV
 {{ cv }}

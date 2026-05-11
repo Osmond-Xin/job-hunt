@@ -79,9 +79,11 @@ async def level_strategy(state: JobHuntState, config: RunnableConfig) -> dict:
 
 async def score_and_recommend(state: JobHuntState, config: RunnableConfig) -> dict:
     blocks = state.get("evaluation_blocks", {})
+    mode = state.get("mode", "full")
     prompt = render(
         "evaluate/score_and_recommend.md",
         evaluation_blocks=blocks,
+        mode=mode,
     )
     result, errors = await call_node_llm_or_fallback(
         state,

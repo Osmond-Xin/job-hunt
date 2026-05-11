@@ -495,6 +495,8 @@ def config_validate(path: Path = Path("config/settings.yml")) -> None:
 
 @config_app.command("doctor")
 def config_doctor() -> None:
+    from job_hunt.services.profile_loader import current_mode as _read_mode
+
     settings = load_settings()
     checks = [
         ("settings", Path("config/settings.yml").exists(), "config/settings.yml"),
@@ -513,7 +515,74 @@ def config_doctor() -> None:
     for name, ok, detail in checks:
         table.add_row(name, "ok" if ok else "missing", detail, style="green" if ok else "yellow")
     console.print(table)
+    mode = _read_mode()
+    console.print(f"\n[bold]Operator mode:[/bold] [cyan]{mode}[/cyan] "
+                  f"(set in profile/profile.yml; see docs/design-notes.md §N)")
     console.print("Doctor finished. Missing local config files are expected until you copy the examples.")
+
+
+@config_app.command("set-mode")
+def config_set_mode(
+    value: str = typer.Argument(..., help="Target mode: student or full."),
+    force: bool = typer.Option(False, "--force", help="Allow setting to current value (no-op)."),
+) -> None:
+    """Atomically flip ``profile/profile.yml`` ``mode`` between student and full.
+
+    The value is the only thing the system reads to switch discovery, scoring,
+    and apply behaviour. See docs/design-notes.md §N.2.
+    """
+    target = value.strip().lower()
+    if target not in ("student", "full"):
+        console.print(f"[red]Invalid mode:[/red] {value!r}. Allowed values: student, full.")
+        raise typer.Exit(2)
+
+    profile_path = Path("profile/profile.yml")
+    if not profile_path.exists():
+        console.print(
+            f"[red]profile/profile.yml not found.[/red] Run `job-hunt init` or "
+            "copy config/profile.example.yml first."
+        )
+        raise typer.Exit(2)
+
+    raw = profile_path.read_text(encoding="utf-8")
+    try:
+        parsed = yaml.safe_load(raw) or {}
+    except yaml.YAMLError as exc:
+        console.print(f"[red]profile/profile.yml is malformed:[/red] {exc}")
+        raise typer.Exit(2)
+
+    current = (parsed.get("mode") or "").strip().lower() if isinstance(parsed.get("mode"), str) else ""
+    if current == target and not force:
+        console.print(
+            f"[yellow]No change:[/yellow] mode is already {target!r}. "
+            "Pass --force to rewrite anyway."
+        )
+        raise typer.Exit(0)
+
+    # Surgical text edit — preserve comments and ordering. Match the first
+    # ``mode:`` line at column 0 (top-level only); fall back to inserting at
+    # the top of the file when no such line exists.
+    pattern = re.compile(r"^mode:\s*.*$", re.MULTILINE)
+    if pattern.search(raw):
+        new_text = pattern.sub(f'mode: "{target}"', raw, count=1)
+    else:
+        header = (
+            f'# Top-level mode switch — see docs/design-notes.md Section N.\n'
+            f'mode: "{target}"\n\n'
+        )
+        new_text = header + raw
+
+    tmp_path = profile_path.with_suffix(profile_path.suffix + ".tmp")
+    tmp_path.write_text(new_text, encoding="utf-8")
+    tmp_path.replace(profile_path)
+
+    console.print(f"[green]Mode set to {target!r}.[/green]")
+    console.print(
+        "Subsystems that will pick up the change on next invocation: "
+        "scan (title filter + tracked-companies eligibility), "
+        "evaluate (eligibility gate + scoring weights + thresholds), "
+        "cover_letter (narrative variant), apply (auto-submit gate)."
+    )
 
 
 @config_app.command("init")
@@ -1334,6 +1403,58 @@ def _load_cv_excerpt() -> str:
     return ""
 
 
+def _build_research_context_for_prompt(
+    *,
+    company: str,
+    role: str,
+    enabled: bool,
+    purpose: str,
+) -> str:
+    """Run a small set of grounding queries and return a formatted block.
+
+    Returns ``""`` when ``--with-search`` was not requested, the WebSearch
+    provider is unconfigured, or every query yielded zero hits. Callers
+    pass the value into prompts that conditionally render
+    ``{% if research_context %}{{ research_context }}{% endif %}``.
+
+    ``purpose`` selects the query bundle: ``"research"`` favours strategy /
+    recent moves / engineering culture; ``"linkedin"`` favours news the
+    sender can reference as a hook.
+    """
+    if not enabled:
+        return ""
+    from job_hunt.services.web_search import (
+        build_web_search_provider,
+        format_search_hits,
+    )
+
+    settings = load_settings()
+    provider = build_web_search_provider(settings)
+    if provider is None:
+        console.print(
+            "[dim]--with-search ignored: web_search.provider is unset or "
+            "BRAVE_API_KEY is missing.[/dim]"
+        )
+        return ""
+
+    company_clean = company.strip()
+    role_clean = role.strip()
+    if purpose == "linkedin":
+        queries = [
+            f"{company_clean} news {role_clean}",
+            f"{company_clean} engineering blog {role_clean}",
+            f"{company_clean} product announcement",
+        ]
+    else:  # research / default
+        queries = [
+            f"{company_clean} {role_clean} engineering team",
+            f"{company_clean} recent product news",
+            f"{company_clean} engineering blog",
+            f"{company_clean} glassdoor culture",
+        ]
+    return format_search_hits(provider, queries)
+
+
 def _run_one_shot_prompt(
     *,
     template: str,
@@ -1378,12 +1499,27 @@ def linkedin_outreach(
         None, help="Optional path to write the message draft. Stdout always prints."
     ),
     max_tokens: int = typer.Option(900, help="LLM max tokens."),
+    with_search: bool = typer.Option(
+        False,
+        "--with-search",
+        help=(
+            "Run live Brave WebSearch queries to ground the connection-request "
+            "hook in real recent signals. No-op when web_search.provider is unset."
+        ),
+    ),
 ) -> None:
     """Draft a 300-char LinkedIn connection-request message + targets list."""
     jd_text = ""
     if jd:
         jd_path = Path(jd)
         jd_text = jd_path.read_text(encoding="utf-8") if jd_path.exists() else jd
+
+    research_context = _build_research_context_for_prompt(
+        company=company,
+        role=role,
+        enabled=with_search,
+        purpose="linkedin",
+    )
 
     body = _run_one_shot_prompt(
         template="linkedin_outreach.md",
@@ -1395,6 +1531,7 @@ def linkedin_outreach(
         role=role,
         jd_text=jd_text,
         cv_excerpt=_load_cv_excerpt(),
+        research_context=research_context,
     )
     console.print(body)
     if output:
@@ -1414,12 +1551,27 @@ def research_prompt(
         None, help="Optional path to write the research prompt. Stdout always prints."
     ),
     max_tokens: int = typer.Option(2000, help="LLM max tokens."),
+    with_search: bool = typer.Option(
+        False,
+        "--with-search",
+        help=(
+            "Run live Brave WebSearch queries and inject the snippets into "
+            "the research prompt. No-op when web_search.provider is unset."
+        ),
+    ),
 ) -> None:
     """Generate a 6-axis deep-research prompt for Perplexity / Claude / ChatGPT."""
     jd_text = ""
     if jd:
         jd_path = Path(jd)
         jd_text = jd_path.read_text(encoding="utf-8") if jd_path.exists() else jd
+
+    research_context = _build_research_context_for_prompt(
+        company=company,
+        role=role,
+        enabled=with_search,
+        purpose="research",
+    )
 
     body = _run_one_shot_prompt(
         template="deep_research.md",
@@ -1431,6 +1583,7 @@ def research_prompt(
         role=role,
         jd_text=jd_text,
         cv_excerpt=_load_cv_excerpt(),
+        research_context=research_context,
     )
     console.print(body)
     if output:
@@ -1680,8 +1833,21 @@ def apply_assist(
     auto_submit_profile_enabled = _apply_profile_values().get(
         "apply_auto_submit_enabled", False
     )
-    auto_submit_active = bool(auto_submit and auto_submit_profile_enabled)
-    if auto_submit and not auto_submit_profile_enabled:
+    # Mode gate: auto-submit is force-disabled in student mode regardless of
+    # both other flags. Co-op / intern forms have higher per-employer variance
+    # (custom questions, portal-specific consent) and the upside of one-click
+    # submission is small there. See docs/design-notes.md §N.3.
+    from job_hunt.services.profile_loader import current_mode as _read_mode
+    operator_mode = _read_mode()
+    auto_submit_active = bool(
+        auto_submit and auto_submit_profile_enabled and operator_mode == "full"
+    )
+    if auto_submit and operator_mode == "student":
+        console.print(
+            "[yellow]--auto-submit ignored:[/yellow] mode=student in profile.yml. "
+            "Auto-submit is restricted to full mode. Falling back to manual submit."
+        )
+    elif auto_submit and not auto_submit_profile_enabled:
         console.print(
             "[yellow]--auto-submit ignored:[/yellow] profile.yml is missing "
             "`apply.auto_submit_enabled: true`. Falling back to manual submit."
@@ -1731,6 +1897,7 @@ def apply_assist(
                 type="apply.cancelled",
                 level="info",
                 summary=f"Apply assist cancelled for {resolved_company or url}",
+                mode=operator_mode,
                 payload={"url": url, "company": resolved_company, "role": resolved_role},
             )
         )
@@ -1771,6 +1938,7 @@ def apply_assist(
             level="info",
             summary=f"Application submitted: {resolved_company} / {resolved_role}",
             application_id=updated.number,
+            mode=operator_mode,
             payload={"url": url, "pdf": str(pdf) if pdf else None},
         )
     )

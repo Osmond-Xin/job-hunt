@@ -149,6 +149,7 @@ def test_scan_portals_includes_websearch_companies_when_provider_present(
         include_non_canada=True,
         apply=False,
         web_search_provider=provider,
+        mode="full",  # exercise the no-augmentation path
     )
     assert result.scanned_companies == 1
     assert result.fetched_jobs == 1

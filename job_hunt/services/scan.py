@@ -14,6 +14,7 @@ import yaml
 from pydantic import BaseModel, Field
 
 from job_hunt.repositories.tracker_repo import TrackerRepository, normalize
+from job_hunt.services.profile_loader import current_mode
 
 
 class ScannedJob(BaseModel):
@@ -45,16 +46,22 @@ def scan_portals(
     apply: bool = False,
     include_non_canada: bool = False,
     web_search_provider=None,
+    mode: str | None = None,
 ) -> ScanResult:
     if not config_path.exists():
         return ScanResult(errors=[f"{config_path} not found. Run `job-hunt init` or create tracked_companies."])
     config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
-    positives = [str(item).lower() for item in config.get("title_filter", {}).get("positive", [])]
-    negatives = [str(item).lower() for item in config.get("title_filter", {}).get("negative", [])]
+    active_mode = mode or current_mode()
+    positives, negatives = _select_title_filter(config.get("title_filter") or {}, active_mode)
     # P1-4 sub-phase 4b: include companies with `scan_method: websearch` when a
     # provider is wired in. Without a provider we still skip them (current behavior).
+    # Companies may also opt into a specific mode via `eligibility_tags`. Missing
+    # tags = company is scanned in both modes (covers the common case where a
+    # single board mixes intern + FT).
     def _eligible(item: dict[str, Any]) -> bool:
         if not item.get("enabled", True):
+            return False
+        if not _company_matches_mode(item, active_mode):
             return False
         if _supports_direct_fetch(item):
             return True
@@ -79,7 +86,7 @@ def scan_portals(
             if _supports_direct_fetch(item):
                 jobs = _fetch_company_jobs(item)
             elif web_search_provider is not None and item.get("scan_method") == "websearch":
-                jobs = scan_via_websearch(item, web_search_provider)
+                jobs = scan_via_websearch(item, web_search_provider, mode=active_mode)
             else:
                 jobs = []
             latency_ms = int((time.perf_counter() - started) * 1000)
@@ -118,8 +125,19 @@ def scan_portals(
     return result
 
 
-def scan_via_websearch(company: dict[str, Any], provider) -> list[ScannedJob]:
+def scan_via_websearch(
+    company: dict[str, Any],
+    provider,
+    *,
+    mode: str | None = None,
+) -> list[ScannedJob]:
     """Tier-3 scan: WebSearch the company's `scan_query` and turn hits into ScannedJobs.
+
+    Under student mode the configured ``scan_query`` is automatically augmented
+    with intern / co-op / new-grad terms so the provider returns student-eligible
+    hits even when the original query was written for a full-time hunt. The
+    title filter still gates results downstream — the augmentation only widens
+    Brave's recall, not the final acceptance set.
 
     Each hit's title+description first line is parsed with
     ``parse_search_result_title`` to recover (job-title, company-name). The
@@ -133,9 +151,11 @@ def scan_via_websearch(company: dict[str, Any], provider) -> list[ScannedJob]:
     query = company.get("scan_query") or ""
     if not query.strip():
         return []
+    active_mode = mode or current_mode()
+    augmented_query = _augment_query_for_mode(query, active_mode)
     company_name = company.get("name") or ""
     company_norm = normalize(company_name)
-    hits = provider.search(query)
+    hits = provider.search(augmented_query)
     jobs: list[ScannedJob] = []
     seen_urls: set[str] = set()
     for hit in hits:
@@ -256,6 +276,85 @@ def _parse_ashby(raw: dict[str, Any], company: dict[str, Any]) -> list[ScannedJo
             )
         )
     return [job for job in parsed if job.url and job.title]
+
+
+# Student-mode augmentation appended to every `scan_query` when the active
+# mode is "student". Brave / Google interpret the trailing parenthesised
+# OR group as an additional AND constraint on the existing query, so a
+# query like `site:shopify.com/careers "Data Analyst"` becomes
+# `site:shopify.com/careers "Data Analyst" ("Intern" OR "Co-op" OR ...)` —
+# narrows recall to student-eligible postings without dropping the site /
+# role constraints. Empty in full mode (no augmentation; legacy behaviour).
+_STUDENT_QUERY_TERMS = (
+    '"Intern"',
+    '"Internship"',
+    '"Co-op"',
+    '"Coop"',
+    '"Co-operative"',
+    '"New Grad"',
+    '"Junior"',
+    '"Student"',
+)
+
+
+def _augment_query_for_mode(query: str, mode: str) -> str:
+    """Return ``query`` augmented with student-mode terms when applicable.
+
+    Only the ``"student"`` mode appends a constraint. ``"full"`` and any
+    other value pass the query through unchanged so existing FT scans behave
+    exactly as before.
+    """
+    if mode != "student":
+        return query
+    base = query.rstrip()
+    if not base:
+        return base
+    constraint = " OR ".join(_STUDENT_QUERY_TERMS)
+    return f"{base} ({constraint})"
+
+
+# Mode-specific tags for tracked companies. A company with `eligibility_tags`
+# containing any STUDENT_TAG appears in student-mode scans; any FULL_TAG appears
+# in full-mode scans. Missing or empty `eligibility_tags` = company scanned in
+# both modes (default; matches the common case where one ATS board mixes
+# intern + FT postings).
+_STUDENT_TAGS = {"intern", "coop", "co-op", "student", "internship"}
+_FULL_TAGS = {"full", "full_time", "fulltime", "ft"}
+
+
+def _select_title_filter(raw: dict[str, Any], mode: str) -> tuple[list[str], list[str]]:
+    """Return (positives, negatives) for the active mode.
+
+    Prefers ``raw[<mode>].positive`` / ``raw[<mode>].negative``. Falls back to
+    legacy top-level ``raw.positive`` / ``raw.negative`` when the mode group is
+    absent — keeps older portals.yml files working without migration.
+    """
+    group = raw.get(mode)
+    if isinstance(group, dict) and ("positive" in group or "negative" in group):
+        positives = [str(item).lower() for item in (group.get("positive") or [])]
+        negatives = [str(item).lower() for item in (group.get("negative") or [])]
+        return positives, negatives
+    positives = [str(item).lower() for item in (raw.get("positive") or [])]
+    negatives = [str(item).lower() for item in (raw.get("negative") or [])]
+    return positives, negatives
+
+
+def _company_matches_mode(item: dict[str, Any], mode: str) -> bool:
+    """True when this tracked-companies entry should be scanned under ``mode``.
+
+    Missing / empty ``eligibility_tags`` means the company is mode-agnostic
+    (scanned in both). When tags are present, the company must declare a tag
+    aligned with the active mode to be included.
+    """
+    raw_tags = item.get("eligibility_tags")
+    if not raw_tags:
+        return True
+    tags = {str(tag).strip().lower() for tag in raw_tags if str(tag).strip()}
+    if not tags:
+        return True
+    if mode == "student":
+        return bool(tags & _STUDENT_TAGS)
+    return bool(tags & _FULL_TAGS)
 
 
 def _title_matches(title: str, positives: list[str], negatives: list[str]) -> bool:
