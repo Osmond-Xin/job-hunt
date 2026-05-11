@@ -1679,6 +1679,58 @@ def search_test(
     console.print(f"\n{len(hits)} result(s) for: {query!r}")
 
 
+@app.command("search-usage")
+def search_usage(
+    month: str | None = typer.Option(
+        None,
+        help="UTC month in YYYY-MM. Defaults to the current month.",
+    ),
+) -> None:
+    """Show WebSearch quota usage (api_calls / cache_hits / errors) for a month.
+
+    Brave's free tier is ~2k queries/month — this command lets the operator
+    eyeball the counter before kicking off a wide scan or batch evaluation.
+    """
+    from job_hunt.services.web_search import (
+        CachingProvider,
+        WebSearchCache,
+        _resolve_cache_dir,
+        build_web_search_provider,
+    )
+
+    settings = load_settings()
+    provider = build_web_search_provider(settings)
+    cache: WebSearchCache | None = None
+    if isinstance(provider, CachingProvider):
+        cache = provider.cache
+    else:
+        cache_dir = _resolve_cache_dir(settings, "brave")
+        if cache_dir.exists():
+            cache = WebSearchCache(
+                cache_dir,
+                ttl_seconds=settings.web_search.cache_ttl_seconds,
+            )
+    if cache is None:
+        console.print(
+            "[yellow]No cache directory found.[/yellow] "
+            "Either WebSearch is disabled or no queries have run yet."
+        )
+        return
+
+    usage = cache.usage(month=month)
+    table = Table("Metric", "Count")
+    table.add_row("API calls", str(usage.api_calls))
+    table.add_row("Cache hits", str(usage.cache_hits))
+    table.add_row("Errors / empty", str(usage.errors))
+    table.add_row(
+        "[bold]Total provider lookups[/bold]",
+        f"[bold]{usage.api_calls + usage.cache_hits + usage.errors}[/bold]",
+    )
+    console.print(f"WebSearch usage for {usage.month} (UTC):")
+    console.print(table)
+    console.print(f"\nUsage file: {cache.usage_path()}")
+
+
 @app.command("compare")
 def compare_offers(
     tracker_ids: list[int] = typer.Argument(

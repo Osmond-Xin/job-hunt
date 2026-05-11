@@ -155,11 +155,18 @@ def test_factory_returns_none_when_api_key_missing(monkeypatch: pytest.MonkeyPat
     assert build_web_search_provider(settings) is None
 
 
-def test_factory_builds_brave_when_configured(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_factory_builds_brave_when_configured(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
     monkeypatch.setenv("BRAVE_API_KEY", "sk-real-key")
+    monkeypatch.chdir(tmp_path)  # confine cache dir to tmpdir
     settings = Settings(web_search=WebSearchConfig(provider="brave", count=5))
     provider = build_web_search_provider(settings)
-    assert isinstance(provider, BraveProvider)
+    # Default config wraps in CachingProvider; the inner is a BraveProvider.
+    from job_hunt.services.web_search import CachingProvider
+
+    assert isinstance(provider, CachingProvider)
+    assert isinstance(provider.inner, BraveProvider)
 
 
 def test_factory_respects_custom_env_var_name(monkeypatch: pytest.MonkeyPatch) -> None:

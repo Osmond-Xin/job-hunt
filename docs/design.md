@@ -120,6 +120,24 @@ Mode-aware filtering:
   the company to a specific mode — used to add WaterlooWorks-style channels
   later without polluting the FT hunt.
 
+### WebSearch Cache And Quota
+
+Brave responses go through a transparent caching wrapper
+(`services.web_search.CachingProvider`):
+
+- **Cache**: `cache/web_search/brave/entries/<sha256>.json`, keyed by
+  `(query, count, freshness)`. TTL defaults to 24h; configurable via
+  `web_search.cache_ttl_seconds`. Disable with `web_search.cache_enabled:
+  false`.
+- **Counter**: `cache/web_search/brave/usage.json`, bucketed by UTC
+  `YYYY-MM` with `api_calls` / `cache_hits` / `errors`. Brave's free tier
+  is ~2k queries/month, so the counter is the first thing to consult
+  before a wide scan.
+- **Inspect**: `job-hunt search-usage` prints the current month; pass
+  `--month YYYY-MM` for a historical bucket.
+- Empty results are not cached and are counted as `errors`, so a
+  transient outage isn't pinned for 24h.
+
 ### WebSearch Grounding (`--with-search`)
 
 Two CLI commands accept an optional `--with-search` flag that runs live
@@ -360,13 +378,13 @@ Focused tests for recent surfaces:
 
 ```bash
 .venv/bin/pytest tests/test_outreach_tracking.py tests/test_outreach_research_prompts.py
-.venv/bin/pytest tests/test_web_search_brave.py tests/test_scan_via_websearch.py tests/test_comp_research_brave.py
+.venv/bin/pytest tests/test_web_search_brave.py tests/test_web_search_cache.py tests/test_scan_via_websearch.py tests/test_comp_research_brave.py
 .venv/bin/pytest tests/test_apply_assist.py
 .venv/bin/pytest tests/test_profile_mode.py tests/test_profile_normalize_mode.py tests/test_eligibility_gate.py tests/test_scan_mode.py tests/test_config_set_mode.py tests/test_activity_mode_tag.py
 .venv/bin/pytest tests/test_with_search_grounding.py
 ```
 
-Full suite (316 passing as of 2026-05-10):
+Full suite (339 passing as of 2026-05-11):
 
 ```bash
 .venv/bin/pytest

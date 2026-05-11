@@ -96,15 +96,19 @@ Last updated: 2026-05-10.
 
 ### D.1 Brave WebSearch governance
 
-- **Status**: provider abstraction in progress
-  (`build_web_search_provider() -> WebSearchProvider | None`),
-  graceful degrade when key absent. Phases A–D scoped.
-- **Gap 1**: no result cache; running `comp_research` for the same company
-  twice burns quota.
-- **Gap 2**: no rate-limit / quota counter. Brave free tier is ~2k/month;
-  a single scan with 50 websearch-mode companies could blow it.
-- **Verdict**: add a 24h on-disk cache + a usage counter after phases A–D
-  ship. Keep deferred until then to avoid overlap.
+- **Status**: provider abstraction shipped; graceful degrade when key
+  absent. 24h on-disk cache + monthly quota counter shipped 2026-05-11.
+- **Cache layout**: `cache/web_search/brave/entries/<sha256>.json`
+  (one file per `(query, count, freshness)` triple). TTL configurable
+  via `web_search.cache_ttl_seconds` (default 86400). Disable per-env
+  via `web_search.cache_enabled: false`.
+- **Counter layout**: `cache/web_search/brave/usage.json`, keyed by UTC
+  `YYYY-MM`, with `api_calls` / `cache_hits` / `errors` fields. Inspect
+  via `job-hunt search-usage [--month YYYY-MM]`.
+- **Wiring**: `build_web_search_provider()` wraps the raw provider in
+  `CachingProvider` by default. The wrapper records counters and skips
+  caching empty results so a transient outage isn't pinned for 24h.
+- **Verdict**: complete. Revisit only on quota / outage incident.
 
 ### D.2 LLM providers
 

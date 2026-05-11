@@ -116,6 +116,8 @@ class WebSearchConfig(BaseModel):
     count: int = 10
     freshness: str = "pw"  # pd / pw / pm / py
     timeout_s: float = 10.0
+    cache_enabled: bool = True
+    cache_ttl_seconds: int = 86_400  # 24h
 
 
 class Settings(BaseModel):
