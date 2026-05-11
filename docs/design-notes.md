@@ -10,18 +10,40 @@ Last updated: 2026-05-10.
 
 ### A.1 `cli.py` size
 
-- **Status**: ~6800 lines. Workday review_gate / required_empty /
-  application_questions / employer_config are already extracted, but
-  login / my_information / my_experience / voluntary_disclosures and the
-  core `_workday_advance_all_steps` orchestration still live in `cli.py`.
-- **Verdict**: improve, medium priority. Pain is onboarding new contributors
-  and writing tests around orchestration; functional capacity is fine.
-- **Suggested trigger**: do one more extraction pass the next time a Workday
-  flow change touches this region. Cut by step (login / my_info / my_exp /
-  questions / disclosures / review), not by concept.
+- **Status**: ~6580 lines, down from ~7010 after the 2026-05-11 extraction
+  pass.
+- **Extracted to `services/workday/`** in that pass:
+  - `login.py` — `_maybe_workday_login` + diagnostic dump (~300 lines).
+  - `voluntary_disclosures.py` — `_fill_workday_voluntary_disclosures`
+    (~70 lines).
+  - `my_information.py` — the small `required_blocks_my_information_continue`
+    heuristic (other My Information logic stays inline; the helpers it
+    needs all live in cli.py).
+  - `my_experience.py` — `write_debug_field_dump` and
+    `experience_dates_match` (the self-contained pieces).
+- **Still inline in cli.py**:
+  - `_workday_advance_all_steps` orchestrator and the bulk of the My
+    Experience fill cluster (`_fill_workday_my_experience`,
+    `_fill_workday_structured_experience`,
+    `_fill_workday_experience_card_by_order`,
+    `_fill_workday_experience_dates_by_title`,
+    `_fill_workday_structured_education`,
+    `_fill_workday_education_card_by_order`,
+    `_workday_fill_repeating_section`, ...).
+  - These all rely on shared Workday helpers
+    (`_select_workday_dropdown_*`, `_fill_workday_field_containing`,
+    `_ensure_workday_section_item`, ...) that ALSO live in cli.py.
+    Extracting the fillers without first moving those shared helpers
+    would just push the boundary one level deeper.
+- **Verdict**: extraction pass landed the cleanly-separable pieces.
+  Next pass should move the shared Workday helpers as a group, then the
+  fillers, then `_workday_advance_all_steps`. Triggered when the next
+  Workday flow change touches this region.
 - **Related debt**: backward-compat shims (`workday_employer.py` re-exports,
-  `cli.py` aliases like `_workday_review_validation_issues`). Need a stated
-  sunset rule, otherwise they live forever.
+  `cli.py` aliases like `_workday_review_validation_issues`,
+  `_fill_workday_voluntary_disclosures`,
+  `_workday_experience_dates_match`, ...). Need a stated sunset rule,
+  otherwise they live forever.
 
 ### A.2 ATS coverage asymmetry
 

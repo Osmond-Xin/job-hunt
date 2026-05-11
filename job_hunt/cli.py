@@ -3036,323 +3036,21 @@ async def _advance_application_start(page) -> None:
         return
 
 
+# Login + diagnostic dump live in `services.workday.login`. This wrapper keeps
+# the long historical call-site signature stable while delegating the actual
+# orchestration. The body below the early returns was moved verbatim into the
+# module; see ADR-011 §3.5 for the design.
 async def _maybe_workday_login(page, *, artifact_dir: Path | None = None) -> None:
-    """Log into Workday from a one-time local secret file, then delete it.
-
-    This is intentionally file-based rather than a CLI flag so the password does
-    not appear in the process list. The file is removed whether login succeeds or
-    fails.
-
-    Phase 3.5: when the entry modal cannot be detected (neither Sign In nor
-    Create Account are visible), the function dumps a screenshot + DOM HTML
-    snapshot to ``artifact_dir`` so future style changes can be diagnosed
-    immediately instead of by silent fallback.
-    """
-    if "myworkdayjobs.com" not in page.url:
-        return
-    secret_path = Path("storage/private/workday-login-password.txt")
-    if not secret_path.exists():
-        return
-    try:
-        password = secret_path.read_text(encoding="utf-8").strip()
-    except Exception:
-        password = ""
-    finally:
-        if not Path("storage/private/keep-workday-login").exists():
-            secret_path.unlink(missing_ok=True)
-    if not password:
-        return
+    from job_hunt.services.workday.login import maybe_login
 
     values = _apply_profile_values()
-    try:
-        page_text = await page.locator("body").inner_text(timeout=5000)
-    except Exception:
-        page_text = ""
-
-    # Phase 3.5: distinguish "already signed in" (body text loaded, no modal)
-    # from "unknown state" (body text unreadable). The former is a no-op; the
-    # latter is a diagnostic hand-off so future Workday tweaks are visible.
-    if not page_text:
-        await _dump_workday_login_unknown_state(
-            page, artifact_dir, reason="body_text_unreadable"
-        )
-        return
-
-    sign_in_visible = "Sign In" in page_text
-    create_account_visible = "Create Account" in page_text
-    if not sign_in_visible and not create_account_visible:
-        # Body loaded but neither expected control surfaced — likely already
-        # signed-in via persistent cookies. Treat as success but emit a
-        # log breadcrumb so we can spot if the heuristic ever flips.
-        if artifact_dir is not None:
-            apply_run_log.emit(
-                artifact_dir, "workday.login.skipped",
-                reason="no_modal_detected_assume_signed_in",
-            )
-        return
-
-    form_url = page.url
-
-    # The Workday modal shows "Create Account" as the DEFAULT active panel.
-    # "Sign In" panel is hidden behind it.
-    # We MUST click "Already have an account? Sign In" link to switch to Sign In panel
-    # before filling credentials, otherwise we'll fill the Create Account form by mistake.
-
-    # Step 1: Navigate fresh to ensure clean modal state
-    await page.goto(form_url, wait_until="domcontentloaded", timeout=45000)
-    await page.wait_for_timeout(3000)
-
-    # Step 2: Click "Already have an account? Sign In" to activate Sign In panel.
-    # This link's full text is "Already have an account? Sign In" — it's a plain <a>,
-    # not a button, so it won't appear in button-based action label lists.
-    try:
-        switched_to_sign_in = bool(
-            await page.evaluate(
-                """() => {
-                    const visible = el => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
-                    const norm = text => (text || '').replace(/\\s+/g, ' ').trim().toLowerCase();
-                    const links = Array.from(document.querySelectorAll('a, button, [role="button"], span'))
-                        .filter(visible)
-                        .filter(el => norm(el.innerText) === 'sign in')
-                        .filter(el => {
-                            const parentText = norm(el.parentElement?.innerText || '');
-                            return parentText.includes('already have an account');
-                        });
-                    const target = links[links.length - 1];
-                    if (!target) return false;
-                    target.scrollIntoView({block: 'center'});
-                    target.click();
-                    return true;
-                }"""
-            )
-        )
-        if switched_to_sign_in:
-            await page.wait_for_timeout(2500)
-    except Exception:
-        switched_to_sign_in = False
-    if not switched_to_sign_in:
-        for sign_in_tab in [
-            page.locator("a, span, button").filter(has_text=re.compile(r"already have an account", re.IGNORECASE)),
-            page.get_by_text("Already have an account?", exact=False),
-        ]:
-            try:
-                if await sign_in_tab.count():
-                    await sign_in_tab.last.click(timeout=5000)
-                    await page.wait_for_timeout(2500)
-                    break
-            except Exception:
-                continue
-
-    # Step 3: Fill email and password in the visible Sign In panel. Workday may
-    # keep the Create Account panel in the DOM, so DOM order is not trustworthy.
-    try:
-        filled_login = bool(
-            await page.evaluate(
-                """({email, password}) => {
-                    const visible = el => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
-                    const norm = text => (text || '').replace(/\\s+/g, ' ').trim().toLowerCase();
-                    const setValue = (input, value) => {
-                        const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
-                        if (setter) setter.call(input, value);
-                        else input.value = value;
-                        input.dispatchEvent(new Event('input', {bubbles: true}));
-                        input.dispatchEvent(new Event('change', {bubbles: true}));
-                        input.dispatchEvent(new Event('blur', {bubbles: true}));
-                    };
-                    const forms = Array.from(document.querySelectorAll('form, [role="dialog"], section, main, div'))
-                        .filter(visible)
-                        .map(el => ({el, text: norm(el.innerText)}))
-                        .filter(item => item.text.includes('sign in'))
-                        .filter(item => !item.text.includes('verify new password'));
-                    const candidates = forms.length ? forms : [{el: document.body, text: norm(document.body.innerText)}];
-                    for (const {el} of candidates) {
-                        const emailInput = Array.from(el.querySelectorAll('input[type="email"], input[type="text"], input:not([type])'))
-                            .filter(visible)
-                            .find(input => {
-                                const hint = norm(input.getAttribute('aria-label') || input.placeholder || input.name || input.closest('div')?.innerText || '');
-                                return hint.includes('email') || hint === '';
-                            });
-                        const passwordInput = Array.from(el.querySelectorAll('input[type="password"]')).filter(visible)[0];
-                        if (emailInput && passwordInput) {
-                            setValue(emailInput, email);
-                            setValue(passwordInput, password);
-                            return true;
-                        }
-                    }
-                    return false;
-                }""",
-                {"email": values["email"], "password": password},
-            )
-        )
-    except Exception:
-        filled_login = False
-    if not filled_login:
-        try:
-            await _fill_by_label_or_placeholder(page, "Email Address", values["email"])
-            await _fill_by_label_or_placeholder(page, "Password", password)
-        except Exception:
-            pass
-
-    await page.wait_for_timeout(500)
-
-    # Step 4: Submit the visible Sign In panel. Pressing Enter is the most
-    # reliable Workday path after React receives the controlled password value;
-    # then fall back to clicking the visible Sign In button in the same panel.
-    try:
-        password_fields = page.locator('input[type="password"]')
-        for idx in range(await password_fields.count() - 1, -1, -1):
-            field = password_fields.nth(idx)
-            if await field.is_visible():
-                await field.press("Enter", timeout=5000)
-                await page.wait_for_timeout(4500)
-                break
-    except Exception:
-        pass
-
-    try:
-        body_after_enter = await page.locator("body").inner_text(timeout=3000)
-    except Exception:
-        body_after_enter = ""
-    still_on_sign_in = "Password" in body_after_enter and "Sign In" in body_after_enter
-
-    clicked_submit = False
-    if still_on_sign_in:
-        try:
-            clicked_submit = bool(
-                await page.evaluate(
-                    """() => {
-                        const visible = el => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
-                        const norm = text => (text || '').replace(/\\s+/g, ' ').trim().toLowerCase();
-                        const passwords = Array.from(document.querySelectorAll('input[type="password"]')).filter(visible);
-                        for (const pw of passwords) {
-                            let scope = pw.parentElement;
-                            for (let depth = 0; scope && depth < 8; depth++, scope = scope.parentElement) {
-                                const text = norm(scope.innerText);
-                                if (!text.includes('sign in') || text.includes('verify new password')) continue;
-                                const buttons = Array.from(scope.querySelectorAll('[role="button"], button, input[type="submit"]')).filter(visible);
-                                const button = buttons.find(btn => norm(btn.innerText || btn.value || btn.getAttribute('aria-label')) === 'sign in');
-                                if (button) {
-                                    button.scrollIntoView({block: 'center'});
-                                    button.click();
-                                    return true;
-                                }
-                            }
-                        }
-                        return false;
-                    }"""
-                )
-            )
-            if clicked_submit:
-                await page.wait_for_timeout(6000)
-        except Exception:
-            clicked_submit = False
-
-    if still_on_sign_in:
-        try:
-            body_after_click = await page.locator("body").inner_text(timeout=3000)
-        except Exception:
-            body_after_click = ""
-        still_on_sign_in = "Password" in body_after_click and "Sign In" in body_after_click
-
-    if still_on_sign_in:
-        try:
-            clicked_by_locator = False
-            buttons = page.locator('[role="button"][aria-label="Sign In"], button').filter(has_text=re.compile(r"^\s*Sign In\s*$", re.IGNORECASE))
-            for idx in range(await buttons.count() - 1, -1, -1):
-                button = buttons.nth(idx)
-                if await button.is_visible():
-                    await button.click(timeout=8000)
-                    clicked_by_locator = True
-                    break
-            if clicked_by_locator:
-                await page.wait_for_timeout(6000)
-        except Exception:
-            pass
-
-    # Retain the scoped JS path for sites where Enter/locator click are ignored.
-    if still_on_sign_in and not clicked_submit:
-        try:
-            clicked_submit = bool(
-            await page.evaluate(
-                """() => {
-                    const visible = el => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
-                    const norm = text => (text || '').replace(/\\s+/g, ' ').trim().toLowerCase();
-                    const passwords = Array.from(document.querySelectorAll('input[type="password"]')).filter(visible);
-                    for (const pw of passwords) {
-                        let scope = pw.parentElement;
-                        for (let depth = 0; scope && depth < 8; depth++, scope = scope.parentElement) {
-                            const text = norm(scope.innerText);
-                            if (!text.includes('sign in') || text.includes('verify new password')) continue;
-                                const buttons = Array.from(scope.querySelectorAll('[role="button"], button, input[type="submit"]')).filter(visible);
-                                const button = buttons.find(btn => norm(btn.innerText || btn.value || btn.getAttribute('aria-label')) === 'sign in');
-                            if (button) {
-                                button.scrollIntoView({block: 'center'});
-                                button.click();
-                                return true;
-                            }
-                        }
-                    }
-                    return false;
-                }"""
-            )
-            )
-            if clicked_submit:
-                await page.wait_for_timeout(6000)
-        except Exception:
-            pass
-
-    # After login, Workday may redirect to Candidate Home. Navigate back to the form URL.
-    if "/apply" not in page.url:
-        try:
-            await page.goto(form_url, wait_until="domcontentloaded", timeout=45000)
-            await page.wait_for_timeout(3000)
-        except Exception:
-            pass
-
-    # Phase 3.5: verify the login attempt actually moved past the modal. If we
-    # still see Sign In / Create Account on the page after the submit, dump
-    # diagnostic artifacts so the next reader has something concrete to inspect.
-    try:
-        post_submit_text = await page.locator("body").inner_text(timeout=3000)
-    except Exception:
-        post_submit_text = ""
-    if "Sign In" in post_submit_text or "Create Account" in post_submit_text:
-        await _dump_workday_login_unknown_state(
-            page, artifact_dir, reason="login_submit_did_not_clear_modal"
-        )
-
-
-async def _dump_workday_login_unknown_state(
-    page, artifact_dir: Path | None, *, reason: str
-) -> None:
-    """Phase 3.5: write a screenshot + DOM HTML snapshot for unknown login states."""
-    if artifact_dir is None:
-        return
-    try:
-        artifact_dir.mkdir(parents=True, exist_ok=True)
-        screenshot = artifact_dir / "login-modal-unknown.png"
-        try:
-            await page.screenshot(path=str(screenshot), full_page=True)
-        except Exception:
-            screenshot = None
-        try:
-            html = await page.content()
-            (artifact_dir / "login-modal-unknown.html").write_text(html, encoding="utf-8")
-        except Exception:
-            pass
-        apply_run_log.emit(
-            artifact_dir,
-            "workday.login.unknown_state",
-            reason=reason,
-            url=page.url,
-            screenshot=str(screenshot) if screenshot else None,
-        )
-        console.print(
-            f"[yellow]Workday login modal in unknown state ({reason}); dumped "
-            f"login-modal-unknown.png/html in {artifact_dir.name}.[/yellow]"
-        )
-    except Exception:
-        pass
+    return await maybe_login(
+        page,
+        email=values.get("email", ""),
+        artifact_dir=artifact_dir,
+        fallback_fill=_fill_by_label_or_placeholder,
+        warn=lambda msg: console.print(f"[yellow]{msg}[/yellow]"),
+    )
 
 
 async def _recover_workday_error_page(page, original_url: str) -> None:
@@ -3944,14 +3642,12 @@ async def _workday_current_step(page) -> str:
 
 
 def _workday_required_blocks_my_information_continue(label: str) -> bool:
-    norm = re.sub(r"\s+", " ", label.lower())
-    return any(
-        token in norm
-        for token in [
-            "password",
-            "verify new password",
-        ]
+    """Back-compat wrapper. Logic lives in services.workday.my_information."""
+    from job_hunt.services.workday.my_information import (
+        required_blocks_my_information_continue,
     )
+
+    return required_blocks_my_information_continue(label)
 
 
 async def _select_workday_dropdown_by_label(page, label: str, choices: list[str], force: bool = False) -> bool:
@@ -4627,45 +4323,10 @@ async def _fill_workday_my_experience(page, values: dict) -> tuple[list[str], li
 
 
 async def _write_workday_my_experience_debug(page) -> None:
-    try:
-        data = await page.evaluate(
-            """() => {
-                const visible = el => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
-                const short = text => (text || '').replace(/\\s+/g, ' ').trim().slice(0, 240);
-                const fields = Array.from(document.querySelectorAll('input, textarea, button, [role="combobox"]'))
-                    .filter(visible)
-                    .map((el, index) => {
-                        const rect = el.getBoundingClientRect();
-                        let scope = el.parentElement;
-                        let scopeText = '';
-                        for (let depth = 0; scope && depth < 4; depth++, scope = scope.parentElement) {
-                            scopeText = short(scope.innerText);
-                            if (scopeText) break;
-                        }
-                        return {
-                            index,
-                            tag: el.tagName,
-                            role: el.getAttribute('role') || '',
-                            type: el.getAttribute('type') || '',
-                            aria: el.getAttribute('aria-label') || '',
-                            automation: el.getAttribute('data-automation-id') || '',
-                            placeholder: el.getAttribute('placeholder') || '',
-                            value: el.value || el.innerText || '',
-                            top: Math.round(rect.top),
-                            left: Math.round(rect.left),
-                            width: Math.round(rect.width),
-                            height: Math.round(rect.height),
-                            scopeText,
-                        };
-                    });
-                return {url: location.href, title: document.title, fields};
-            }"""
-        )
-        debug_dir = Path("artifacts/apply")
-        debug_dir.mkdir(parents=True, exist_ok=True)
-        (debug_dir / "workday-my-experience-fields.json").write_text(json.dumps(data, indent=2), encoding="utf-8")
-    except Exception:
-        pass
+    """Back-compat wrapper. Body lives in services.workday.my_experience."""
+    from job_hunt.services.workday.my_experience import write_debug_field_dump
+
+    await write_debug_field_dump(page)
 
 
 async def _ensure_workday_section_item(page, section_label: str) -> bool:
@@ -4949,52 +4610,10 @@ async def _replace_workday_element_value(field, value: str) -> None:
 
 
 async def _workday_experience_dates_match(page, entry: dict[str, str]) -> bool:
-    try:
-        values = await page.evaluate(
-            """(entry) => {
-                const visible = el => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
-                const titleInput = Array.from(document.querySelectorAll('input'))
-                    .filter(visible)
-                    .find(input => (input.value || '').includes(entry.title));
-                let group = null;
-                if (titleInput) {
-                    group = titleInput.parentElement;
-                    for (let depth = 0; group && depth < 10; depth++, group = group.parentElement) {
-                        const text = group.innerText || '';
-                        if (text.includes('From') && text.includes('To') && text.includes('Company')) break;
-                    }
-                }
-                if (!group) {
-                    group = Array.from(document.querySelectorAll('div, fieldset, [role="group"]'))
-                        .filter(visible)
-                        .filter(el => {
-                            const text = el.innerText || '';
-                            return text.includes('Work Experience 1') && text.includes('From') && text.includes('To') && text.includes('Company');
-                        })
-                        .sort((a, b) => {
-                            const ar = a.getBoundingClientRect();
-                            const br = b.getBoundingClientRect();
-                            return (ar.height * ar.width) - (br.height * br.width);
-                        })[0] || null;
-                }
-                if (!group) return [];
-                return Array.from(group.querySelectorAll('input:not([type="hidden"]):not([type="file"])'))
-                    .filter(visible)
-                    .map(input => input.value || '')
-                    .filter(Boolean);
-            }""",
-            entry,
-        )
-    except Exception:
-        return False
-    joined = " ".join(str(value) for value in values)
-    expected = [
-        str(int(entry["start_month"])),
-        entry["start_year"],
-        str(int(entry["end_month"])),
-        entry["end_year"],
-    ]
-    return all(value in joined for value in expected)
+    """Back-compat wrapper. Body lives in services.workday.my_experience."""
+    from job_hunt.services.workday.my_experience import experience_dates_match
+
+    return await experience_dates_match(page, entry)
 
 
 async def _fill_workday_structured_education(page, entry: dict[str, str]) -> bool:
@@ -5574,79 +5193,16 @@ async def _workday_remove_duplicate_uploads(page, *, keep_filenames: list[str]) 
     return removed
 
 
+# `_fill_workday_voluntary_disclosures` is now in
+# `job_hunt.services.workday.voluntary_disclosures`. The thin wrapper below
+# keeps the existing call sites in `_workday_advance_all_steps` working
+# without touching their bodies.
 async def _fill_workday_voluntary_disclosures(page, values: dict) -> tuple[list[str], list[str]]:
-    """Fill only explicitly authorized non-demographic required disclosures."""
-    filled: list[str] = []
-    skipped: list[str] = []
+    from job_hunt.services.workday.voluntary_disclosures import (
+        fill_voluntary_disclosures,
+    )
 
-    consent_enabled = bool(values.get("workday_consent_terms_and_conditions")) or Path(
-        "storage/private/workday-consent-terms"
-    ).exists()
-    if not consent_enabled:
-        skipped.append(
-            "Workday terms consent is required but not configured. "
-            "Review the legal text and, if you agree, create storage/private/workday-consent-terms or set "
-            "workday.consent_terms_and_conditions: true in profile/profile.yml."
-        )
-        return filled, skipped
-
-    clicked = False
-    try:
-        checkbox = page.get_by_label(
-            re.compile(r"read and consent to the terms and conditions", re.IGNORECASE)
-        )
-        if await checkbox.count():
-            await checkbox.first.check(timeout=5000, force=True)
-            clicked = True
-    except Exception:
-        clicked = False
-    if not clicked:
-        try:
-            clicked = bool(
-                await page.evaluate(
-                    """() => {
-                        const visible = el => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
-                        const norm = text => (text || '').replace(/\\s+/g, ' ').trim().toLowerCase();
-                        const setChecked = input => {
-                            if (!input || input.checked) return !!input;
-                            input.scrollIntoView({block: 'center'});
-                            input.click();
-                            input.dispatchEvent(new Event('input', {bubbles: true}));
-                            input.dispatchEvent(new Event('change', {bubbles: true}));
-                            return true;
-                        };
-                        const inputs = Array.from(document.querySelectorAll('input[type="checkbox"]')).filter(visible);
-                        for (const input of inputs) {
-                            let scope = input.parentElement;
-                            for (let depth = 0; scope && depth < 8; depth++, scope = scope.parentElement) {
-                                const text = norm(scope.innerText);
-                                if (text.includes('read and consent to the terms and conditions')) {
-                                    return setChecked(input);
-                                }
-                            }
-                        }
-                        const nodes = Array.from(document.querySelectorAll('label, div, span, p'))
-                            .filter(visible)
-                            .filter(el => norm(el.innerText).includes('read and consent to the terms and conditions'));
-                        for (const node of nodes) {
-                            let scope = node.parentElement;
-                            for (let depth = 0; scope && depth < 8; depth++, scope = scope.parentElement) {
-                                const input = scope.querySelector('input[type="checkbox"]');
-                                if (input) return setChecked(input);
-                            }
-                        }
-                        return false;
-                    }"""
-                )
-            )
-        except Exception:
-            clicked = False
-
-    if clicked:
-        filled.append("Workday terms and conditions consent checkbox")
-    else:
-        skipped.append("Workday terms consent configured, but checkbox was not found — needs manual review.")
-    return filled, skipped
+    return await fill_voluntary_disclosures(page, values)
 
 
 async def _wait_for_workday_step(page, step_name: str, *, timeout_ms: int = 10000) -> bool:
