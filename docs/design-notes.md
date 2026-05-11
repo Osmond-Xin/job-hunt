@@ -150,10 +150,11 @@ Last updated: 2026-05-10.
 
 ## Section I — ADR Trail
 
-- **Status**: ADR-009 through ADR-012 referenced in commit messages and
-  memory but no `docs/adr/` directory.
-- **Verdict**: cheap improvement. Write the four existing ADRs as
-  one-page files. Memory is unreliable across agent sessions.
+- **Status**: ADR-009 through ADR-012 captured as one-page files under
+  `docs/adr/` (2026-05-11). Index in `docs/adr/README.md`.
+- **Verdict**: complete. Future ADRs land in the same directory; older
+  decisions (ADR-001..008) stay implicit in `docs/design.md` unless a
+  future incident makes one worth promoting.
 
 ## Section J — Honeypot Handling
 
