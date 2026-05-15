@@ -2547,62 +2547,151 @@ async def _open_apply_page(
         file_inputs = page.locator("input[type=file]")
         file_count = await file_inputs.count()
 
-        # Auto-fill text fields first so React components finish mounting,
-        # then attach the PDF so file upload state is set on a stable form.
+        # --- LinkedIn Easy Apply branch -----------------------------------
+        # When the URL is a LinkedIn job posting, the page either exposes a
+        # native "Easy Apply" modal (handled here) or a third-party redirect
+        # button (let the generic flow below pick it up after the redirect).
+        # The dedicated driver returns OUTCOME_NOT_EASY_APPLY when the URL
+        # does not match, so this branch only activates on real LinkedIn
+        # job pages.
         filled: list[str] = []
         skipped: list[str] = []
         answers: list[dict[str, str]] = []
-        if auto_fill:
-            filled, skipped, answers = await _auto_fill_application(
-                page,
-                company=company,
-                role=role,
-                report_context=report_context,
-            )
-
         attached = False
-        if pdf and "myworkdayjobs.com" not in page.url:
-            attached = await _attach_resume(page, pdf)
-            if attached:
-                await page.wait_for_timeout(2000)
+        cover_letter_attached = False
+        required_empty: list[str] = []
+        validation_issues = []
+        actions: list[str] = []
+        auto_submit_clicked = False
+        linkedin_handled = False
+
+        from job_hunt.services.linkedin.easy_apply import (
+            OUTCOME_LOGIN_REQUIRED,
+            OUTCOME_MODAL_NOT_OPENED,
+            OUTCOME_NOT_EASY_APPLY,
+            OUTCOME_SUBMITTED,
+        )
+
+        linkedin_result = await _maybe_linkedin_easy_apply(
+            page,
+            pdf=pdf,
+            company=company,
+            role=role,
+            report_context=report_context,
+            auto_submit=auto_submit,
+            artifact_dir=art_dir,
+        )
+        if linkedin_result is not None and linkedin_result.outcome not in (
+            OUTCOME_NOT_EASY_APPLY,
+            OUTCOME_MODAL_NOT_OPENED,
+        ):
+            linkedin_handled = True
+            filled.extend(linkedin_result.filled)
+            skipped.extend(linkedin_result.skipped)
+            answers.extend(linkedin_result.answers)
+            required_empty = list(linkedin_result.required_empty)
+            attached = pdf is not None and any(
+                "LinkedIn Resume:" in item for item in linkedin_result.filled
+            )
+            if attached and pdf and not (art_dir / pdf.name).exists():
+                shutil.copy2(pdf, art_dir / pdf.name)
+            auto_submit_clicked = linkedin_result.submitted
+            if linkedin_result.outcome == OUTCOME_LOGIN_REQUIRED:
+                console.print(
+                    "[red]LinkedIn session is not signed in.[/red] "
+                    "Open the persistent browser profile, sign in, then re-run."
+                )
+            elif auto_submit_clicked:
+                apply_run_log.emit(
+                    art_dir, "auto_submit.fired",
+                    url=page.url, platform="linkedin",
+                )
+                console.print(
+                    "[green]Auto-submit clicked.[/green] Waiting for confirmation page…"
+                )
+                try:
+                    await page.wait_for_load_state("domcontentloaded", timeout=30000)
+                except Exception:
+                    pass
+                await page.wait_for_timeout(3000)
+                apply_run_log.emit(
+                    art_dir, "auto_submit.confirmed",
+                    url=page.url, platform="linkedin",
+                )
+            elif auto_submit:
+                # LinkedIn driver applied the gates itself; surface the reason
+                # so the user can see what blocked the click.
+                if required_empty:
+                    apply_run_log.emit(
+                        art_dir, "auto_submit.gated",
+                        reason="required_empty_fields",
+                        platform="linkedin",
+                        fields=required_empty[:10],
+                    )
+                    console.print(
+                        f"[yellow]Auto-submit skipped: {len(required_empty)} required field(s) "
+                        f"still empty on LinkedIn Review.[/yellow]"
+                    )
+                elif linkedin_result.outcome != OUTCOME_SUBMITTED:
+                    apply_run_log.emit(
+                        art_dir, "auto_submit.gated",
+                        reason="linkedin_review_not_reached",
+                        outcome=linkedin_result.outcome,
+                        platform="linkedin",
+                    )
+
+        if not linkedin_handled:
+            # Auto-fill text fields first so React components finish mounting,
+            # then attach the PDF so file upload state is set on a stable form.
+            if auto_fill:
+                filled, skipped, answers = await _auto_fill_application(
+                    page,
+                    company=company,
+                    role=role,
+                    report_context=report_context,
+                )
+
+            if pdf and "myworkdayjobs.com" not in page.url:
+                attached = await _attach_resume(page, pdf)
+                if attached:
+                    await page.wait_for_timeout(2000)
+                    if not (art_dir / pdf.name).exists():
+                        shutil.copy2(pdf, art_dir / pdf.name)
+
+            if cover_letter_pdf and "myworkdayjobs.com" not in page.url:
+                cover_letter_attached = await _attach_cover_letter(page, cover_letter_pdf)
+                if cover_letter_attached:
+                    await page.wait_for_timeout(1500)
+                    if not (art_dir / cover_letter_pdf.name).exists():
+                        shutil.copy2(cover_letter_pdf, art_dir / cover_letter_pdf.name)
+
+            # Advance through all remaining Workday steps (My Experience → Application Questions
+            # → Voluntary Disclosures) stopping at Review so the user submits manually.
+            adv_filled, adv_skipped, adv_answers = await _workday_advance_all_steps(
+                page, _apply_profile_values(), pdf=pdf,
+                company=company, role=role, report_context=report_context,
+                artifact_dir=art_dir,
+            )
+            filled.extend(adv_filled)
+            skipped.extend(adv_skipped)
+            answers.extend(adv_answers)
+            skipped = _filter_non_blocking_workday_skips(skipped)
+
+            # Workday uploads the resume inside the My Experience step (not via the
+            # earlier `_attach_resume` call), so the original ``attached`` flag is
+            # always False for Workday flows. Verify the PDF actually landed on the
+            # page before claiming success, then mirror it into the artifact dir so
+            # `apply-review.json["pdf"]` is accurate.
+            if pdf and not attached and await _workday_resume_was_uploaded(page, pdf):
+                attached = True
                 if not (art_dir / pdf.name).exists():
                     shutil.copy2(pdf, art_dir / pdf.name)
 
-        cover_letter_attached = False
-        if cover_letter_pdf and "myworkdayjobs.com" not in page.url:
-            cover_letter_attached = await _attach_cover_letter(page, cover_letter_pdf)
-            if cover_letter_attached:
-                await page.wait_for_timeout(1500)
-                if not (art_dir / cover_letter_pdf.name).exists():
-                    shutil.copy2(cover_letter_pdf, art_dir / cover_letter_pdf.name)
-
-        # Advance through all remaining Workday steps (My Experience → Application Questions
-        # → Voluntary Disclosures) stopping at Review so the user submits manually.
-        adv_filled, adv_skipped, adv_answers = await _workday_advance_all_steps(
-            page, _apply_profile_values(), pdf=pdf,
-            company=company, role=role, report_context=report_context,
-            artifact_dir=art_dir,
-        )
-        filled.extend(adv_filled)
-        skipped.extend(adv_skipped)
-        answers.extend(adv_answers)
-        skipped = _filter_non_blocking_workday_skips(skipped)
-
-        # Workday uploads the resume inside the My Experience step (not via the
-        # earlier `_attach_resume` call), so the original ``attached`` flag is
-        # always False for Workday flows. Verify the PDF actually landed on the
-        # page before claiming success, then mirror it into the artifact dir so
-        # `apply-review.json["pdf"]` is accurate.
-        if pdf and not attached and await _workday_resume_was_uploaded(page, pdf):
-            attached = True
-            if not (art_dir / pdf.name).exists():
-                shutil.copy2(pdf, art_dir / pdf.name)
-
-        labels = await page.locator("button, a[role=button], input[type=submit]").all_inner_texts()
-        actions = [_short(label.strip(), 80) for label in labels if label.strip()]
-        required_empty = await _required_empty_fields(page)
-        required_empty = _filter_required_empty_fields(required_empty, filled)
-        validation_issues = await _collect_workday_review_issues(page) if "myworkdayjobs.com" in page.url else []
+            labels = await page.locator("button, a[role=button], input[type=submit]").all_inner_texts()
+            actions = [_short(label.strip(), 80) for label in labels if label.strip()]
+            required_empty = await _required_empty_fields(page)
+            required_empty = _filter_required_empty_fields(required_empty, filled)
+            validation_issues = await _collect_workday_review_issues(page) if "myworkdayjobs.com" in page.url else []
 
         # --- Auto-submit (Phase 4 — gated) ----------------------------------
         # Only fires when ALL of the following are true:
@@ -2613,8 +2702,9 @@ async def _open_apply_page(
         #  - validation_issues is empty (Review-gate clean)
         #  - required_empty is empty (no required field still missing)
         # When any gate fails we leave the page exactly as-is for manual review.
-        auto_submit_clicked = False
-        if auto_submit:
+        # LinkedIn Easy Apply runs its own gate above; do not re-enter the
+        # Workday-specific branches when the LinkedIn driver handled the page.
+        if auto_submit and not linkedin_handled:
             workday_host = "myworkdayjobs.com" in page.url
             if not workday_host:
                 apply_run_log.emit(
@@ -5987,6 +6077,322 @@ async def _page_identity_warnings(page, *, company: str | None, role: str | None
         if finding.warning:
             warnings.append(finding.warning)
     return warnings
+
+
+# ---------------------------------------------------------------------------
+# LinkedIn Easy Apply — Playwright helpers + dispatcher wrapper.
+#
+# The pure dispatcher (`run_easy_apply`) and field strategy helpers live in
+# `job_hunt.services.linkedin.*`. The functions below are the live Playwright
+# adapters injected into the dispatcher. They are intentionally small and
+# unit-tested via the dispatcher's AsyncMock harness rather than a real
+# browser. ADR-013 (LinkedIn Easy Apply) — see docs/design-notes.md.
+# ---------------------------------------------------------------------------
+
+
+def _linkedin_modal(page):
+    return page.locator('div[role="dialog"]').first
+
+
+async def _linkedin_click_by_name(page, name: str) -> bool:
+    """Click a button in the Easy Apply modal (or the trigger button) by name.
+
+    LinkedIn uses both ``aria-label`` and visible button text for navigation
+    controls. We try the modal first so the Easy Apply Submit / Next clicks
+    never bleed into the page-level Apply button.
+    """
+    label_re = re.compile(rf"^\s*{re.escape(name)}\s*$", re.I)
+    for scope in (_linkedin_modal(page), page):
+        try:
+            if hasattr(scope, "count") and not await scope.count():
+                continue
+            btn = scope.get_by_role("button", name=label_re).first
+            if not await btn.count():
+                btn = scope.locator(
+                    f'button[aria-label*="{name}"]'
+                ).first
+                if not await btn.count():
+                    continue
+            await btn.click(timeout=8000)
+            await page.wait_for_timeout(800)
+            return True
+        except Exception:
+            continue
+    return False
+
+
+async def _linkedin_fill_by_label(page, label: str, value: str) -> bool:
+    try:
+        modal = _linkedin_modal(page)
+        if not await modal.count():
+            return False
+        target = modal.get_by_label(label, exact=False).first
+        if not await target.count():
+            return False
+        await target.fill(value, timeout=5000)
+        return True
+    except Exception:
+        return False
+
+
+async def _linkedin_select_dropdown(page, label: str, option: str) -> bool:
+    try:
+        modal = _linkedin_modal(page)
+        if not await modal.count():
+            return False
+        select = modal.get_by_label(label, exact=False).first
+        if not await select.count():
+            return False
+        await select.select_option(label=option, timeout=3000)
+        return True
+    except Exception:
+        return False
+
+
+async def _linkedin_dropdown_options(page, label: str) -> list[str]:
+    try:
+        modal = _linkedin_modal(page)
+        if not await modal.count():
+            return []
+        select = modal.get_by_label(label, exact=False).first
+        if not await select.count():
+            return []
+        opts = await select.locator("option").all_inner_texts()
+        return [opt.strip() for opt in opts if opt.strip()]
+    except Exception:
+        return []
+
+
+async def _linkedin_select_radio(page, question: str, choice: str) -> bool:
+    try:
+        modal = _linkedin_modal(page)
+        if not await modal.count():
+            return False
+        # Prefer the radio scoped to the matching fieldset/legend.
+        legend_text = question[:80].replace('"', '')
+        legend = modal.locator(
+            f'fieldset:has(legend:has-text("{legend_text}"))'
+        ).first
+        scope = legend if await legend.count() else modal
+        target = scope.get_by_role("radio", name=choice).first
+        if not await target.count():
+            target = scope.locator(
+                f'label:has-text("{choice}") input[type=radio]'
+            ).first
+        if not await target.count():
+            return False
+        await target.click(timeout=5000, force=True)
+        return True
+    except Exception:
+        return False
+
+
+async def _linkedin_attach_resume(page, pdf: Path) -> bool:
+    try:
+        modal = _linkedin_modal(page)
+        if not await modal.count():
+            return False
+        body = await modal.inner_text(timeout=2000)
+        if pdf.name in body:
+            return True
+        file_input = modal.locator('input[type=file]').first
+        if not await file_input.count():
+            return False
+        await file_input.set_input_files(str(pdf))
+        await page.wait_for_timeout(1500)
+        return True
+    except Exception:
+        return False
+
+
+async def _linkedin_read_modal_heading(page) -> str:
+    try:
+        modal = _linkedin_modal(page)
+        if not await modal.count():
+            return ""
+        for selector in ("h2", "h3"):
+            heading = modal.locator(selector).first
+            if await heading.count():
+                text = (await heading.inner_text(timeout=2000)).strip()
+                if text:
+                    return text
+        return ""
+    except Exception:
+        return ""
+
+
+async def _linkedin_read_required_empty(page) -> list[str]:
+    try:
+        modal = _linkedin_modal(page)
+        if not await modal.count():
+            return []
+        return await modal.evaluate(
+            """(modal) => {
+                const norm = t => (t || '').replace(/\\s+/g, ' ').trim();
+                const labelFor = el => {
+                    const aria = el.getAttribute('aria-label');
+                    if (aria) return norm(aria);
+                    if (el.labels && el.labels[0]) return norm(el.labels[0].innerText);
+                    const id = el.id;
+                    if (id) {
+                        const l = modal.querySelector(`label[for="${id}"]`);
+                        if (l) return norm(l.innerText);
+                    }
+                    return norm(el.name || '');
+                };
+                const out = [];
+                const sel = 'input[aria-required="true"], input[required], '
+                          + 'textarea[required], textarea[aria-required="true"], '
+                          + 'select[aria-required="true"], select[required]';
+                modal.querySelectorAll(sel).forEach(el => {
+                    const t = (el.type || '').toLowerCase();
+                    if (t === 'hidden' || t === 'file') return;
+                    const val = (el.value || '').trim();
+                    if (val) return;
+                    const invalid = el.getAttribute('aria-invalid') === 'true';
+                    const label = labelFor(el);
+                    if (label && (!val || invalid)) out.push(label);
+                });
+                return out;
+            }"""
+        )
+    except Exception:
+        return []
+
+
+async def _linkedin_read_modal_fields(page) -> list[dict]:
+    """Enumerate visible form fields inside the Easy Apply modal."""
+    try:
+        modal = _linkedin_modal(page)
+        if not await modal.count():
+            return []
+        return await modal.evaluate(
+            """(modal) => {
+                const visible = el => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+                const norm = t => (t || '').replace(/\\s+/g, ' ').trim();
+                const labelFor = el => {
+                    const aria = el.getAttribute('aria-label');
+                    if (aria) return norm(aria);
+                    if (el.labels && el.labels[0]) return norm(el.labels[0].innerText);
+                    const id = el.id;
+                    if (id) {
+                        const l = modal.querySelector(`label[for="${id}"]`);
+                        if (l) return norm(l.innerText);
+                    }
+                    return '';
+                };
+                const out = [];
+                const seen = new Set();
+                const push = (label, kind, options) => {
+                    if (!label) return;
+                    const key = label + '|' + kind;
+                    if (seen.has(key)) return;
+                    seen.add(key);
+                    out.push({label, kind, options: options || []});
+                };
+                modal.querySelectorAll('input').forEach(el => {
+                    if (!visible(el)) return;
+                    const type = (el.type || 'text').toLowerCase();
+                    if (type === 'hidden' || type === 'file' || type === 'submit') return;
+                    if (type === 'radio') {
+                        const fieldset = el.closest('fieldset');
+                        let label = '';
+                        if (fieldset) {
+                            const legend = fieldset.querySelector('legend');
+                            if (legend) label = norm(legend.innerText);
+                        }
+                        if (!label) label = labelFor(el);
+                        push(label, 'radio');
+                        return;
+                    }
+                    push(labelFor(el), 'text');
+                });
+                modal.querySelectorAll('textarea').forEach(el => {
+                    if (!visible(el)) return;
+                    push(labelFor(el), 'textarea');
+                });
+                modal.querySelectorAll('select').forEach(el => {
+                    if (!visible(el)) return;
+                    const opts = Array.from(el.options || [])
+                        .map(o => norm(o.label || o.text || ''))
+                        .filter(Boolean);
+                    push(labelFor(el), 'dropdown', opts);
+                });
+                return out;
+            }"""
+        )
+    except Exception:
+        return []
+
+
+async def _maybe_linkedin_easy_apply(
+    page,
+    *,
+    pdf: Path | None,
+    company: str | None,
+    role: str | None,
+    report_context: dict | None,
+    auto_submit: bool,
+    artifact_dir: Path,
+):
+    """Run LinkedIn Easy Apply when the current URL is a LinkedIn job posting.
+
+    Returns the :class:`EasyApplyResult` from the dispatcher (so the caller can
+    branch on outcome / submitted), or ``None`` when the URL is not a LinkedIn
+    job page. The caller is responsible for honoring the auto-submit gates that
+    sit above the URL check (CLI flag + profile.yml + mode).
+    """
+    from job_hunt.services.linkedin.detect import is_linkedin_job_url
+    from job_hunt.services.linkedin.easy_apply import Helpers, run_easy_apply
+
+    if not is_linkedin_job_url(page.url):
+        return None
+
+    values = _apply_profile_values()
+
+    def _answer_lookup(question: str, ctx: dict | None) -> str:
+        return _answer_for_application_question(
+            question,
+            company=company,
+            role=role,
+            report_context=ctx or report_context,
+        ) or ""
+
+    helpers = Helpers(
+        click_by_name=_linkedin_click_by_name,
+        fill_by_label=_linkedin_fill_by_label,
+        select_dropdown=_linkedin_select_dropdown,
+        dropdown_options=_linkedin_dropdown_options,
+        select_radio=_linkedin_select_radio,
+        attach_resume=_linkedin_attach_resume,
+        read_modal_heading=_linkedin_read_modal_heading,
+        read_required_empty=_linkedin_read_required_empty,
+        read_modal_fields=_linkedin_read_modal_fields,
+        answer_lookup=_answer_lookup,
+    )
+
+    result = await run_easy_apply(
+        page,
+        values=values,
+        pdf=pdf,
+        company=company,
+        role=role,
+        report_context=report_context,
+        helpers=helpers,
+        auto_submit=auto_submit,
+        page_url=page.url,
+    )
+    apply_run_log.emit(
+        artifact_dir,
+        "linkedin_easy_apply.completed",
+        outcome=result.outcome,
+        submitted=result.submitted,
+        steps=result.steps_visited,
+        filled_count=len(result.filled),
+        skipped_count=len(result.skipped),
+        required_empty_count=len(result.required_empty),
+    )
+    return result
 
 
 async def _required_empty_fields(page) -> list[str]:
