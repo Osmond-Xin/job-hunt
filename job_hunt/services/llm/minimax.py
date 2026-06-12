@@ -14,7 +14,10 @@ from job_hunt.services.llm.content import normalize_llm_content
 # by reasoning, returning empty content with finish_reason="length". Headroom
 # keeps node max_tokens meaning "tokens of visible answer".
 _REASONING_MODEL_PREFIXES = ("MiniMax-M3",)
-_REASONING_HEADROOM_TOKENS = 4000
+# Empirical: M3 burned >13k tokens of pure reasoning on a full-CV rewrite before
+# emitting any visible content. 8000 + the doubled-budget retry gives complex
+# generation tasks up to ~2x(task+8000) before we fail loudly.
+_REASONING_HEADROOM_TOKENS = 8000
 
 
 class MinimaxProvider:

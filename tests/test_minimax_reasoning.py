@@ -87,7 +87,7 @@ def test_length_finish_retries_with_doubled_budget_then_raises(monkeypatch) -> N
         ],
         "usage": {"prompt_tokens": 10, "completion_tokens": 300, "total_tokens": 310},
     }
-    with pytest.raises(RuntimeError, match="truncated at max_tokens=9800 even after"):
+    with pytest.raises(RuntimeError, match="even after a doubled-budget retry"):
         _chat("MiniMax-M3", starved)
     # Second (retry) request carried double the first budget: (900+4000)*2.
     assert _FakeClient.last_payload["max_tokens"] == (900 + minimax_module._REASONING_HEADROOM_TOKENS) * 2
