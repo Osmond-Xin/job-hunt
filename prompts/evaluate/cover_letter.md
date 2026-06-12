@@ -22,6 +22,11 @@ not a generic enthusiasm pitch.
 ## Candidate CV
 {{ cv }}
 
+{% if article_digest %}
+## Article Digest (detailed proof points — metrics here take precedence over cv.md)
+{{ article_digest }}
+{% endif %}
+
 ## Role
 **Company**: {{ jd_meta.company }}
 **Title**: {{ jd_meta.title }}

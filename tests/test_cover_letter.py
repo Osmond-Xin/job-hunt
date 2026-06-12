@@ -100,3 +100,10 @@ def test_cover_letter_skipped_when_score_says_skip_pdf() -> None:
     result = asyncio.run(generate_cover_letter(state, None))
     assert result["cover_letter_path"] is None
     assert result["errors"] == []
+
+
+def test_split_paragraphs_strips_inline_markdown_markers() -> None:
+    paragraphs = _split_paragraphs(
+        "I built `job-hunt` — an **8-node** LangGraph agent with *structured* outputs.\n"
+    )
+    assert paragraphs == ["I built job-hunt — an 8-node LangGraph agent with structured outputs."]

@@ -30,6 +30,11 @@ the mode; the operator already decided which kind of role they are hunting.
 ### Candidate CV (ground truth — every pdf_content claim must trace to a line here)
 {{ cv }}
 
+{% if article_digest %}
+## Article Digest (detailed proof points — metrics here take precedence over cv.md)
+{{ article_digest }}
+{% endif %}
+
 ### JD Text (ground truth for keywords and vocabulary)
 {{ jd_text }}
 
@@ -104,7 +109,8 @@ Output a JSON object with this exact schema — no prose outside the JSON:
 - `top_bullets`: select the 3 strongest bullets **from the CV text above** (not from the
   summaries) and rewrite their surface language to the JD's vocabulary. Keep every number,
   metric, employer, and scope exactly as the CV states it — never merge metrics across
-  bullets, never round up.
+  bullets, never round up. **Max 40 words per bullet** — a recruiter scans highlights;
+  a paragraph-length bullet defeats the section. One URL per bullet at most.
 - `keywords`: 8–12 terms that appear in the JD **and** are honestly claimable from the CV.
   No aspirational keywords — an interviewer will probe each one.
 - `cover_letter_body`: grounded in CV evidence; same tenure rule as `summary_angle`; never

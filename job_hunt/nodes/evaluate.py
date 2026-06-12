@@ -15,6 +15,7 @@ async def cv_match(state: JobHuntState, config: RunnableConfig) -> dict:
     prompt = render(
         "evaluate/cv_match.md",
         cv=state.get("cv", ""),
+        article_digest=state.get("article_digest") or "",
         jd_meta=state.get("jd_meta"),
         jd_text=state.get("jd_text", ""),
         archetype=state.get("archetype"),
@@ -85,6 +86,7 @@ async def score_and_recommend(state: JobHuntState, config: RunnableConfig) -> di
         evaluation_blocks=blocks,
         mode=mode,
         cv=state.get("cv", ""),
+        article_digest=state.get("article_digest") or "",
         jd_text=state.get("jd_text", ""),
     )
     result, errors = await call_node_llm_or_fallback(

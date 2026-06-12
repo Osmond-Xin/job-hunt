@@ -19,6 +19,7 @@ async def personalization_plan(state: JobHuntState, config: RunnableConfig) -> d
     prompt = render(
         "evaluate/personalization.md",
         cv=state.get("cv", ""),
+        article_digest=state.get("article_digest") or "",
         jd_meta=state.get("jd_meta"),
         jd_text=state.get("jd_text", ""),
         archetype=state.get("archetype"),

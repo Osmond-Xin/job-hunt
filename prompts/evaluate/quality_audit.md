@@ -14,6 +14,11 @@ fail for minor style preferences.
 ## Master CV (single source of truth for facts)
 {{ cv }}
 
+{% if article_digest %}
+## Article Digest (detailed proof points — metrics here take precedence over cv.md)
+{{ article_digest }}
+{% endif %}
+
 ## JD Text
 {{ jd_text }}
 

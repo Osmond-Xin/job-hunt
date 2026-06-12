@@ -47,6 +47,7 @@ async def generate_cover_letter(state: JobHuntState, config: RunnableConfig) -> 
     prompt = render(
         "evaluate/cover_letter.md",
         cv=state.get("cv", ""),
+        article_digest=state.get("article_digest") or "",
         jd_meta=jd_meta,
         jd_text=state.get("jd_text", ""),
         archetype=state.get("archetype"),
@@ -116,8 +117,14 @@ async def generate_cover_letter(state: JobHuntState, config: RunnableConfig) -> 
 
 
 def _split_paragraphs(markdown: str) -> list[str]:
-    """Split LLM markdown into clean paragraph strings, dropping empty lines and stray markers."""
+    """Split LLM markdown into clean paragraph strings, dropping empty lines and stray markers.
+
+    The letter template renders paragraphs as plain text, so inline markdown
+    (`code`, **bold**, *em*) would show its literal markers in the PDF — strip it.
+    """
     cleaned = re.sub(r"^#+\s+.*$", "", markdown, flags=re.MULTILINE)
+    cleaned = cleaned.replace("`", "")
+    cleaned = re.sub(r"\*{1,2}([^*\n]+)\*{1,2}", r"\1", cleaned)
     chunks = [chunk.strip() for chunk in re.split(r"\n\s*\n", cleaned) if chunk.strip()]
     return [re.sub(r"\s+", " ", chunk) for chunk in chunks]
 

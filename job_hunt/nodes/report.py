@@ -52,6 +52,9 @@ async def write_report(state: JobHuntState, config: RunnableConfig) -> dict:
         "comp_research": "Company & Compensation Research",
         "personalization": "Personalization Plan",
         "interview_prep": "Interview Preparation",
+        # Letter body included so the operator can review the prose without
+        # opening the PDF artifact.
+        "cover_letter": "Cover Letter (as generated)",
     }
     for key, title in section_titles.items():
         if blocks.get(key):

@@ -14,6 +14,11 @@ sharper selection and ordering.
 ## Master CV (single source of truth)
 {{ cv }}
 
+{% if article_digest %}
+## Article Digest (detailed proof points — metrics here take precedence over cv.md)
+{{ article_digest }}
+{% endif %}
+
 ## Role
 **Company**: {{ jd_meta.company if jd_meta else "" }}
 **Title**: {{ jd_meta.title if jd_meta else "" }}

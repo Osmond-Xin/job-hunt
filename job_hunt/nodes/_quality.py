@@ -113,6 +113,7 @@ async def _audit(
         artifact_type=artifact_type,
         draft=draft,
         cv=state.get("cv", ""),
+        article_digest=state.get("article_digest") or "",
         jd_text=state.get("jd_text", ""),
         mode=state.get("mode", "full"),
     )

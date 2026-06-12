@@ -27,6 +27,7 @@ async def tailor_cv(state: JobHuntState, config: RunnableConfig) -> dict:
     prompt = render(
         "evaluate/tailor_cv.md",
         cv=cv,
+        article_digest=state.get("article_digest") or "",
         jd_meta=state.get("jd_meta"),
         jd_text=state.get("jd_text", ""),
         archetype=state.get("archetype"),
@@ -45,6 +46,21 @@ async def tailor_cv(state: JobHuntState, config: RunnableConfig) -> dict:
     if not body:
         return {"errors": errors}
     return {"cv_tailored": body, "errors": errors}
+
+
+# "## Professional Summary" section up to (not including) the next H2.
+_SUMMARY_SECTION_RE = re.compile(
+    r"^##\s+Professional Summary\s*\n.*?(?=^##\s|\Z)", re.MULTILINE | re.DOTALL
+)
+
+
+def strip_summary_section(cv_md: str) -> str:
+    """Remove the master CV's Professional Summary section.
+
+    Used on the fallback (untailored) render path when the template banner
+    already carries a JD-specific summary_angle — two stacked summaries read
+    as duplicated filler to a recruiter."""
+    return _SUMMARY_SECTION_RE.sub("", cv_md)
 
 
 def cv_markdown_to_html(cv_md: str, *, strip_contact_block: bool = True) -> str:
@@ -122,13 +138,19 @@ async def generate_cv_html_pdf(state: JobHuntState, config: RunnableConfig) -> d
             "" if standalone_cover_letter else (pdf_content.cover_letter_body if pdf_content else "")
         )
         cv_tailored = state.get("cv_tailored", "")
+        summary_angle = pdf_content.summary_angle if pdf_content else ""
+        # Prefer the JD-tailored rewrite; the master cv.md is the fallback and
+        # still needs its name/contact block stripped (the header renders it)
+        # and its generic summary dropped when the banner carries a JD-specific
+        # angle — otherwise the PDF opens with two stacked summaries.
+        cv_for_render = cv_tailored or cv
+        if not cv_tailored and summary_angle:
+            cv_for_render = strip_summary_section(cv_for_render)
         html = template.render(
             profile=profile,
             cv_raw=cv,  # kept for backwards compat; template now prefers cv_html
-            # Prefer the JD-tailored rewrite; the master cv.md is the fallback and
-            # still needs its name/contact block stripped (the header renders it).
             cv_html=cv_markdown_to_html(
-                cv_tailored or cv, strip_contact_block=not cv_tailored
+                cv_for_render, strip_contact_block=not cv_tailored
             ),
             company=jd_meta.company if jd_meta else "",
             role=jd_meta.title if jd_meta else "",

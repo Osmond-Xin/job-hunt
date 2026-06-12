@@ -123,3 +123,26 @@ def test_tailor_cv_empty_llm_output_falls_back(monkeypatch) -> None:
 def test_tailor_cv_noop_without_cv() -> None:
     result = asyncio.run(tailor_cv({"cv": ""}, None))
     assert result == {"errors": []}
+
+
+# ----- strip_summary_section (fallback render path) -----
+
+
+def test_strip_summary_section_removes_only_summary() -> None:
+    from job_hunt.nodes.pdf import strip_summary_section
+
+    md = (
+        "## Professional Summary\n\nGeneric summary text.\n\n---\n\n"
+        "## Experience\n\n- Shipped X\n\n## Skills\n\n- Python\n"
+    )
+    out = strip_summary_section(md)
+    assert "Generic summary text" not in out
+    assert "## Experience" in out
+    assert "## Skills" in out
+
+
+def test_strip_summary_section_noop_when_absent() -> None:
+    from job_hunt.nodes.pdf import strip_summary_section
+
+    md = "## Experience\n\n- Shipped X\n"
+    assert strip_summary_section(md) == md

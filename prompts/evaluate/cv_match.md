@@ -9,6 +9,11 @@ You are a rigorous technical recruiter matching a candidate's CV against a job d
 ## Candidate CV
 {{ cv }}
 
+{% if article_digest %}
+## Article Digest (detailed proof points — metrics here take precedence over cv.md)
+{{ article_digest }}
+{% endif %}
+
 ## Job Description
 **Company**: {{ jd_meta.company }}
 **Title**: {{ jd_meta.title }}

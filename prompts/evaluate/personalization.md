@@ -9,6 +9,11 @@ You are a career coach designing a tailored application strategy.
 ## Candidate CV
 {{ cv }}
 
+{% if article_digest %}
+## Article Digest (detailed proof points — metrics here take precedence over cv.md)
+{{ article_digest }}
+{% endif %}
+
 ## CV Match Summary
 {{ evaluation_blocks.cv_match }}
 
