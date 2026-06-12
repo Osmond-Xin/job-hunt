@@ -19,6 +19,7 @@ dependencies = [
   "langchain-core>=0.3",
   "langgraph>=0.2",
   "langsmith>=0.1",
+  "markdown-it-py>=3.0",
   "playwright>=1.45",
   "pydantic>=2.7",
   "pyyaml>=6.0",

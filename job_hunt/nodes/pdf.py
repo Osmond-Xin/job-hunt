@@ -1,4 +1,4 @@
-"""generate_cv_html_pdf and skip_pdf nodes."""
+"""tailor_cv, generate_cv_html_pdf, and skip_pdf nodes."""
 
 from __future__ import annotations
 
@@ -8,10 +8,81 @@ from pathlib import Path
 from langchain_core.runnables import RunnableConfig
 
 from job_hunt.models.state import JobHuntState
+from job_hunt.nodes._llm import call_node_llm_or_fallback
+from job_hunt.nodes._prompts import render
 
 _OUTPUT_DIR = Path("output")
 _TEMPLATES_DIR = Path("templates")
 _FONTS_DIR = (_TEMPLATES_DIR / "fonts").resolve()
+
+# Quantified tenure self-labels ("20+ years of experience", "two decades") trigger
+# age/over-qualified screens. Role-scoped facts ("7-year tenure") are allowed.
+_TENURE_SELF_LABEL_RE = re.compile(
+    r"\b\d{1,2}\s*\+?\s*(?:years?|yrs?)\b[^.\n]{0,40}\bexperience\b"
+    r"|\b(?:two|three)\s+decades\b",
+    re.IGNORECASE,
+)
+
+_CODE_FENCE_RE = re.compile(r"^```[a-z]*\s*\n|\n```\s*$", re.IGNORECASE)
+
+
+async def tailor_cv(state: JobHuntState, config: RunnableConfig) -> dict:
+    """Rewrite the master CV into a JD-tailored resume body (pruned projects,
+    JD-specific summary, no tenure self-labels). Falls back to the master CV
+    downstream when the LLM is unavailable or returns nothing."""
+    cv = state.get("cv", "")
+    if not cv:
+        return {"errors": []}
+
+    prompt = render(
+        "evaluate/tailor_cv.md",
+        cv=cv,
+        jd_meta=state.get("jd_meta"),
+        jd_text=state.get("jd_text", ""),
+        archetype=state.get("archetype"),
+        evaluation_blocks=state.get("evaluation_blocks", {}),
+        mode=state.get("mode", "full"),
+    )
+    result, errors = await call_node_llm_or_fallback(
+        state,
+        node_name="tailor_cv",
+        prompt=prompt,
+        prompt_version="evaluate/tailor_cv.md:v1",
+        fallback_content="",
+        temperature=0.2,
+        max_tokens=2800,
+    )
+    body = _CODE_FENCE_RE.sub("", result.content.strip()).strip()
+    if not body:
+        return {"errors": errors}
+
+    violation = _TENURE_SELF_LABEL_RE.search(body)
+    if violation:
+        errors = errors + [
+            f"tailor_cv: tenure self-label in tailored CV ({violation.group(0)!r}); review before sending."
+        ]
+    return {"cv_tailored": body, "errors": errors}
+
+
+def cv_markdown_to_html(cv_md: str, *, strip_contact_block: bool = True) -> str:
+    """Convert CV markdown into rendered HTML for the resume template.
+
+    With ``strip_contact_block`` (the master cv.md case), drops everything up to the
+    first standalone ``---`` rule — the name + contact block — because the template's
+    header already renders ``profile.name`` and contacts. Tailored CVs start at the
+    summary and must be rendered whole.
+    """
+    if not cv_md:
+        return ""
+    from markdown_it import MarkdownIt
+
+    body_md = cv_md
+    if strip_contact_block:
+        parts = re.split(r"^\s*-{3,}\s*$", cv_md, maxsplit=1, flags=re.MULTILINE)
+        if len(parts) > 1:
+            body_md = parts[1].lstrip()
+    md = MarkdownIt("commonmark", {"html": False, "linkify": True, "typographer": True})
+    return md.render(body_md)
 
 
 # Country signals that map to North-American letter paper. Everything else → A4.
@@ -54,19 +125,34 @@ async def generate_cv_html_pdf(state: JobHuntState, config: RunnableConfig) -> d
                 "errors": ["cv.html.j2 template not found; skipping PDF generation."],
             }
 
-        env = Environment(loader=FileSystemLoader(str(_TEMPLATES_DIR)), autoescape=False)
+        # autoescape so LLM-supplied strings (summary_angle, bullets, keywords)
+        # cannot break the HTML; cv_html is the only trusted-markup slot (| safe).
+        env = Environment(loader=FileSystemLoader(str(_TEMPLATES_DIR)), autoescape=True)
         template = env.get_template("cv.html.j2")
 
         paper_size = detect_paper_size(jd_meta)
+        # Suppress the embedded "Cover Letter Draft" block in the CV PDF when an
+        # independent cover-letter PDF is being generated downstream — avoids the
+        # same content appearing twice across the two artifacts.
+        standalone_cover_letter = bool(state.get("generate_cover_letter"))
+        embedded_cover_letter = (
+            "" if standalone_cover_letter else (pdf_content.cover_letter_body if pdf_content else "")
+        )
+        cv_tailored = state.get("cv_tailored", "")
         html = template.render(
             profile=profile,
-            cv_raw=cv,
+            cv_raw=cv,  # kept for backwards compat; template now prefers cv_html
+            # Prefer the JD-tailored rewrite; the master cv.md is the fallback and
+            # still needs its name/contact block stripped (the header renders it).
+            cv_html=cv_markdown_to_html(
+                cv_tailored or cv, strip_contact_block=not cv_tailored
+            ),
             company=jd_meta.company if jd_meta else "",
             role=jd_meta.title if jd_meta else "",
             summary_angle=pdf_content.summary_angle if pdf_content else "",
             top_bullets=pdf_content.top_bullets if pdf_content else [],
             keywords=pdf_content.keywords if pdf_content else [],
-            cover_letter_body=pdf_content.cover_letter_body if pdf_content else "",
+            cover_letter_body=embedded_cover_letter,
             fonts_dir=str(_FONTS_DIR),
             paper_size=paper_size,
         )

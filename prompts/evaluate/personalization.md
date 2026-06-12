@@ -20,12 +20,22 @@ You are a career coach designing a tailored application strategy.
 **Title**: {{ jd_meta.title }}
 **Archetype**: {{ archetype.archetype }}
 
+## JD Text
+{{ jd_text }}
+
 ## Task
 Design a concrete personalization plan for this application.
 
 ### Resume summary angle
 One paragraph (3–5 sentences) that frames the candidate's narrative for this specific role.
-Must be grounded in CV evidence. Do not invent experience.
+Must be grounded in CV evidence. Do not invent experience. Never state a quantified tenure
+total ("X+ years of experience", "two decades") — it triggers age/over-qualified screens;
+downstream prompts inherit this angle verbatim.
+
+### Projects to keep / drop
+The CV's Projects section must be pruned per JD. List which projects to KEEP (ordered by
+relevance to this JD, with one line on why) and which to DROP. A project that covers a JD
+must-have or nice-to-have gap is the strongest keep.
 
 ### Top 3 proof points
 The 3 strongest CV achievements to lead with for this role. For each:

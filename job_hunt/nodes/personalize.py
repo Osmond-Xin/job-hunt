@@ -20,6 +20,7 @@ async def personalization_plan(state: JobHuntState, config: RunnableConfig) -> d
         "evaluate/personalization.md",
         cv=state.get("cv", ""),
         jd_meta=state.get("jd_meta"),
+        jd_text=state.get("jd_text", ""),
         archetype=state.get("archetype"),
         evaluation_blocks=state.get("evaluation_blocks", {}),
     )
@@ -27,7 +28,7 @@ async def personalization_plan(state: JobHuntState, config: RunnableConfig) -> d
         state,
         node_name="personalization_plan",
         prompt=prompt,
-        prompt_version="evaluate/personalization.md:v1",
+        prompt_version="evaluate/personalization.md:v2",
         fallback_content=(
             "Personalization plan unavailable because the LLM provider timed out or failed. "
             "Use the CV Match, Role Summary, and Level Strategy sections to tailor the resume manually."

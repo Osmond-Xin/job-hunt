@@ -19,7 +19,8 @@ Graph topology (sequential analysis after classify_archetype):
                                                                                 └─> update_story_bank
                                                                                     │
                                                     ┌─(generate_pdf)─────────────────┘─(skip)──┐
-                                             generate_cv_html_pdf                    skip_pdf  │
+                                                tailor_cv                            skip_pdf  │
+                                                     └─> generate_cv_html_pdf                  │
                                                           └──────────────┬───────────────────────┘
                                                                 generate_cover_letter  (no-op unless flag)
                                                                          └─> write_report
@@ -42,7 +43,7 @@ from job_hunt.nodes.cover_letter import generate_cover_letter
 from job_hunt.nodes.eligibility_gate import eligibility_gate, mark_ineligible
 from job_hunt.nodes.evaluate import cv_match, level_strategy, role_summary, score_and_recommend
 from job_hunt.nodes.extract import extract_jd, mark_unavailable, verify_active
-from job_hunt.nodes.pdf import generate_cv_html_pdf, skip_pdf
+from job_hunt.nodes.pdf import generate_cv_html_pdf, skip_pdf, tailor_cv
 from job_hunt.nodes.personalize import (
     draft_application_answers,
     interview_prep,
@@ -70,9 +71,9 @@ def _route_eligibility(state: JobHuntState) -> Literal["classify_archetype", "ma
     return "mark_ineligible"
 
 
-def _route_pdf(state: JobHuntState) -> Literal["generate_cv_html_pdf", "skip_pdf"]:
+def _route_pdf(state: JobHuntState) -> Literal["tailor_cv", "skip_pdf"]:
     scores = state.get("scores")
-    return "generate_cv_html_pdf" if (scores and scores.generate_pdf) else "skip_pdf"
+    return "tailor_cv" if (scores and scores.generate_pdf) else "skip_pdf"
 
 
 def build_evaluate_job_graph():
@@ -101,6 +102,7 @@ def build_evaluate_job_graph():
     builder.add_node("score_and_recommend", score_and_recommend)
     builder.add_node("draft_application_answers", draft_application_answers)
     builder.add_node("update_story_bank", update_story_bank)
+    builder.add_node("tailor_cv", tailor_cv)
     builder.add_node("generate_cv_html_pdf", generate_cv_html_pdf)
     builder.add_node("skip_pdf", skip_pdf)
     builder.add_node("generate_cover_letter", generate_cover_letter)
@@ -128,6 +130,7 @@ def build_evaluate_job_graph():
     builder.add_edge("draft_application_answers", "update_story_bank")
 
     builder.add_conditional_edges("update_story_bank", _route_pdf)
+    builder.add_edge("tailor_cv", "generate_cv_html_pdf")
     builder.add_edge("generate_cv_html_pdf", "generate_cover_letter")
     builder.add_edge("skip_pdf", "generate_cover_letter")
     builder.add_edge("generate_cover_letter", "write_report")

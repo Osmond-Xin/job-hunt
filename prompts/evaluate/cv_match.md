@@ -25,6 +25,8 @@ Rules:
 - Quote the exact CV phrase that supports each claim. Do not paraphrase.
 - If no evidence exists, state "No evidence found" — do not invent or extrapolate.
 - A partial match is better than a fabricated one; label it "Partial".
+- Evidence from the CV's **Projects** section counts — label it "Full (project)" or
+  "Partial (project)" so downstream prompts can use the project as closing-the-gap proof.
 
 Output a Markdown table:
 
@@ -32,5 +34,14 @@ Output a Markdown table:
 |---|---|---|---|
 | ... | Full / Partial / None | "..." | ... |
 
-After the table, add a **Strengths** section (3–5 bullet points where the CV clearly exceeds
-requirements) and a **Gaps** section (hard blockers or significant missing experience).
+Then repeat the same table for the JD's **nice-to-have / preferred** requirements
+(heading: `### Nice-to-have match`). These matter downstream: a personal project that
+covers a nice-to-have is the candidate's strongest pivot when the JD's vertical is new.
+
+After the tables, add:
+- **Strengths**: 3–5 bullets where the CV clearly exceeds requirements.
+- **Gaps**: hard blockers or significant missing experience. State each gap plainly —
+  downstream prompts must acknowledge gaps honestly, not paper over them.
+- **Domain verticals**: one line — is the JD's industry vertical (e.g. industrial IoT,
+  fintech, healthcare) visibly represented in the CV's *employment* history? Answer
+  "yes (where)", "only via projects (which)", or "no".

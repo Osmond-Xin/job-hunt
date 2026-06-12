@@ -23,7 +23,7 @@ async def cv_match(state: JobHuntState, config: RunnableConfig) -> dict:
         state,
         node_name="cv_match",
         prompt=prompt,
-        prompt_version="evaluate/cv_match.md:v1",
+        prompt_version="evaluate/cv_match.md:v2",
         fallback_content=(
             "CV match unavailable because the LLM provider timed out or failed. "
             "Manually compare the JD requirements against profile/cv.md before applying."
@@ -84,12 +84,14 @@ async def score_and_recommend(state: JobHuntState, config: RunnableConfig) -> di
         "evaluate/score_and_recommend.md",
         evaluation_blocks=blocks,
         mode=mode,
+        cv=state.get("cv", ""),
+        jd_text=state.get("jd_text", ""),
     )
     result, errors = await call_node_llm_or_fallback(
         state,
         node_name="score_and_recommend",
         prompt=prompt,
-        prompt_version="evaluate/score_and_recommend.md:v1",
+        prompt_version="evaluate/score_and_recommend.md:v2",
         fallback_content=(
             '{"weighted_total": 0.0, "recommendation": "skip", '
             '"recommendation_rationale": "Scoring unavailable because the LLM provider failed.", '

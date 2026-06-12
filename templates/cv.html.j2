@@ -119,12 +119,34 @@
   li { font-size: 10.5px; line-height: 1.5; color: #333; margin-bottom: 3px; }
 
   /* === RESUME BODY === */
-  .cv {
-    white-space: pre-wrap;
-    font-size: 10.5px;
-    line-height: 1.5;
-    color: #333;
+  .cv { font-size: 11px; line-height: 1.55; color: #2a2a3a; }
+  .cv h2 {
+    font-family: 'Space Grotesk', sans-serif;
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: hsl(187, 74%, 32%);
+    border-bottom: 1px solid #e5e5e5;
+    padding-bottom: 2px;
+    margin: 12px 0 6px;
   }
+  .cv h3 {
+    font-family: 'Space Grotesk', sans-serif;
+    font-size: 11.5px;
+    font-weight: 600;
+    color: #1a1a2e;
+    margin: 8px 0 1px;
+  }
+  .cv h4 { font-size: 11px; font-weight: 600; color: #1a1a2e; margin: 6px 0 1px; }
+  .cv p { margin: 0 0 5px; }
+  .cv ul { padding-left: 18px; margin: 3px 0 6px; }
+  .cv li { font-size: 10.5px; line-height: 1.5; color: #333; margin-bottom: 2px; }
+  .cv strong { color: #1a1a2e; }
+  .cv em { color: #555; }
+  .cv hr { border: 0; border-top: 1px solid #e5e5e5; margin: 10px 0; }
+  /* Raw-text fallback for legacy renders that still pass cv_raw without cv_html. */
+  .cv.cv-raw { white-space: pre-wrap; font-size: 10.5px; }
 
   /* === COVER LETTER === */
   .cover-letter p { margin-bottom: 8px; font-size: 10.5px; line-height: 1.6; color: #333; }
@@ -176,8 +198,12 @@
   {% endif %}
 
   <div class="section">
+    {% if cv_html %}
+    <div class="cv">{{ cv_html | safe }}</div>
+    {% else %}
     <div class="section-title">Resume</div>
-    <div class="cv">{{ cv_raw }}</div>
+    <div class="cv cv-raw">{{ cv_raw }}</div>
+    {% endif %}
   </div>
 
   {% if cover_letter_body %}

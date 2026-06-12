@@ -59,7 +59,7 @@ async def generate_cover_letter(state: JobHuntState, config: RunnableConfig) -> 
         state,
         node_name="generate_cover_letter",
         prompt=prompt,
-        prompt_version="evaluate/cover_letter.md:v1",
+        prompt_version="evaluate/cover_letter.md:v2",
         fallback_content="",
         temperature=0.3,
         max_tokens=900,

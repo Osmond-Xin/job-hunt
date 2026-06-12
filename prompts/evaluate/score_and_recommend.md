@@ -27,6 +27,12 @@ the mode; the operator already decided which kind of role they are hunting.
 ### Personalization Plan
 {{ evaluation_blocks.personalization }}
 
+### Candidate CV (ground truth — every pdf_content claim must trace to a line here)
+{{ cv }}
+
+### JD Text (ground truth for keywords and vocabulary)
+{{ jd_text }}
+
 ## Task
 Score this application on 5 dimensions (each 0–5, with weight). Use the table
 below for the active mode.
@@ -88,6 +94,23 @@ Output a JSON object with this exact schema — no prose outside the JSON:
   }
 }
 ```
+
+### pdf_content quality rules (both modes)
+
+- `summary_angle`: 2–3 sentences positioning the candidate for THIS role, mirroring the JD's
+  own vocabulary where the CV honestly supports it. **Never state a quantified tenure total**
+  ("20+ years", "two decades") — it triggers age/over-qualified screens. Every claim must
+  trace to a CV line.
+- `top_bullets`: select the 3 strongest bullets **from the CV text above** (not from the
+  summaries) and rewrite their surface language to the JD's vocabulary. Keep every number,
+  metric, employer, and scope exactly as the CV states it — never merge metrics across
+  bullets, never round up.
+- `keywords`: 8–12 terms that appear in the JD **and** are honestly claimable from the CV.
+  No aspirational keywords — an interviewer will probe each one.
+- `cover_letter_body`: grounded in CV evidence; same tenure rule as `summary_angle`; never
+  use "passionate", "excited", "thrilled", "love", or "I would welcome the opportunity".
+  If the JD's vertical is visibly absent from the CV's experience, acknowledge the gap in
+  one direct sentence before pivoting to transferable evidence — do not paper over it.
 
 {% if mode == "student" %}
 Thresholds (student mode — co-ops have lower tail risk, lower bar is correct):

@@ -46,6 +46,9 @@ class JobHuntState(TypedDict, total=False):
     recommendation: Literal["apply", "maybe", "skip"]
 
     # --- artifacts ---
+    # JD-tailored rewrite of cv (produced by tailor_cv on the generate_pdf path);
+    # empty/absent means render the master cv as-is.
+    cv_tailored: str
     report_md: str
     report_path: str | None
     pdf_path: str | None

@@ -73,5 +73,25 @@ when rendered with 11pt body type and 0.6in margins.
 - Do not use the words "passionate", "excited", "thrilled", "love", or "opportunity" except in factual
   references to the JD itself.
 - Every claim must be traceable to a line in the CV or the JD text.
-- Stay under 350 words total. Stop when the case is made; do not pad.
+- Stay under 280 words total. Stop when the case is made; do not pad.
 - Output ONLY the paragraphs (Markdown), separated by blank lines. No headings, no bullets, no signature.
+
+### Anti-pattern constraints (learned from past iterations)
+
+- **Never self-label a quantified tenure** ("X+ years of experience", "two decades", "20 years",
+  "veteran of N years"). It triggers age/over-qualified screens. Use neutral phrases like
+  "experienced backend engineer", "deep track record in …", "shipping production systems across …".
+  Employer-side year math from the CV's dated roles is fine; the candidate must not advertise totals.
+- **Honest framing on domain gaps**: if the JD's vertical (e.g., industrial IoT, fintech compliance,
+  bioinformatics) is NOT visibly represented in the CV experience, name the gap in paragraph 1 with one
+  direct sentence ("I have not worked in industrial IoT before — sensors, MQTT, and Sparkplug B are not
+  part of my prior shipping experience.") BEFORE pivoting to transferable strengths. Do not paper over
+  the gap with adjacent claims. Recruiters trust direct acknowledgement and discount hedging.
+- **Use the prep-project pivot**: if the CV's Projects section contains a project whose stack matches
+  the JD's nice-to-have / bonus list AND the JD vertical is otherwise new to the candidate, treat that
+  project as the explicit closing-the-gap evidence — "Rather than ask the team to take this on faith,
+  I built …". Name the repo and offer to walk through it in an interview.
+- **Honor "Additional Context" in the JD text**: if the JD text contains an "Additional Context" or
+  "Personalization" footer (referrals by name, candidate-built prep projects, deliberate framing
+  asks), treat those as authoritative facts and weave them in naturally. They are not invented content;
+  they were appended by the candidate.
