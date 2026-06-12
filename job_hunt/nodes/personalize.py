@@ -46,12 +46,13 @@ async def interview_prep(state: JobHuntState, config: RunnableConfig) -> dict:
         cv=state.get("cv", ""),
         jd_meta=jd_meta,
         archetype=state.get("archetype"),
+        evaluation_blocks=state.get("evaluation_blocks", {}),
     )
     result, errors = await call_node_llm_or_fallback(
         state,
         node_name="interview_prep",
         prompt=prompt,
-        prompt_version="evaluate/interview_prep.md:v2",
+        prompt_version="evaluate/interview_prep.md:v3",
         fallback_content=(
             "Interview preparation unavailable because the LLM provider timed out or failed. "
             "Prepare from the role requirements, CV evidence, hard gaps, and company notes in the report."

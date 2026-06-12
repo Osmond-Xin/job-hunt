@@ -208,7 +208,7 @@
 
   {% if cover_letter_body %}
   <div class="section avoid-break">
-    <div class="section-title">Cover Letter Draft</div>
+    <div class="section-title">Cover Letter</div>
     <div class="cover-letter">
       {% for paragraph in cover_letter_body.split("\n\n") %}
       {% if paragraph.strip() %}<p>{{ paragraph | replace("\n", " ") }}</p>{% endif %}

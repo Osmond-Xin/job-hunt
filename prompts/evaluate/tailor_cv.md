@@ -34,9 +34,9 @@ Rewrite the master CV into a tailored resume body for THIS role.
 
 ### Selection & ordering
 
-- **Professional Summary**: rewrite as 2–3 sentences positioning the candidate for this
-  specific role. Mirror the JD's own vocabulary where the CV honestly supports it. Use the
-  Personalization Plan's summary angle as the starting point.
+- **No Professional Summary section**: the PDF template already renders a tailored summary
+  banner above the resume body. A second summary reads as duplicated filler to a recruiter.
+  Drop the master CV's summary entirely and start at the first content section.
 - **Experience**: keep every dated role (no employment gaps may appear), in the same order.
   Within each role, reorder bullets so the most JD-relevant comes first; you may drop a
   bullet that is clearly irrelevant to this role. Never alter employers, titles, dates,
@@ -49,13 +49,13 @@ Rewrite the master CV into a tailored resume body for THIS role.
   irrelevant to this archetype. Never add skills that are not in the master CV.
 - **Education & Certifications**: keep verbatim.
 {% if mode == "student" %}
-- **Section order (student mode)**: Professional Summary → Education → Projects →
-  Experience → Skills → Certifications. Recruiters screening intern/co-op applications
-  look for current enrollment and recent applied work first; the prior career is
-  supporting evidence, not the lead.
+- **Section order (student mode)**: Education → Projects → Experience → Skills →
+  Certifications. Recruiters screening intern/co-op applications look for current
+  enrollment and recent applied work first; the prior career is supporting evidence,
+  not the lead.
 {% else %}
-- **Section order (full mode)**: Professional Summary → Experience → Projects →
-  Education → Skills → Certifications.
+- **Section order (full mode)**: Experience → Projects → Education → Skills →
+  Certifications.
 {% endif %}
 
 ### Hard rules
@@ -71,7 +71,8 @@ Rewrite the master CV into a tailored resume body for THIS role.
 
 ### Output format
 
-- Markdown only. Start at `## Professional Summary` — no name, no contact lines, no H1.
+- Markdown only. Start at the first section heading (`## Experience` in full mode,
+  `## Education` in student mode) — no name, no contact lines, no H1, no summary.
 - Use the same heading structure as the master CV: `##` for sections, `###` for roles and
   projects. `---` only as a section separator on its own line.
 - No tables, no images, no commentary, no code fences. Output ONLY the resume body.

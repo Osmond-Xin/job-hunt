@@ -15,6 +15,12 @@ You are an interview coach preparing a candidate for a first-round screen.
 **Archetype**: {{ archetype.archetype }}
 **Key requirements**: {{ jd_meta.requirements | join("; ") }}
 
+## CV Match (strengths and gaps to prepare around)
+{{ evaluation_blocks.cv_match }}
+
+## Company Research
+{{ evaluation_blocks.comp_research }}
+
 ## Task
 Produce a targeted interview prep brief.
 
