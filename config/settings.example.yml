@@ -16,6 +16,8 @@ llm:
     model: ""
     invocation: http
     temperature: 0.2
+    # Reasoning models (MiniMax-M3) can run 5+ minutes on long generations.
+    timeout_seconds: 420
     base_url: "https://api.minimax.chat"
     endpoint_style: minimax
     api_key_env: MINIMAX_API_KEY

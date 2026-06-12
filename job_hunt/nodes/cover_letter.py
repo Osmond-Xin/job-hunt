@@ -9,8 +9,8 @@ from pathlib import Path
 from langchain_core.runnables import RunnableConfig
 
 from job_hunt.models.state import JobHuntState
-from job_hunt.nodes._llm import call_node_llm_or_fallback
 from job_hunt.nodes._prompts import render
+from job_hunt.nodes._quality import generate_with_audit
 from job_hunt.nodes.pdf import detect_paper_size
 
 _OUTPUT_DIR = Path("output")
@@ -55,17 +55,15 @@ async def generate_cover_letter(state: JobHuntState, config: RunnableConfig) -> 
         mode=state.get("mode", "full"),
     )
 
-    result, errors = await call_node_llm_or_fallback(
+    body_md, errors = await generate_with_audit(
         state,
         node_name="generate_cover_letter",
         prompt=prompt,
         prompt_version="evaluate/cover_letter.md:v2",
-        fallback_content="",
+        artifact_type="cover letter",
         temperature=0.3,
         max_tokens=900,
     )
-
-    body_md = result.content.strip()
     if not body_md:
         return {"errors": errors}
 

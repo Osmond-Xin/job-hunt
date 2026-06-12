@@ -9,6 +9,14 @@ from job_hunt.services.llm.base import ChatMessage, ChatResult
 from job_hunt.services.llm.content import normalize_llm_content
 
 
+# Reasoning models (M3+) spend completion budget on hidden reasoning before any
+# visible content; a node-level max_tokens of e.g. 900 can be consumed entirely
+# by reasoning, returning empty content with finish_reason="length". Headroom
+# keeps node max_tokens meaning "tokens of visible answer".
+_REASONING_MODEL_PREFIXES = ("MiniMax-M3",)
+_REASONING_HEADROOM_TOKENS = 4000
+
+
 class MinimaxProvider:
     provider = "minimax"
 
@@ -45,17 +53,34 @@ class MinimaxProvider:
         if not self.api_key:
             raise RuntimeError("MINIMAX_API_KEY is not configured")
         _ = trace_name, trace_metadata
-        if self.endpoint_style == "anthropic":
-            url, headers, payload = self._build_anthropic_request(messages, model, temperature, max_tokens)
-        elif self.endpoint_style == "openai":
-            url, headers, payload = self._build_openai_request(messages, model, temperature, max_tokens)
-        else:
-            url, headers, payload = self._build_minimax_request(messages, model, temperature, max_tokens)
-        async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
-            response = await client.post(url, headers=headers, json=payload)
-            response.raise_for_status()
-        raw = response.json()
+        if max_tokens is not None and model.startswith(_REASONING_MODEL_PREFIXES):
+            max_tokens += _REASONING_HEADROOM_TOKENS
+
+        # A "length" finish means the answer (or its hidden reasoning) was cut
+        # off — structured outputs are unusable when truncated. Retry once with
+        # a doubled budget, then fail loudly instead of degrading silently.
+        for attempt in range(2):
+            if self.endpoint_style == "anthropic":
+                url, headers, payload = self._build_anthropic_request(messages, model, temperature, max_tokens)
+            elif self.endpoint_style == "openai":
+                url, headers, payload = self._build_openai_request(messages, model, temperature, max_tokens)
+            else:
+                url, headers, payload = self._build_minimax_request(messages, model, temperature, max_tokens)
+            async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+                response = await client.post(url, headers=headers, json=payload)
+                response.raise_for_status()
+            raw = response.json()
+            if _finish_reason(raw) == "length" and max_tokens is not None and attempt == 0:
+                max_tokens *= 2
+                continue
+            break
+
         content = extract_content(raw, endpoint_style=self.endpoint_style)
+        if _finish_reason(raw) == "length":
+            raise RuntimeError(
+                f"{model} output truncated at max_tokens={max_tokens} even after a doubled-budget retry"
+                + ("; no visible content returned" if not content else "")
+            )
         input_tokens, output_tokens, total_tokens = extract_usage(raw)
         return ChatResult(
             content=content,
@@ -138,6 +163,13 @@ class MinimaxProvider:
         elif not url.endswith("/chat/completions"):
             url = f"{url.rstrip('/')}/v1/chat/completions"
         return url, headers, payload
+
+
+def _finish_reason(raw: dict) -> str:
+    choices = raw.get("choices") or []
+    if choices and isinstance(choices[0], dict):
+        return choices[0].get("finish_reason") or ""
+    return ""
 
 
 def extract_content(raw: dict, endpoint_style: str = "minimax") -> str:

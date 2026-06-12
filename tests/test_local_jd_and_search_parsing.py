@@ -77,3 +77,43 @@ def test_extract_url_text_local_prefix_missing_file_returns_empty(tmp_path: Path
     result = asyncio.run(extract_url_text("local:missing.md"))
     assert result.adapter == "local_file"
     assert result.text == ""
+
+
+# ----- _guess_title_company_location (markdown JD metadata) -----
+
+
+def test_guess_meta_from_markdown_jd_with_labeled_block() -> None:
+    from job_hunt.nodes.extract import _guess_title_company_location
+
+    jd = (
+        "# Senior Backend Developer — Industrial Matrix\n\n"
+        "**Company:** Industrial Matrix\n"
+        "**Location:** Greater Toronto Area (North York, ON), Canada\n"
+        "**Employment Type:** Full-time\n\n"
+        "## About the Role\n"
+    )
+    title, company, location = _guess_title_company_location(jd)
+    assert title == "Senior Backend Developer"
+    assert company == "Industrial Matrix"
+    assert location == "Greater Toronto Area (North York, ON), Canada"
+
+
+def test_guess_meta_h1_dash_fallback_without_labels() -> None:
+    from job_hunt.nodes.extract import _guess_title_company_location
+
+    title, company, location = _guess_title_company_location(
+        "# AI Engineer - Cohere\n\nBuild things.\n"
+    )
+    assert title == "AI Engineer"
+    assert company == "Cohere"
+    assert location == ""
+
+
+def test_guess_meta_at_pattern_still_works() -> None:
+    from job_hunt.nodes.extract import _guess_title_company_location
+
+    title, company, _ = _guess_title_company_location(
+        "Software Engineer at Stripe\nLocation: Remote\nDo stuff.\n"
+    )
+    assert title == "Software Engineer"
+    assert company == "Stripe"

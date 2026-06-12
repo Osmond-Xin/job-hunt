@@ -137,31 +137,40 @@ def _extract_meta(jd_text: str, state: JobHuntState) -> JobMeta:
 
 
 def _guess_title_company_location(jd_text: str) -> tuple[str, str, str]:
-    first_line = next((line.strip() for line in jd_text.splitlines() if line.strip()), "")
-    head = first_line or jd_text[:240]
-    location = ""
-    location_match = re.search(r"\bLocation:\s*([^.\n]+)", head, flags=re.IGNORECASE)
-    if location_match:
-        location = location_match.group(1).strip()
+    lines = [line.strip() for line in jd_text.splitlines() if line.strip()]
+    first_line = lines[0] if lines else ""
+    # Labeled fields ("**Company:** Acme") usually sit in a metadata block a few
+    # lines below the heading in markdown JD files — scan the top block, with
+    # markdown emphasis stripped so labels and values match cleanly.
+    head_block = re.sub(r"[*_`]+", "", "\n".join(lines[:15]) or jd_text[:600])
 
-    at_match = re.search(
-        r"(?P<title>[A-Z][A-Za-z0-9&/,+# .-]{2,80})\s+at\s+(?P<company>[A-Z][A-Za-z0-9&/,+# .-]{2,80})(?:[.\n]|$)",
-        head,
-    )
-    if at_match:
-        return (
-            at_match.group("title").strip(" ."),
-            at_match.group("company").strip(" ."),
-            location,
+    def _field(label: str) -> str:
+        match = re.search(rf"\b{label}:\s*([^.\n]+)", head_block, flags=re.IGNORECASE)
+        return match.group(1).strip() if match else ""
+
+    location = _field("Location")
+    title = _field("Title") or _field("Role")
+    company = _field("Company")
+
+    if not (title and company):
+        at_match = re.search(
+            r"(?P<title>[A-Z][A-Za-z0-9&/,+# .-]{2,80})\s+at\s+(?P<company>[A-Z][A-Za-z0-9&/,+# .-]{2,80})(?:[.\n]|$)",
+            first_line or jd_text[:240],
         )
+        if at_match:
+            title = title or at_match.group("title").strip(" .")
+            company = company or at_match.group("company").strip(" .")
 
-    title_match = re.search(r"\b(?:Title|Role):\s*([^.\n]+)", head, flags=re.IGNORECASE)
-    company_match = re.search(r"\bCompany:\s*([^.\n]+)", head, flags=re.IGNORECASE)
-    return (
-        title_match.group(1).strip() if title_match else "",
-        company_match.group(1).strip() if company_match else "",
-        location,
-    )
+    # Markdown H1 of the form "# Title — Company" (em dash, en dash, or hyphen).
+    if not (title and company):
+        h1_match = re.match(r"#\s*(.+)$", first_line)
+        if h1_match:
+            parts = re.split(r"\s+[—–-]\s+", h1_match.group(1).strip(), maxsplit=1)
+            title = title or parts[0].strip()
+            if len(parts) > 1:
+                company = company or parts[1].strip()
+
+    return title, company, location
 
 
 def _looks_like_url(value: str) -> bool:

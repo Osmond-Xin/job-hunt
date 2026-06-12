@@ -8,28 +8,18 @@ from pathlib import Path
 from langchain_core.runnables import RunnableConfig
 
 from job_hunt.models.state import JobHuntState
-from job_hunt.nodes._llm import call_node_llm_or_fallback
 from job_hunt.nodes._prompts import render
+from job_hunt.nodes._quality import generate_with_audit
 
 _OUTPUT_DIR = Path("output")
 _TEMPLATES_DIR = Path("templates")
 _FONTS_DIR = (_TEMPLATES_DIR / "fonts").resolve()
 
-# Quantified tenure self-labels ("20+ years of experience", "two decades") trigger
-# age/over-qualified screens. Role-scoped facts ("7-year tenure") are allowed.
-_TENURE_SELF_LABEL_RE = re.compile(
-    r"\b\d{1,2}\s*\+?\s*(?:years?|yrs?)\b[^.\n]{0,40}\bexperience\b"
-    r"|\b(?:two|three)\s+decades\b",
-    re.IGNORECASE,
-)
-
-_CODE_FENCE_RE = re.compile(r"^```[a-z]*\s*\n|\n```\s*$", re.IGNORECASE)
-
 
 async def tailor_cv(state: JobHuntState, config: RunnableConfig) -> dict:
     """Rewrite the master CV into a JD-tailored resume body (pruned projects,
-    JD-specific summary, no tenure self-labels). Falls back to the master CV
-    downstream when the LLM is unavailable or returns nothing."""
+    no tenure self-labels), quality-audited with regeneration. Falls back to
+    the master CV downstream when the LLM is unavailable or returns nothing."""
     cv = state.get("cv", "")
     if not cv:
         return {"errors": []}
@@ -43,24 +33,17 @@ async def tailor_cv(state: JobHuntState, config: RunnableConfig) -> dict:
         evaluation_blocks=state.get("evaluation_blocks", {}),
         mode=state.get("mode", "full"),
     )
-    result, errors = await call_node_llm_or_fallback(
+    body, errors = await generate_with_audit(
         state,
         node_name="tailor_cv",
         prompt=prompt,
-        prompt_version="evaluate/tailor_cv.md:v1",
-        fallback_content="",
+        prompt_version="evaluate/tailor_cv.md:v2",
+        artifact_type="tailored CV",
         temperature=0.2,
         max_tokens=2800,
     )
-    body = _CODE_FENCE_RE.sub("", result.content.strip()).strip()
     if not body:
         return {"errors": errors}
-
-    violation = _TENURE_SELF_LABEL_RE.search(body)
-    if violation:
-        errors = errors + [
-            f"tailor_cv: tenure self-label in tailored CV ({violation.group(0)!r}); review before sending."
-        ]
     return {"cv_tailored": body, "errors": errors}
 
 
