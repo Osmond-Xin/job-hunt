@@ -42,8 +42,17 @@ Last updated: 2026-06-13.
 - **Related debt**: backward-compat shims (`workday_employer.py` re-exports,
   `cli.py` aliases like `_workday_review_validation_issues`,
   `_fill_workday_voluntary_disclosures`,
-  `_workday_experience_dates_match`, ...). Need a stated sunset rule,
-  otherwise they live forever.
+  `_workday_experience_dates_match`, ...). These are still actively called
+  from `cli.py`, so they are live aliases, not dead code; removing them is a
+  rename-all-call-sites task, deferred until the next Workday region refactor
+  (A.1 verdict).
+  - **Sunset rule (set 2026-06-13)**: a compat shim earns removal once it has
+    no remaining caller OR the process/state it bridged can no longer exist.
+    First application: the apply-IPC named-sentinel compat path
+    (`submit_command_with_compat` + `.replace_pdf`/`.capture_page` reads) was
+    removed — see ADR-012. It had both: the v2 UUID sentinel superseded it AND
+    the ≤60-min session lifetime meant no pre-upgrade caller survived; leaving
+    it in had started double-processing every command.
 
 ### A.2 ATS coverage asymmetry
 

@@ -73,19 +73,21 @@ def test_consume_pending_commands_drops_malformed_files(tmp_path: Path) -> None:
     assert not bad.exists()  # malformed file is still deleted to prevent loops
 
 
-def test_submit_command_with_compat_writes_both_paths(tmp_path: Path) -> None:
-    apply_ipc.submit_command_with_compat(
+def test_submit_command_writes_only_uuid_sentinel(tmp_path: Path) -> None:
+    # The pre-v2 named-sentinel compat path was removed (ADR-012 sunset); a
+    # command must write exactly one ``.cmd-*.json`` file and no legacy named
+    # file, otherwise the fill loop double-processes it.
+    apply_ipc.submit_command(
         tmp_path,
         apply_ipc.COMMAND_TYPE_REPLACE_PDF,
         {"pdf": "/tmp/x"},
-        compat_filename=".replace_pdf",
-        compat_payload="/tmp/x",
     )
-    compat = tmp_path / ".replace_pdf"
     cmd_files = list(tmp_path.glob(".cmd-*.json"))
-    assert compat.exists()
-    assert compat.read_text() == "/tmp/x"
     assert len(cmd_files) == 1
+    assert not (tmp_path / ".replace_pdf").exists()
+    pending = apply_ipc.consume_pending_commands(tmp_path)
+    assert [c.kind for c in pending] == [apply_ipc.COMMAND_TYPE_REPLACE_PDF]
+    assert pending[0].payload == {"pdf": "/tmp/x"}
 
 
 def test_find_active_session_dir_prefers_fresh_heartbeat(tmp_path: Path) -> None:

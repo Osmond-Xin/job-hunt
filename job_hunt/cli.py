@@ -2099,12 +2099,10 @@ def apply_replace_pdf(
         console.print(f"[red]PDF not found:[/red] {pdf}")
         raise typer.Exit(1)
     art_dir = _active_apply_artifact_dir()
-    apply_ipc.submit_command_with_compat(
+    apply_ipc.submit_command(
         art_dir,
         apply_ipc.COMMAND_TYPE_REPLACE_PDF,
         {"pdf": str(pdf.resolve())},
-        compat_filename=".replace_pdf",
-        compat_payload=str(pdf.resolve()),
     )
     console.print(f"Replace request sent → {art_dir.name}")
     console.print(f"New PDF: {pdf}")
@@ -2115,12 +2113,7 @@ def apply_replace_pdf(
 def apply_capture_page() -> None:
     """Capture the current page in a running --fill-only browser session."""
     art_dir = _active_apply_artifact_dir()
-    apply_ipc.submit_command_with_compat(
-        art_dir,
-        apply_ipc.COMMAND_TYPE_CAPTURE_PAGE,
-        compat_filename=".capture_page",
-        compat_payload=datetime.now(timezone.utc).isoformat(),
-    )
+    apply_ipc.submit_command(art_dir, apply_ipc.COMMAND_TYPE_CAPTURE_PAGE)
     console.print(f"Capture request sent → {art_dir.name}")
     console.print("Browser will capture the current page in ~2 seconds.")
 
@@ -2129,12 +2122,7 @@ def apply_capture_page() -> None:
 def apply_refill_current_page() -> None:
     """Re-run auto-fill and PDF attachment on the current page of an active fill-only session."""
     art_dir = _active_apply_artifact_dir()
-    apply_ipc.submit_command_with_compat(
-        art_dir,
-        apply_ipc.COMMAND_TYPE_REFILL_CURRENT_PAGE,
-        compat_filename=".refill_current_page",
-        compat_payload=datetime.now(timezone.utc).isoformat(),
-    )
+    apply_ipc.submit_command(art_dir, apply_ipc.COMMAND_TYPE_REFILL_CURRENT_PAGE)
     console.print(f"Refill request sent → {art_dir.name}")
     console.print("Browser will refill the current page in ~2 seconds and take a new screenshot.")
 
@@ -2218,12 +2206,7 @@ def apply_answers(
 def apply_close_session() -> None:
     """Gracefully close an active fill-only browser so login cookies/profile state are saved."""
     art_dir = _active_apply_artifact_dir()
-    apply_ipc.submit_command_with_compat(
-        art_dir,
-        apply_ipc.COMMAND_TYPE_CLOSE_SESSION,
-        compat_filename=".close_session",
-        compat_payload=datetime.now(timezone.utc).isoformat(),
-    )
+    apply_ipc.submit_command(art_dir, apply_ipc.COMMAND_TYPE_CLOSE_SESSION)
     console.print(f"Graceful close request sent → {art_dir.name}")
     console.print("Browser will close after saving the persistent profile.")
 
@@ -2860,41 +2843,8 @@ async def _open_apply_page(
                     last_heartbeat_at = now
                 await asyncio.sleep(2)
 
-                # Phase 3.3: drain the v2 ``.cmd-*.json`` queue first (race-free),
-                # then fall through to the compatibility sentinels for backward compat
-                # with old subcommands started against a freshly-upgraded loop.
+                # Drain the ``.cmd-*.json`` command queue (race-free, mtime-ordered).
                 pending = apply_ipc.consume_pending_commands(art_dir)
-                # Map compatibility sentinels to the same Command shape so the rest of the
-                # body has one code path.
-                replace_compat = art_dir / ".replace_pdf"
-                if replace_compat.exists():
-                    payload = {"pdf": replace_compat.read_text().strip()}
-                    replace_compat.unlink(missing_ok=True)
-                    pending.append(apply_ipc.Command(
-                        id="compat", kind=apply_ipc.COMMAND_TYPE_REPLACE_PDF,
-                        payload=payload, sent_at=0.0,
-                    ))
-                capture_compat = art_dir / ".capture_page"
-                if capture_compat.exists():
-                    capture_compat.unlink(missing_ok=True)
-                    pending.append(apply_ipc.Command(
-                        id="compat", kind=apply_ipc.COMMAND_TYPE_CAPTURE_PAGE,
-                        payload={}, sent_at=0.0,
-                    ))
-                refill_compat = art_dir / ".refill_current_page"
-                if refill_compat.exists():
-                    refill_compat.unlink(missing_ok=True)
-                    pending.append(apply_ipc.Command(
-                        id="compat", kind=apply_ipc.COMMAND_TYPE_REFILL_CURRENT_PAGE,
-                        payload={}, sent_at=0.0,
-                    ))
-                close_compat = art_dir / ".close_session"
-                if close_compat.exists():
-                    close_compat.unlink(missing_ok=True)
-                    pending.append(apply_ipc.Command(
-                        id="compat", kind=apply_ipc.COMMAND_TYPE_CLOSE_SESSION,
-                        payload={}, sent_at=0.0,
-                    ))
 
                 for cmd in pending:
                     last_activity_at = asyncio.get_event_loop().time()

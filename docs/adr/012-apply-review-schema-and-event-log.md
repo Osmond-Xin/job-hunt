@@ -86,8 +86,13 @@ login submit didn't clear modal → dump.
 - `apply-review.json` is now `jq`-safe; the dashboard, the auto-submit
   gate (ADR-011), and the user-facing review artifact all read the
   same structured shape.
-- The legacy named-sentinel write is transition-only debt. A future
-  ADR should sunset it once no caller still relies on the old path.
+- The legacy named-sentinel write was transition-only debt.
+  **Sunset 2026-06-13**: `submit_command_with_compat` and the loop's
+  named-file reads (`.replace_pdf`, `.capture_page`, ...) were removed once
+  the ≤60-minute idle session lifetime guaranteed no pre-upgrade process or
+  sub-command could still exist. Keeping both the dual write and the dual
+  read had also begun double-processing every current command (one execution
+  via the UUID sentinel, one via the named file).
 - Two new files-on-disk per session (`session.json`,
   `cmd-<uuid>.json`); both live under the per-session artifact dir
   and are cleaned up on `session.ended`.

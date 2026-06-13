@@ -18,10 +18,12 @@ Replaces the previous "one named sentinel file per command" scheme with:
    commands AND no auto-fill activity (heartbeat alone does not count as
    activity), instead of the old hard 30-minute deadline.
 
-The compatibility sentinel filenames (``.replace_pdf``, ``.capture_page``, etc.)
-are still consumed by the loop during the transition, but new sub-commands
-prefer the v2 ``.cmd-<uuid>.json`` form. ``submit_command_with_compat`` writes
-both so a running process started before the upgrade still picks up the request.
+The pre-v2 named-sentinel compatibility path (``.replace_pdf``, ``.capture_page``,
+``submit_command_with_compat``) was removed on 2026-06-13 — see ADR-012, which
+flagged it as transition-only debt to sunset once no caller relied on it. The
+fill-only session's ≤60-minute idle lifetime means no pre-upgrade loop or
+sub-command can still exist; keeping both the dual write and dual read also
+double-processed every current command.
 """
 
 from __future__ import annotations
@@ -111,26 +113,6 @@ def submit_command(
         ),
         encoding="utf-8",
     )
-    return sentinel
-
-
-def submit_command_with_compat(
-    art_dir: Path,
-    kind: str,
-    payload: dict | None = None,
-    *,
-    compat_filename: str | None = None,
-    compat_payload: str | None = None,
-) -> Path:
-    """Submit a v2 command and also drop a compatibility sentinel.
-
-    ``compat_filename`` (e.g. ``.replace_pdf``) is the file a previous fill-only
-    loop polls for; if provided, write ``compat_payload`` to that path so a
-    running process started before the upgrade still picks up the request.
-    """
-    sentinel = submit_command(art_dir, kind, payload)
-    if compat_filename:
-        (art_dir / compat_filename).write_text(compat_payload or "", encoding="utf-8")
     return sentinel
 
 
