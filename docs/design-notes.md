@@ -4,7 +4,7 @@ Rolling memo for design completeness review. Not a migration plan — captures
 what is good as-is, what needs improvement, and known mismatches between the
 system and the operator's actual situation.
 
-Last updated: 2026-05-10.
+Last updated: 2026-06-13.
 
 ## Section A — Architecture & Modularity Audit
 
@@ -51,9 +51,10 @@ Last updated: 2026-05-10.
   + multi-gate auto-submit. Greenhouse / Lever / Ashby are scanned for
   discovery only and stay manual on the apply side.
 - **Verdict**: tradeoff, accept. Workday is the worst ATS surface and gets
-  the heaviest investment, correctly. But `docs/design.md` should explicitly
-  say "Workday-first apply assistant; other ATSes are generic fill +
-  manual submit" so readers do not assume parity.
+  the heaviest investment, correctly. The "Workday-first apply assistant;
+  other ATSes are generic fill + manual submit" note was added to the Apply
+  Assistant section of `docs/design.md` (2026-06-13) so readers do not assume
+  parity.
 - **Defer**: a generic `ReviewGate` protocol. Wait until at least three
   ATSes need one before generalizing.
 
@@ -515,3 +516,79 @@ mode check across every subsystem, or (b) drift out of sync the moment
 one subsystem updates its derivation logic and others don't. The
 "system stays ignorant of cause, only reads one field" principle
 (Section N.1) is what keeps the design small enough to be correct.
+
+---
+
+# Section O — Artifact Quality Review (2026-06)
+
+A second optimization track ran in June 2026, separate from the May
+architecture audit (Sections A–N). It came from reading the *actual
+generated artifacts* — the CV PDF, the cover-letter PDF, and the report —
+as the recruiter and the ATS/AI screener who consume them, and fixing what
+read wrong. These changes were shipped but not recorded here until now;
+this section closes that tracking gap. Full rationale for the largest piece
+(the quality-audit loop + reasoning-model budget) is **ADR-013**.
+
+## O.1 Reader-perspective fixes (round 1, commit `19329d0`)
+
+- `tailor_cv` no longer emits its own Professional Summary section — the CV
+  template's target banner already renders the tailored `summary_angle`, so
+  the PDF was opening with two near-identical positioning paragraphs.
+- The embedded letter section in `cv.pdf` is titled "Cover Letter", not
+  "Cover Letter Draft" — the PDF may be submitted as-is, and a recruiter
+  reading "Draft" sees an unfinished document.
+- `interview_prep` was asked to use company research for interviewer
+  questions but never received it; it now gets the `comp_research` and
+  `cv_match` blocks (prompt v3).
+
+## O.2 Quality-audit loop + MiniMax-M3 reasoning support (round 2, commit `6379381`)
+
+Largest change of the track; see **ADR-013** for the full record. Summary:
+
+- **Generate → audit → regenerate loop** (`nodes/_quality.py` +
+  `prompts/evaluate/quality_audit.md`): every tailored CV and cover letter is
+  reviewed by a second LLM pass against the hard framing rules; failing
+  drafts are regenerated with the auditor's feedback, up to 3 attempts. A
+  deterministic tenure self-label regex gates before the LLM audit. Final
+  failure keeps the last draft and warns rather than blocking.
+- **MiniMax-M3 (reasoning model) support**: hidden reasoning consumes the
+  completion budget before visible content. Provider adds reasoning headroom,
+  retries once on `finish_reason=length`, and raises loudly if still
+  truncated instead of degrading silently (score parse fail → 0.0 skip, or
+  untailored-fallback CV). Cheap-tier timeout raised to 420s.
+- **JD metadata extraction fix**: `_guess_title_company_location` only scanned
+  the first line, so markdown JDs with a `**Company:** X` block got empty
+  company/title — which also let senior JDs slip past the student-mode
+  eligibility gate as "unknown". It now scans the top 15 lines with emphasis
+  stripped and parses `# Title — Company` headings.
+
+## O.3 Round-3 cleanup + article-digest wiring (commit `39c31ab`)
+
+Found by reviewing the live-run PDF:
+
+- Fallback (untailored) CV render stacked the master CV's generic summary
+  under the JD-specific banner angle — that path now strips the Professional
+  Summary section when a `summary_angle` exists.
+- Cover-letter PDF showed literal backticks/asterisks because the template
+  renders paragraphs as plain text — `_split_paragraphs` now strips inline
+  markdown markers.
+- `top_bullets` had no length bound and came out paragraph-sized — capped at
+  40 words each in the `pdf_content` quality rules.
+- The report never included the generated letter body; added a "Cover Letter
+  (as generated)" section so the operator can review without opening the PDF.
+- **Latent bug**: `context.py` loaded `profile/article-digest.md` into state
+  but no prompt ever received it, despite `shared.md` declaring it the
+  precedence source for metrics. All six fact-grounding prompts (`cv_match`,
+  `tailor_cv`, `cover_letter`, `personalization`, `score_and_recommend`,
+  `quality_audit`) now take an optional Article Digest block.
+
+## O.4 Reasoning headroom raise (commit `a0fbce3`)
+
+Live CV-rewrite starvation showed the initial `+4000` M3 headroom was still
+too tight; raised to `+8000`. Folded into ADR-013.
+
+## O.5 Verdict
+
+Track complete and now documented. The operator mandate — **trade tokens for
+quality** — is the throughline: prefer extra LLM passes / retries / headroom
+over cheaper-but-worse output. Apply the same bias to future generation work.

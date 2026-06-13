@@ -270,6 +270,13 @@ Canonical states are defined in `templates/states.yml`, including:
 
 ## Apply Assistant
 
+The apply assistant is **Workday-first**. Workday gets the heaviest investment —
+YAML-driven question fill, a structured Review gate, and multi-gate auto-submit.
+Every other ATS (Greenhouse, Lever, Ashby, and LinkedIn Easy Apply aside) is
+**generic field fill plus manual submit**: no structured Review gate and no
+auto-submit. This asymmetry is deliberate (Workday is the worst surface and the
+one the operator hits most), not an oversight — do not assume cross-ATS parity.
+
 `job-hunt apply --fill-only` opens a visible browser, fills known fields, uploads
 PDFs, writes review artifacts, and waits for the user. It does not submit.
 
