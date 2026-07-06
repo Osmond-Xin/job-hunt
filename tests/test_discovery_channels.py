@@ -341,3 +341,26 @@ def test_student_mode_channel_runs_under_student_mode(monkeypatch, tmp_path) -> 
 
     assert len(jobs) == 1
     assert jobs[0].portal == "waterlooworks"
+
+
+def test_channel_locations_override(monkeypatch, tmp_path) -> None:
+    """A channel-level `locations:` list replaces the profile-wide locations."""
+    monkeypatch.chdir(tmp_path)
+    profile = _profile(tmp_path, roles=["AI Engineer"], locations=["Toronto"])
+
+    provider = _StubProvider()
+    channels = [
+        {
+            "id": "jobbank_immigration",
+            "enabled": True,
+            "modes": ["full"],
+            "query_template": '"{role}" "{location}" site:jobbank.gc.ca',
+            "locations": ["Moncton", "Thunder Bay"],
+        },
+    ]
+    scan_discovery_channels(channels, provider, mode="full", profile_path=profile)
+
+    assert provider.calls == [
+        '"AI Engineer" "Moncton" site:jobbank.gc.ca',
+        '"AI Engineer" "Thunder Bay" site:jobbank.gc.ca',
+    ]

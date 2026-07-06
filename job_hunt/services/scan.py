@@ -14,6 +14,7 @@ import yaml
 from pydantic import BaseModel, Field
 
 from job_hunt.repositories.tracker_repo import TrackerRepository, normalize
+from job_hunt.services.immigration import place_tokens as immigration_place_tokens
 from job_hunt.services.profile_loader import current_mode, discovery_context
 
 
@@ -232,9 +233,14 @@ def scan_discovery_channels(
         template = str(raw.get("query_template") or "").strip()
         if not template:
             continue
+        # Optional per-channel location list (e.g. immigration-priority small
+        # towns) — falls back to the profile-wide target locations.
+        channel_locations = [
+            str(x).strip() for x in (raw.get("locations") or []) if str(x).strip()
+        ] or locations
 
         for role in roles:
-            for location in locations:
+            for location in channel_locations:
                 query = template.format(role=role, location=location).strip()
                 if not query:
                     continue
@@ -534,7 +540,28 @@ def _location_matches_canada(location: str) -> bool:
         "montréal",
         "quebec",
         "québec",
+        # Full-Canada coverage: every province/territory + capitals. Smaller
+        # towns come from profile immigration_priority place tokens below.
+        "new brunswick",
+        "moncton",
+        "fredericton",
+        "prince edward island",
+        "charlottetown",
+        "newfoundland",
+        "st. john's",
+        "manitoba",
+        "winnipeg",
+        "saskatchewan",
+        "saskatoon",
+        "regina",
+        "yukon",
+        "whitehorse",
+        "northwest territories",
+        "yellowknife",
+        "nunavut",
+        "iqaluit",
     ]
+    allowed_tokens += immigration_place_tokens()
     blocked_tokens = [
         "united states",
         "remote us",
@@ -552,9 +579,12 @@ def _location_matches_canada(location: str) -> bool:
         "uk",
         "us only",
     ]
-    return any(token in value for token in allowed_tokens) and not any(
-        token in value for token in blocked_tokens
+    # Word-boundary matching so short tokens don't hit inside words
+    # ("uk" must not match "yukon").
+    blocked = any(
+        re.search(rf"\b{re.escape(token)}\b", value) for token in blocked_tokens
     )
+    return any(token in value for token in allowed_tokens) and not blocked
 
 
 def _compact_location(location: str) -> str:

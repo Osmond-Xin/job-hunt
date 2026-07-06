@@ -8,6 +8,7 @@ from job_hunt.models.evaluation import DimensionScore, EvaluationScores, PdfCont
 from job_hunt.models.state import JobHuntState
 from job_hunt.nodes._llm import call_node_llm_or_fallback
 from job_hunt.nodes._prompts import render
+from job_hunt.services.immigration import immigration_context
 from job_hunt.services.llm.content import extract_json_object
 
 
@@ -81,6 +82,7 @@ async def level_strategy(state: JobHuntState, config: RunnableConfig) -> dict:
 async def score_and_recommend(state: JobHuntState, config: RunnableConfig) -> dict:
     blocks = state.get("evaluation_blocks", {})
     mode = state.get("mode", "full")
+    jd_meta = state.get("jd_meta")
     prompt = render(
         "evaluate/score_and_recommend.md",
         evaluation_blocks=blocks,
@@ -88,12 +90,13 @@ async def score_and_recommend(state: JobHuntState, config: RunnableConfig) -> di
         cv=state.get("cv", ""),
         article_digest=state.get("article_digest") or "",
         jd_text=state.get("jd_text", ""),
+        immigration_context=immigration_context(jd_meta.location if jd_meta else ""),
     )
     result, errors = await call_node_llm_or_fallback(
         state,
         node_name="score_and_recommend",
         prompt=prompt,
-        prompt_version="evaluate/score_and_recommend.md:v2",
+        prompt_version="evaluate/score_and_recommend.md:v3",
         fallback_content=(
             '{"weighted_total": 0.0, "recommendation": "skip", '
             '"recommendation_rationale": "Scoring unavailable because the LLM provider failed.", '

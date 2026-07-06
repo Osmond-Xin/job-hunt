@@ -38,3 +38,19 @@ cowork:
   eligibility_category: ""
   transcript_pdf: ""
   academic_distinction_pdf: ""
+
+# Immigration-priority regions (optional) — a job offer in these places
+# advances the operator's PR goal, so the scorer accepts weaker background
+# fit and the scan location filter always lets them through. Place names
+# only; the system knows nothing about immigration rules.
+immigration_priority:
+  enabled: false
+  provinces:
+    - "Nova Scotia"
+    - "New Brunswick"
+  communities:
+    - "Moncton"
+    - "Thunder Bay"
+  score_note: >
+    Offers here advance permanent residency; treat location as a strong
+    positive and lower the effective apply threshold by 0.5.

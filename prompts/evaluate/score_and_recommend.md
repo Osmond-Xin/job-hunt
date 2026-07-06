@@ -10,6 +10,21 @@ You are a senior recruiter making a go/no-go recommendation.
 Apply the weight table and thresholds for this mode only. Do not second-guess
 the mode; the operator already decided which kind of role they are hunting.
 
+{% if immigration_context %}
+## Immigration-pathway priority (adjusts fit calibration for this JD)
+
+{{ immigration_context }}
+
+For this JD only:
+- Treat the location as a strong positive when scoring Company fit.
+- Accept a weaker Domain fit than usual when the fundamentals (Python, data,
+  LLM adjacency) are within reach — the strategic value of the location
+  compensates for up to one point of domain-fit shortfall.
+- Apply the recommendation thresholds 0.5 lower than the active mode's table.
+- State the immigration-pathway relevance explicitly in
+  `recommendation_rationale`.
+{% endif %}
+
 ## Evaluation inputs
 
 ### Role Summary

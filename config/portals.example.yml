@@ -98,3 +98,19 @@ discovery_channels:
     enabled: false
     modes: [student]
     query_template: '"{role}" co-op site:jobbank.gc.ca'
+
+  # Immigration-priority channels (see profile.yml::immigration_priority).
+  # `locations:` overrides the profile-wide target_locations for this channel
+  # only — one query per role × location, so keep the list focused. Postings
+  # from these places also bypass the scorer's usual domain-fit bar.
+  - id: jobbank_immigration
+    enabled: false
+    modes: [full]
+    query_template: '"{role}" "{location}" site:jobbank.gc.ca'
+    locations: ["Moncton", "Fredericton", "Charlottetown", "Winnipeg"]
+
+  - id: indeed_smalltown
+    enabled: false
+    modes: [full]
+    query_template: '"{role}" "{location}" site:ca.indeed.com'
+    locations: ["Thunder Bay", "Sudbury", "Saskatoon"]

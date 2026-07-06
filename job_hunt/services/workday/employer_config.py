@@ -255,7 +255,33 @@ def select_employer_config(url: str) -> tuple[str, dict[str, Any]]:
             return name, config
     if default is not None:
         return default
-    return "<embedded-fallback>", _FALLBACK_CONFIG
+    return "<embedded-fallback>", _sanitize_embedded_fallback(_FALLBACK_CONFIG)
+
+
+def _sanitize_embedded_fallback(config: dict[str, Any]) -> dict[str, Any]:
+    """Strip positional (``by_index``) strategies from the embedded fallback.
+
+    The embedded fallback carries student-specific answers ("Yes, I'm a
+    student at Example University …"). On a Workday page that has neither a
+    matching employer yaml nor a ``_default.yml``, a ``by_index`` strategy
+    would blind-fill those answers into whatever dropdown happens to sit at
+    that position — e.g. auto-answering "Yes" to an unrelated question and
+    submitting false student credentials for a full-mode applicant. Keeping
+    only label/text strategies means an unrecognized page skips the op
+    (→ manual fill) instead of guessing. Employer yamls are untouched; they
+    pin ``by_index`` to a known, stable question order.
+    """
+    ops = []
+    for op in config.get("ops", []):
+        strategies = [
+            s for s in op.get("strategies", []) if s.get("type") != "by_index"
+        ]
+        if op.get("strategies") and not strategies:
+            # Every strategy was positional — the op can only guess. Drop it so
+            # the field is surfaced for manual fill rather than blind-filled.
+            continue
+        ops.append({**op, "strategies": strategies} if op.get("strategies") else op)
+    return {**config, "ops": ops}
 
 
 def choices_for_op(op: dict[str, Any], values: dict[str, str]) -> list[str]:

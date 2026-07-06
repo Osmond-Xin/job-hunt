@@ -135,3 +135,27 @@ def test_load_employer_configs_skips_invalid_yaml(employer_dir: Path) -> None:
     assert "broken.yml" not in names
     # scalar.yml parses to a plain string, not a dict → also dropped
     assert "scalar.yml" not in names
+
+
+def test_embedded_fallback_strips_by_index_strategies():
+    """Embedded fallback must not blind-fill by dropdown position (P0 fix)."""
+    from job_hunt.services.workday.employer_config import (
+        _FALLBACK_CONFIG,
+        _sanitize_embedded_fallback,
+    )
+
+    cfg = _sanitize_embedded_fallback(_FALLBACK_CONFIG)
+    for op in cfg["ops"]:
+        for strategy in op.get("strategies", []):
+            assert strategy.get("type") != "by_index", (
+                "embedded fallback must not carry positional strategies — "
+                f"op {op.get('summary')!r} still has by_index"
+            )
+    # Strategy-based ops that survived must still carry a label/text strategy;
+    # ops whose only strategy was positional are dropped entirely. Text ops
+    # (label+value, no strategies key) are untouched and safe.
+    for op in cfg["ops"]:
+        if "strategies" in op:
+            assert op["strategies"], f"op {op.get('summary')!r} left with no strategy"
+    # by_label survivors are preserved (not everything is dropped).
+    assert cfg["ops"], "sanitized fallback should retain label-matched ops"

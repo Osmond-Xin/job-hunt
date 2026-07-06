@@ -692,3 +692,82 @@ Not scheduled. Two natural triggers, both expected around 2026-08:
 If pursued, land G1 alone first — it is also a latent-correctness fix for
 the *Canadian* flow (any Workday employer whose posting sits outside
 Canada today gets the same wrong work-auth answer).
+
+---
+
+# Section R — Red-Team Review (2026-07-06)
+
+Dual red-team pass over the whole repo. `agy` ran a full read-only audit;
+`codex` was requested as the cross-host partner but its ChatGPT quota was
+exhausted (degraded), so cross-validation is host (Claude) + agy only — one
+external, not two. Findings below are triaged by *this system's actual threat
+model*: a single-operator local CLI, apply defaults to fill-only with manual
+submit, auto-submit is off by default and Workday-only behind four gates.
+
+## R.1 Fixed in this pass
+
+- **[was P0] Workday embedded-fallback blind-fill** — `_FALLBACK_CONFIG` in
+  `employer_config.py` carried student answers ("Yes, student at Example
+  University, Master of Data Analytics, Graduate Year 2") reachable by
+  `by_index` (positional) strategies. On a Workday page with neither a
+  matching employer yaml nor `_default.yml`, `by_index` would fill those into
+  whatever dropdown sat at that position. Fix: `_sanitize_embedded_fallback`
+  strips all `by_index` strategies from the embedded fallback (employer yamls
+  keep theirs — they pin a known question order); ops left with no strategy
+  are dropped so the field is surfaced for manual fill instead of guessed.
+  Severity in practice was below agy's P0: the operator has `_default.yml`, so
+  the embedded fallback rarely triggers, and auto-submit is off by default.
+  But it becomes a real hazard once `mode` flips to full with the student
+  Workday configs still present — hence fixed now.
+
+## R.2 Confirmed, deferred (with rationale)
+
+- **[P1] No instruction/data separation in prompts** — every prompt is one
+  `user` message (`_llm.py`); JD text, scraped pages, and email bodies are
+  interpolated raw, so a malicious JD/email can try to steer scoring or
+  generated text. Real. Mitigation is a system/user split with delimited
+  untrusted blocks. Deferred: blast radius is a mis-scored row the operator
+  still reviews before applying; no auto-action keys off the score. Worth
+  doing before any unattended/batch evaluate mode.
+- **[P1, corrected] "Email body manipulates tracker"** — agy tied this to the
+  new LLM `summarize.py`. Corrected: `reconcile.py` does not read the LLM
+  summaries at all — it uses the rule parser `classify_email_event`, and an
+  auto status change needs `--apply` + `update_existing` + a reliable fuzzy
+  match; high-value states otherwise land in the review queue. `summarize.py`
+  output (`email-summaries.jsonl`) currently drives no automatic action. Real
+  residual: a crafted rejection/offer email that the rule parser matches could
+  flip a row on a manual `reconcile --apply`. Deferred; consider sender-domain
+  verification before auto-updating to Offer/Interview.
+- **[P2] `write_tracker_addition` read-modify-write race** — `nodes/tracker.py`
+  computes `next_num` outside the filelock held by `append_entry`; two
+  concurrent processes could duplicate a row number. Real but low-frequency
+  (evaluate is sequential within a run; needs two `job-hunt` processes at
+  once). Fix = hold the lock across parse→append.
+- **[P2] Fuzzy company match wrong-row** — normalized `fuzz.ratio` can score
+  "Goog" vs "Google" ~0.87 and, with an exact role, update the wrong row on
+  reconcile. Real; tighten the company gate to exact-normalized or route
+  partials to review.
+- **[P2] SSRF / `local:` file read** in `web_extract.py` — no private-IP block
+  on fetched URLs; `local:<path>` reads arbitrary files. Real but weak threat
+  model: URLs are operator-supplied or from job boards (http(s)), the tool
+  runs locally on macOS with no cloud metadata endpoint, and `local:` reads
+  the operator's own files. Fix if a batch/hosted mode ever ingests untrusted
+  URLs: block private ranges, sandbox `local:` to `jds/`.
+- **[P2] LinkedIn account-ban exposure** — instant `element.fill()` with no
+  human-like delays is easily bot-flagged; relevant because a banned LinkedIn
+  account hurts the operator's core Canada goal. Mitigation: randomized
+  per-key typing delays. (No auto-login already reduces exposure.)
+- **[P3] Hardcoded "2" years-of-experience** (`linkedin/fields.py`) — fine for
+  co-op (student mode) but wrong for senior full-mode roles. Wire to a
+  `profile.yml` experience map before the full-mode LinkedIn push.
+- **[P3] httpx client churn**, **[P3] storage/ umask** — low priority on a
+  single-user machine.
+
+## R.3 Verdict
+
+The system is sound for its actual use (attended, manual-submit-by-default,
+single operator). The one change that mattered before the August full-mode
+flip — the Workday blind-fill — is fixed. The rest are correctly-identified
+hardening items whose blast radius is bounded by "operator reviews before
+acting"; schedule them with the full-mode / any-unattended-mode work, not
+before.
