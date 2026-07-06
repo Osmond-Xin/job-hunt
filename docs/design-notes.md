@@ -4,7 +4,7 @@ Rolling memo for design completeness review. Not a migration plan — captures
 what is good as-is, what needs improvement, and known mismatches between the
 system and the operator's actual situation.
 
-Last updated: 2026-06-13.
+Last updated: 2026-07-06.
 
 ## Section A — Architecture & Modularity Audit
 
@@ -601,3 +601,94 @@ too tight; raised to `+8000`. Folded into ADR-013.
 Track complete and now documented. The operator mandate — **trade tokens for
 quality** — is the throughline: prefer extra LLM passes / retries / headroom
 over cheaper-but-worse output. Apply the same bias to future generation work.
+
+---
+
+# Section P — Global Expansion Design (added 2026-07-06, not scheduled)
+
+Design memo only. The operator stays focused on the Canadian market for now;
+this section captures the design and the effort estimate so the go/no-go
+decision can be made later without re-deriving the analysis. Mirrors the
+Section N method: one top-level config block, every subsystem reads through
+it, the system stays ignorant of *why*.
+
+## P.1 What "global" actually means for this operator
+
+Three geo classes, not a country-by-country visa model:
+
+1. **remote_global** — employer hires people based in Canada (direct, EOR,
+   or contractor). No new work authorization needed; timezone is the main
+   constraint.
+2. **relocation** — role is in a target country and the employer sponsors
+   visas. Viable only for a shortlist of countries/employers.
+3. **blocked** — requires local work authorization, no sponsorship. SKIP
+   before spending evaluation tokens.
+
+## P.2 Current Canada hardcoding inventory
+
+| Layer | Location | Issue |
+|---|---|---|
+| Scan | `scan.py::_location_matches_canada` + `--include-non-canada` | hardcoded allow/block city tokens; default drops all non-Canada |
+| Scan | `discovery_context` fallback `["Canada"]`; portals.yml query strings | Canada baked into queries (`ca.indeed.com`, "Halifax", "Canada") |
+| Evaluate | `eligibility_gate` | student/full only; no geo / sponsorship dimension |
+| Apply ⚠️ | `profile/workday-employers/_default.yml` | "legally permitted to work in the country where this job is located" answered as if the job is always in Canada — **wrong answer auto-filled on any non-Canada application; honesty blocker, must land before any discovery expansion** |
+| Apply | `cli.py` phone code "Canada (+1)"; `easy_apply.py` country default "Canada" | should read `profile.location`, not literals |
+| PDF | `nodes/pdf.py` | already geo-aware (letter vs A4 by JD country) — no change |
+
+## P.3 Config shape: `geo:` block in profile.yml
+
+```yaml
+geo:
+  work_authorized: ["Canada"]          # single source of truth
+  remote:
+    accept: true
+    hire_in_authorized_country_ok: true
+    timezone_home: "America/Toronto"
+    max_overlap_gap_hours: 6           # scorer context, not a hard gate
+  relocation:
+    accept: true
+    requires_sponsorship: true
+    target_countries: ["United States", "United Kingdom", "Singapore", "UAE"]
+```
+
+## P.4 Cascade (Section N.3 style)
+
+| Subsystem | Change |
+|---|---|
+| Scan filter | replace `_location_matches_canada` with `services/geo.py::classify_location() -> authorized \| remote_global \| relocation \| blocked`; token tables generated from the `geo:` block; `--include-non-canada` → `--geo authorized\|remote\|relocation\|all` |
+| Discovery channels | `region:` tag per channel; regional query domains (indeed.com / uk.indeed.com / ca.indeed.com); add remote-global boards (RemoteOK, WeWorkRemotely, Remotive, Wellfound remote, HN Who's Hiring) and relocation boards (relocate.me etc.); all global channels `modes: [full]` |
+| eligibility_gate v2 | `extract_jd` additionally emits `job_country` + `sponsorship_signal` (regex tier: "authorized to work in the US", "no visa sponsorship", "remote anywhere", "EOR"); gate adds `geo_blocked` SKIP reason alongside the student/full check |
+| Scoring | no new weight dimension — inject one geo-context line into the score prompt (timezone gap / sponsorship needed); Company fit absorbs it |
+| Compensation | `compensation.currency` + comp-research prompt reports local currency with CAD conversion |
+| Apply: work-auth answers ⚠️ | `_default.yml` work-authorization ops branch on `job_country` via existing `choices_by`: Canada → Yes; elsewhere → truthful No / needs sponsorship |
+| Apply: defaults | Workday phone country code + LinkedIn country read from `profile.location` |
+| Auto-submit | 5th gate: geo class `relocation` (work-auth answer ≠ Yes) ⇒ never auto-submit |
+| CV / letter | no per-country narrative split; cover-letter prompt rule: remote_global ⇒ state "based in Canada, authorized to work in Canada"; relocation ⇒ state sponsorship need honestly |
+| Funnel | `geo_class` tag on activity-log events so Section H metrics can slice by geo |
+
+## P.5 Phases + effort estimate
+
+Estimates assume current codebase familiarity; test counts follow existing
+per-module conventions.
+
+| Phase | Scope | Estimate |
+|---|---|---|
+| **G1 — correctness first** | `geo:` schema + `services/geo.py` classifier + replace `_location_matches_canada` + `_default.yml` work-auth branching + auto-submit 5th gate + tests | **1.5–2 days**. Blocker for everything else: expanding discovery without G1 mass-produces applications with wrong work-auth answers |
+| **G2 — discovery** | region-tagged channels, regional query templates, remote-global + relocation boards in portals.yml + tests | **0.5–1 day** (mostly config + template expansion) |
+| **G3 — evaluation** | `extract_jd` geo fields + eligibility_gate geo dimension + score-prompt context line + compensation currency | **1–1.5 days** (prompt + node + gate tests) |
+| **G4 — metrics** | `geo_class` in activity log + funnel slice | **0.5 day**, rides on the Section H dashboard work |
+| **Total** | | **3.5–5 days** of focused work |
+
+## P.6 Timing and verdict
+
+Not scheduled. Two natural triggers, both expected around 2026-08:
+
+1. The `mode: student → full` flip (PGWP) — global channels are
+   `modes: [full]` anyway, so G2+ has zero effect until then.
+2. Section H funnel data (33 Applied rows, threshold met) showing the
+   Canadian response rate justifies (or doesn't) widening the top of the
+   funnel.
+
+If pursued, land G1 alone first — it is also a latent-correctness fix for
+the *Canadian* flow (any Workday employer whose posting sits outside
+Canada today gets the same wrong work-auth answer).

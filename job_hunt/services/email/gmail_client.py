@@ -105,6 +105,32 @@ class GmailClient:
         response = request.execute()
         return response.get("messages", [])
 
+    def list_messages_all(
+        self, query: str, label_ids: list[str] | None = None, cap: int = 2000
+    ) -> list[dict[str, Any]]:
+        """Like list_messages but follows nextPageToken up to ``cap`` messages."""
+        messages: list[dict[str, Any]] = []
+        page_token: str | None = None
+        while len(messages) < cap:
+            request = (
+                self.service()
+                .users()
+                .messages()
+                .list(
+                    userId="me",
+                    q=query,
+                    labelIds=label_ids or [],
+                    maxResults=min(500, cap - len(messages)),
+                    pageToken=page_token,
+                )
+            )
+            response = request.execute()
+            messages.extend(response.get("messages", []))
+            page_token = response.get("nextPageToken")
+            if not page_token:
+                break
+        return messages
+
     def get_message(self, message_id: str, fmt: str = "full") -> dict[str, Any]:
         return self.service().users().messages().get(userId="me", id=message_id, format=fmt).execute()
 

@@ -1127,6 +1127,55 @@ def email_poll(
         console.print(f"- {event.event_type}: {event.company or '?'} / {event.role or '?'} ({event.confidence:.2f})")
 
 
+@email_app.command("summarize")
+def email_summarize(
+    since: str = "120d",
+    limit: int = 0,
+    live: bool = False,
+    concurrency: int = 3,
+) -> None:
+    """LLM-scan the mailbox: classify + summarize every email into data/email-summaries.jsonl."""
+    from job_hunt.services.email.summarize import SUMMARY_PATH, summarize_mailbox
+
+    settings = load_settings()
+    console.print(f"Mailbox summarize since={since} (broad query; LLM does the filtering).")
+    console.print(f"Output: {SUMMARY_PATH}")
+    if not live:
+        console.print("Dry-run only. Pass --live to call Gmail + MiniMax.")
+        return
+    result = asyncio.run(
+        summarize_mailbox(
+            settings,
+            since=since,
+            limit=limit,
+            concurrency=concurrency,
+            progress=lambda msg: console.print(f"[dim]{msg}[/dim]"),
+        )
+    )
+    ActivityLogger(settings.activity).emit(
+        ActivityEvent(
+            type="email.summarize_completed",
+            level="info",
+            summary=(
+                f"Mailbox summarize: {result.summarized} summarized, "
+                f"{result.skipped_done} already done, {result.errors} errors"
+            ),
+            payload={
+                "listed": result.listed,
+                "skipped_done": result.skipped_done,
+                "summarized": result.summarized,
+                "errors": result.errors,
+            },
+        )
+    )
+    console.print(f"Listed: {result.listed}")
+    console.print(f"Already summarized: {result.skipped_done}")
+    console.print(f"Summarized now: {result.summarized}")
+    console.print(f"Errors: {result.errors}")
+    if result.error_ids:
+        console.print(f"[yellow]Retry errors by re-running the same command (resumable).[/yellow]")
+
+
 @email_app.command("events")
 def email_events(limit: int = 20, needs_review: bool = False) -> None:
     repo = EmailEventRepository()
