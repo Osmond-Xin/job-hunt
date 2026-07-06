@@ -351,3 +351,25 @@ def test_parse_tsv_addition_handles_swapped_status_score(tmp_path: Path) -> None
     assert parsed is not None
     assert parsed.status == "Applied"
     assert parsed.score == "4.0/5"
+
+
+def test_format_tracker_entry_escapes_pipes():
+    """A pipe in a scraped title must not shift columns."""
+    from job_hunt.repositories.tracker_repo import format_tracker_entry, parse_tracker_line
+
+    entry = TrackerEntry(
+        number=1, date="2026-07-06", company="Acme | Corp",
+        role="AI Engineer | Remote", score="4.0/5", status="Applied",
+        pdf="✅", report="—", notes="line1\nline2",
+    )
+    row = format_tracker_entry(entry)
+    # Unescaped (structural) pipes = 10 for 9 columns; data pipes are escaped.
+    import re as _re
+
+    assert len(_re.findall(r"(?<!\\)\|", row)) == 10
+    assert "\\|" in row
+    assert "\n" not in row
+    # Round-trips back to the original cell values.
+    parsed = parse_tracker_line(row)
+    assert parsed.company == "Acme | Corp"
+    assert parsed.role == "AI Engineer | Remote"

@@ -172,7 +172,10 @@ def parse_tracker_line(line: str) -> TrackerEntry | None:
     line = line.strip()
     if not line.startswith("|") or "---" in line or line.lower().startswith("| #"):
         return None
-    parts = [part.strip() for part in line.strip("|").split("|")]
+    # Split on unescaped pipes only, then unescape, so a cell containing an
+    # escaped "\|" (written by _cell) round-trips as a single column.
+    raw_parts = re.split(r"(?<!\\)\|", line.strip("|"))
+    parts = [part.strip().replace("\\|", "|") for part in raw_parts]
     if len(parts) < 8:
         return None
     try:
@@ -196,8 +199,20 @@ def normalize(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", value.lower())
 
 
+def _cell(value: object) -> str:
+    """Escape a value for a pipe-delimited Markdown cell.
+
+    A raw ``|`` in a scraped title/company/notes field shifts every later
+    column and corrupts the row (the 9-column verify then flags it, but the
+    data is already wrong). Escape pipes and flatten newlines so one bad
+    posting title can't break the table.
+    """
+    return str(value).replace("|", "\\|").replace("\n", " ").replace("\r", " ")
+
+
 def format_tracker_entry(entry: TrackerEntry) -> str:
     return (
-        f"| {entry.number} | {entry.date} | {entry.company} | {entry.role} | "
-        f"{entry.score} | {entry.status} | {entry.pdf} | {entry.report} | {entry.notes} |"
+        f"| {entry.number} | {_cell(entry.date)} | {_cell(entry.company)} | {_cell(entry.role)} | "
+        f"{_cell(entry.score)} | {_cell(entry.status)} | {_cell(entry.pdf)} | "
+        f"{_cell(entry.report)} | {_cell(entry.notes)} |"
     )

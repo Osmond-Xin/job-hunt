@@ -73,3 +73,12 @@ def test_location_filter_covers_all_provinces():
 def test_location_filter_still_blocks_non_canada():
     assert not _location_matches_canada("Austin, Texas, United States")
     assert not _location_matches_canada("London, United Kingdom")
+
+
+def test_passes_canada_filter_keeps_unknown_location():
+    """Empty location (WebSearch/discovery hits) must not be dropped as non-Canadian."""
+    from job_hunt.services.scan import _passes_canada_filter
+
+    assert _passes_canada_filter("") is True          # unknown → keep
+    assert _passes_canada_filter("Moncton, NB") is True
+    assert _passes_canada_filter("Austin, Texas, USA") is False

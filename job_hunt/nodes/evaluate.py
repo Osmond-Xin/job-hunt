@@ -114,6 +114,15 @@ async def score_and_recommend(state: JobHuntState, config: RunnableConfig) -> di
     }
 
 
+def _coerce_bool(value: object) -> bool:
+    """Coerce an LLM-returned flag to bool. ``bool("false")`` is True, so a
+    model that emits the string "false" would wrongly generate a PDF —
+    handle string forms explicitly."""
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "yes", "1"}
+    return bool(value)
+
+
 def _parse_scores(content: str) -> EvaluationScores:
     try:
         data = extract_json_object(content)
@@ -130,7 +139,7 @@ def _parse_scores(content: str) -> EvaluationScores:
                 weighted_total=float(data.get("weighted_total", 0.0)),
                 recommendation=data.get("recommendation", "skip"),
                 recommendation_rationale=data.get("recommendation_rationale", ""),
-                generate_pdf=bool(data.get("generate_pdf", False)),
+                generate_pdf=_coerce_bool(data.get("generate_pdf", False)),
                 strengths=data.get("strengths", []),
                 gaps=data.get("gaps", []),
                 pdf_content=PdfContent(**pdf_raw),

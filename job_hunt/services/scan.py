@@ -115,7 +115,7 @@ def scan_portals(
             if not _title_matches(job.title, positives, negatives):
                 continue
             result.matched_jobs += 1
-            if not include_non_canada and not _location_matches_canada(job.location):
+            if not include_non_canada and not _passes_canada_filter(job.location):
                 result.skipped_filtered += 1
                 job.status = "skipped_location"
                 if apply:
@@ -151,7 +151,7 @@ def scan_portals(
                     continue
                 result.fetched_jobs += 1
                 result.matched_jobs += 1
-                if not include_non_canada and not _location_matches_canada(job.location):
+                if not include_non_canada and not _passes_canada_filter(job.location):
                     result.skipped_filtered += 1
                     job.status = "skipped_location"
                     if apply:
@@ -266,12 +266,25 @@ def scan_discovery_channels(
                             url=url,
                             title=title,
                             company=company_name,
-                            location="",
+                            # Stamp the queried location so the Canada / priority
+                            # filter sees the real region instead of "" (dropped).
+                            location=location,
                             portal=cid,
                             source=query,
                         )
                     )
     return out
+
+
+def _passes_canada_filter(location: str) -> bool:
+    """Keep a job unless it has a location that is clearly non-Canadian.
+
+    WebSearch / discovery-channel hits carry no parsed location (``""``). An
+    unknown location must NOT be treated as non-Canadian — the queries are
+    already Canada/location-scoped — otherwise the entire tier-2/3 discovery
+    stream is silently dropped in default (Canada-only) mode.
+    """
+    return not location or _location_matches_canada(location)
 
 
 def scan_via_websearch(
