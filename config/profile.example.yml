@@ -26,6 +26,9 @@ narrative:
   deal_breakers: "Example: roles that require unsupported legal claims or unsafe automation."
   best_achievement: "Example: shipped a production workflow automation that saved measurable time."
   exit_story: "Example: seeking a role focused on production AI systems."
+  # Optional: a truthful one-line work-authorization / availability statement,
+  # rendered near the close of full-mode cover letters (e.g. PGWP timeline).
+  availability: "Example: eligible to work full-time in Canada; available immediately."
 
 apply:
   cover_letter_default: false

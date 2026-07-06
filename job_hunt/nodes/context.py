@@ -162,5 +162,6 @@ def _normalize_profile(raw: dict) -> dict:
         "preferred_archetypes": preferred_archetypes,
         "skills": narrative.get("superpowers", []),
         "exit_narrative": narrative.get("exit_story", "") or "",
+        "availability": narrative.get("availability", "") or "",
         "mode": mode,
     }

@@ -41,8 +41,10 @@ async def generate_cover_letter(state: JobHuntState, config: RunnableConfig) -> 
     role = jd_meta.title if jd_meta else ""
 
     exit_narrative = ""
+    availability = ""
     if profile is not None:
         exit_narrative = getattr(profile, "exit_narrative", "") or ""
+        availability = getattr(profile, "availability", "") or ""
 
     prompt = render(
         "evaluate/cover_letter.md",
@@ -53,6 +55,7 @@ async def generate_cover_letter(state: JobHuntState, config: RunnableConfig) -> 
         archetype=state.get("archetype"),
         evaluation_blocks=state.get("evaluation_blocks", {}),
         exit_narrative=exit_narrative,
+        availability=availability,
         mode=state.get("mode", "full"),
     )
 
@@ -60,7 +63,7 @@ async def generate_cover_letter(state: JobHuntState, config: RunnableConfig) -> 
         state,
         node_name="generate_cover_letter",
         prompt=prompt,
-        prompt_version="evaluate/cover_letter.md:v2",
+        prompt_version="evaluate/cover_letter.md:v3",
         artifact_type="cover letter",
         temperature=0.3,
         max_tokens=900,

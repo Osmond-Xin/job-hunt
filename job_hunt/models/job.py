@@ -50,6 +50,10 @@ class CandidateProfile(BaseModel):
     # ``narrative``) so downstream consumers (cover_letter, scoring) do not
     # re-derive the mode each time.
     exit_narrative: str = ""
+    # Mode-resolved work-authorization / availability statement (from
+    # ``narrative.availability``). Rendered truthfully in full-mode cover
+    # letters so recruiters see the PGWP timeline instead of screening out.
+    availability: str = ""
     # The mode this profile was loaded under. Allows downstream code that
     # already has the profile in hand to inspect mode without re-reading
     # profile.yml. Mirrors what ``current_mode()`` returned at load time.
