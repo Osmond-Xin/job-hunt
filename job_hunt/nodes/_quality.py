@@ -5,11 +5,18 @@ artifact is audited by a second LLM pass against the hard framing rules; a
 failing draft is regenerated with the auditor's issues as explicit feedback,
 up to ``_MAX_ATTEMPTS`` times. The last draft is used either way — a failed
 audit downgrades to a warning, never a blocked pipeline.
+
+Tier split: callers pick the generation tier (premium for outward-facing
+artifacts like the tailored CV and cover letter; cheap for the rest). The
+audit pass always runs on the cheap tier — a different model family acting
+as an independent reviewer. When the premium tier is unavailable, generation
+retries once on the cheap tier so the pipeline degrades instead of stalling.
 """
 
 from __future__ import annotations
 
 import re
+from typing import Literal
 
 from job_hunt.models.state import JobHuntState
 from job_hunt.nodes._llm import call_node_llm_or_fallback
@@ -53,6 +60,7 @@ async def generate_with_audit(
     artifact_type: str,
     temperature: float,
     max_tokens: int,
+    tier: Literal["cheap", "premium"] = "cheap",
 ) -> tuple[str, list[str]]:
     """Run the generate/audit loop. Returns (artifact, errors).
 
@@ -77,9 +85,26 @@ async def generate_with_audit(
             fallback_content="",
             temperature=temperature,
             max_tokens=max_tokens,
+            tier=tier,
         )
         errors += gen_errors
         candidate = _CODE_FENCE_RE.sub("", result.content.strip()).strip()
+        if not candidate and tier == "premium":
+            errors.append(
+                f"{node_name}: premium generation unavailable; retrying on cheap tier"
+            )
+            result, gen_errors = await call_node_llm_or_fallback(
+                state,
+                node_name=node_name,
+                prompt=gen_prompt,
+                prompt_version=prompt_version,
+                fallback_content="",
+                temperature=temperature,
+                max_tokens=max_tokens,
+                tier="cheap",
+            )
+            errors += gen_errors
+            candidate = _CODE_FENCE_RE.sub("", result.content.strip()).strip()
         if not candidate:
             return "", errors
         draft = candidate
@@ -117,6 +142,8 @@ async def _audit(
         jd_text=state.get("jd_text", ""),
         mode=state.get("mode", "full"),
     )
+    # Audit deliberately stays on the cheap tier: a different model family
+    # reviewing the premium draft is an independent check, not a rubber stamp.
     result, audit_errors = await call_node_llm_or_fallback(
         state,
         node_name=f"{node_name}_audit",
@@ -125,6 +152,7 @@ async def _audit(
         fallback_content="",
         temperature=0.1,
         max_tokens=1500,
+        tier="cheap",
     )
     if audit_errors or not result.content.strip():
         # Auditor unavailable — accept the draft rather than block the run.

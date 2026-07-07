@@ -106,3 +106,45 @@ def test_unavailable_auditor_accepts_draft(monkeypatch) -> None:
     artifact, errors = _run(llm)
     assert artifact == "good draft"
     assert errors == []
+
+
+def test_premium_generation_forwards_tier_and_audits_on_cheap(monkeypatch) -> None:
+    llm = _ScriptedLLM(["## Experience\n- Shipped X", _PASS])
+    monkeypatch.setattr(quality_module, "call_node_llm_or_fallback", llm)
+    artifact, errors = asyncio.run(
+        generate_with_audit(
+            dict(_STATE),
+            node_name="tailor_cv",
+            prompt="BASE PROMPT",
+            prompt_version="x:v1",
+            artifact_type="tailored CV",
+            temperature=0.2,
+            max_tokens=100,
+            tier="premium",
+        )
+    )
+    assert artifact == "## Experience\n- Shipped X"
+    assert errors == []
+    assert llm.calls[0]["tier"] == "premium"  # generation on premium
+    assert llm.calls[1]["tier"] == "cheap"  # audit stays on cheap
+
+
+def test_premium_empty_generation_retries_on_cheap(monkeypatch) -> None:
+    llm = _ScriptedLLM(["", "cheap draft", _PASS])
+    monkeypatch.setattr(quality_module, "call_node_llm_or_fallback", llm)
+    artifact, errors = asyncio.run(
+        generate_with_audit(
+            dict(_STATE),
+            node_name="tailor_cv",
+            prompt="BASE PROMPT",
+            prompt_version="x:v1",
+            artifact_type="tailored CV",
+            temperature=0.2,
+            max_tokens=100,
+            tier="premium",
+        )
+    )
+    assert artifact == "cheap draft"
+    assert llm.calls[0]["tier"] == "premium"
+    assert llm.calls[1]["tier"] == "cheap"  # generation retry on cheap
+    assert any("premium generation unavailable" in err for err in errors)

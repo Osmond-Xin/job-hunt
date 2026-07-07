@@ -67,6 +67,7 @@ async def generate_cover_letter(state: JobHuntState, config: RunnableConfig) -> 
         artifact_type="cover letter",
         temperature=0.3,
         max_tokens=900,
+        tier="premium",
     )
     if not body_md:
         return {"errors": errors}

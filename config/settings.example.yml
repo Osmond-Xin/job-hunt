@@ -25,10 +25,16 @@ llm:
     proxy_header_name: X-Proxy-Token
   premium:
     provider: local_command
-    model: claude-or-gpt-5.5
+    model: claude-cli
     invocation: local_command
-    command: ["claude", "-p"]
-    timeout_seconds: 180
+    # {prompt_path} is substituted by LocalCommandProvider. Without it the
+    # bare path would be appended as the whole prompt, leaving the model no
+    # instruction to actually read the file.
+    command:
+      - claude
+      - -p
+      - "Read the file {prompt_path} and execute the instructions in it. Output ONLY the requested artifact — no preamble, no commentary, no code fences."
+    timeout_seconds: 300
 
 observability:
   local_ledger:

@@ -42,6 +42,7 @@ async def tailor_cv(state: JobHuntState, config: RunnableConfig) -> dict:
         artifact_type="tailored CV",
         temperature=0.2,
         max_tokens=2800,
+        tier="premium",
     )
     if not body:
         return {"errors": errors}
