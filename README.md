@@ -88,6 +88,41 @@ staging) → submission (`apply` fill-only loop with manual final-click) → rec
 (`email poll` + `email reconcile`) → hygiene (`tracker verify / dedup / normalize /
 check-sync`).
 
+## Architecture
+
+The system is three cooperating subsystems, deliberately kept separate:
+
+1. **Evaluation graph** (`job_hunt/graphs/evaluate_job.py`, `job_hunt/nodes/`) —
+   a LangGraph `StateGraph` of ~20 typed, single-purpose async nodes. Given a
+   job description it extracts and gates it, classifies the role archetype,
+   matches it against the candidate CV, researches the company, scores fit
+   across weighted dimensions, and — only when the score clears the bar —
+   generates a tailored CV, cover letter, and report. LLM calls go through a
+   tiered provider layer (cheap tier for analysis, premium tier for
+   generation) with structured outputs and graceful fallback. It is the only
+   subsystem that is a LangGraph graph.
+
+2. **Discovery service** (`job_hunt/services/scan.py`) — not a graph. Scans
+   direct ATS APIs (Greenhouse / Lever / Ashby), per-company Brave WebSearch,
+   and opt-in cross-employer discovery channels, then de-duplicates results
+   against the local tracker and scan history.
+
+3. **Application assistant** (`job_hunt/cli.py` apply flow +
+   `job_hunt/services/workday/`, `job_hunt/services/linkedin/`,
+   `job_hunt/services/web/apply_ipc.py`) — Playwright automation for Workday
+   and LinkedIn Easy Apply. It runs a **two-step, fill-only** flow: the browser
+   fills known fields and stops at the review screen; a human inspects and
+   clicks submit; a separate confirm step records the application. Out-of-band
+   commands (replace PDF, capture page, refill) are coordinated through
+   file-lock IPC sentinels and a per-session heartbeat, with a structured JSONL
+   event log per run. Auto-submit exists but is off by default and sits behind
+   multiple gates; the default posture is that nothing is ever submitted
+   without an explicit human click.
+
+A single top-level `mode: student | full` switch in `profile.yml` cascades
+across discovery filters, scoring weights, and narrative framing, so the same
+job produces the appropriate recommendation for the kind of role being hunted.
+
 ## Goals
 
 - Keep the workflow human-in-the-loop. The system can draft, fill, and track, but it must not submit applications without explicit user approval.
