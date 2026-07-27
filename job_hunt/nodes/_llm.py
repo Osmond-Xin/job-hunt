@@ -16,6 +16,12 @@ from job_hunt.services.llm.traced import traced_chat
 
 _GRAPH_NAME = "evaluate_job_graph"
 
+# A node that hits this path still returns a result, so the graph completes and
+# the job *looks* successful. Batch runners match on this marker to tell "50
+# jobs evaluated" from "50 jobs quietly ran on fallback text because the
+# provider was down".
+LLM_FAILURE_MARKER = "LLM call failed"
+
 
 def node_metadata(node_name: str, state: JobHuntState, prompt_version: str) -> dict[str, Any]:
     jd_meta = state.get("jd_meta")
@@ -87,7 +93,10 @@ async def call_node_llm_or_fallback(
         )
         return result, []
     except Exception as exc:
-        message = f"{node_name} LLM call failed; using fallback content: {type(exc).__name__}: {exc}"
+        message = (
+            f"{node_name} {LLM_FAILURE_MARKER}; using fallback content: "
+            f"{type(exc).__name__}: {exc}"
+        )
         return (
             ChatResult(
                 content=fallback_content,

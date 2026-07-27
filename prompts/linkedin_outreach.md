@@ -13,7 +13,9 @@ to a contact at **{{ company }}** about the **{{ role }}** opening.
 **Role**: {{ role }}
 {% if jd_text %}
 **JD excerpt**:
+<<<JD_TEXT_BEGIN>>>
 {{ jd_text[:1500] }}
+<<<JD_TEXT_END>>>
 {% endif %}
 {% if cv_excerpt %}
 **Candidate CV excerpt**:

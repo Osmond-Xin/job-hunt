@@ -1,4 +1,4 @@
-{% include 'shared.md' %}
+{% include 'shared_artifact.md' %}
 
 ---
 
@@ -20,7 +20,9 @@ fail for minor style preferences.
 {% endif %}
 
 ## JD Text
+<<<JD_TEXT_BEGIN>>>
 {{ jd_text }}
+<<<JD_TEXT_END>>>
 
 ## Draft under audit
 {{ draft }}

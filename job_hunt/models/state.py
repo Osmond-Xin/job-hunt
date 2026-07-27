@@ -65,3 +65,7 @@ class JobHuntState(TypedDict, total=False):
 
     # --- errors (parallel fan-in via list concat) ---
     errors: Annotated[list[str], operator.add]
+    # Artifacts that were withheld or could not be verified by the quality
+    # audit. Separate from `errors` because these must reach the operator as a
+    # decision ("do not send this until you read it"), not as run noise.
+    artifact_warnings: Annotated[list[str], operator.add]

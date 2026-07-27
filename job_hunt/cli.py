@@ -3,6 +3,7 @@ from __future__ import annotations
 import shutil
 import asyncio
 import json
+import math
 import os
 import re
 import shlex
@@ -19,6 +20,8 @@ from rich.table import Table
 from job_hunt.config.models import Settings, load_settings
 from job_hunt.graphs.evaluate_job import build_evaluate_job_graph
 from job_hunt.models.events import ApplicationEvent
+from job_hunt.nodes._llm import LLM_FAILURE_MARKER
+from job_hunt.services.llm.local_command import wants_json as provider_wants_json
 from job_hunt.repositories.tracker_repo import TrackerRepository
 from job_hunt.services.scan import scan_portals
 from job_hunt.repositories.email_event_repo import EmailEventRepository
@@ -36,7 +39,7 @@ from job_hunt.services.profile_loader import (
     workday_education_entries as _load_workday_education_entries,
     workday_experience_entries as _load_workday_experience_entries,
 )
-from job_hunt.services.web import apply_ipc, apply_run_log
+from job_hunt.services.web import apply_ipc, apply_ops, apply_run_log, page_summary
 from job_hunt.services.web_extract import extract_url_text
 from job_hunt.services.workday.employer_config import (
     select_employer_config as _select_workday_employer_config,
@@ -1412,11 +1415,353 @@ def evaluate(
             console.print(f"PDF: {result['pdf_path']}")
         if result.get("cover_letter_path"):
             console.print(f"Cover letter: {result['cover_letter_path']}")
+        for warning in result.get("artifact_warnings") or []:
+            console.print(f"[red]ARTIFACT:[/red] {warning}")
         errors = result.get("errors") or []
         for error in errors:
             console.print(f"[yellow]warning:[/yellow] {error}")
 
     asyncio.run(run())
+
+
+# Each concurrent job can hold an LLM subprocess open for minutes; more
+# parallelism buys latency but risks resource exhaustion on a laptop.
+_BATCH_MAX_CONCURRENCY = 8
+
+
+@app.command("evaluate-batch")
+def evaluate_batch(
+    urls_file: Path = typer.Argument(..., help="Text file with one job URL (or JD path) per line; '#' comments allowed."),
+    concurrency: int = typer.Option(3, "--concurrency", help=f"Jobs evaluated in parallel (max {_BATCH_MAX_CONCURRENCY}). One job is ~10 minutes of mostly-waiting LLM calls."),
+    max_jobs: int = typer.Option(60, "--max-jobs", help="Refuse to start if the file holds more targets than this."),
+    max_cost: float = typer.Option(0.0, "--max-cost", help="Stop launching new jobs once premium spend for this run exceeds N USD. 0 disables the cap."),
+    max_failures: int = typer.Option(0, "--max-failures", help="Exit non-zero when more than this many jobs fail. 0 means any failure is reported as failure."),
+    skip_evaluated: bool = typer.Option(True, "--skip-evaluated/--force", help="Skip targets whose company+role already has a tracker row. --force re-evaluates and re-spends."),
+    cover_letter: bool | None = typer.Option(
+        None,
+        "--cover-letter/--no-cover-letter",
+        help="Generate cover letter PDFs. Defaults to apply.cover_letter_default in profile.yml.",
+    ),
+) -> None:
+    """Evaluate many jobs in one run and print a single summary table.
+
+    Each job runs the same graph as `evaluate`, so jobs that clear the score
+    gate still get their CV and cover letter written on the premium tier. A
+    batch is a multi-hour, real-money operation: it preflights once up front
+    and stops early rather than burning the whole list on a broken setup.
+    """
+    targets = [
+        line.strip()
+        for line in urls_file.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    # Same target listed twice costs twice; the second result would also just
+    # overwrite the first in the tracker.
+    targets = list(dict.fromkeys(targets))
+    if not targets:
+        console.print(f"[red]No targets found in {urls_file}.[/red]")
+        raise typer.Exit(1)
+    if len(targets) > max_jobs:
+        console.print(
+            f"[red]{len(targets)} targets exceeds --max-jobs {max_jobs}.[/red] "
+            "Split the file or raise the cap deliberately."
+        )
+        raise typer.Exit(1)
+    if concurrency > _BATCH_MAX_CONCURRENCY:
+        console.print(
+            f"[yellow]Clamping --concurrency {concurrency} to {_BATCH_MAX_CONCURRENCY}[/yellow] "
+            "(each job can hold an LLM subprocess open)."
+        )
+        concurrency = _BATCH_MAX_CONCURRENCY
+
+    if max_cost < 0:
+        console.print("[red]--max-cost cannot be negative.[/red]")
+        raise typer.Exit(1)
+
+    _batch_preflight(budget_enforced=max_cost > 0)
+
+    profile_values = _apply_profile_values()
+    if cover_letter is None:
+        generate_cover_letter_flag = bool(profile_values.get("apply_cover_letter_default"))
+    else:
+        generate_cover_letter_flag = cover_letter
+
+    if skip_evaluated:
+        targets, skipped = _partition_already_evaluated(targets)
+        for target, entry in skipped:
+            console.print(f"[dim]skip (tracker #{entry.number} {entry.status}): {target}[/dim]")
+        if not targets:
+            console.print("Every target already has a tracker row. Nothing to do (use --force to re-run).")
+            return
+
+    console.print(f"Evaluating {len(targets)} jobs, {concurrency} at a time.")
+    ledger_start = _ledger_line_count()
+    budget_stop = asyncio.Event() if max_cost > 0 else None
+    # Set when premium spend is happening but is not being recorded, which
+    # is a different failure from simply hitting the cap.
+    unmeasurable = asyncio.Event()
+
+    async def run_all() -> list[dict]:
+        graph = build_evaluate_job_graph()
+        semaphore = asyncio.Semaphore(max(1, concurrency))
+
+        async def run_one(target: str) -> dict:
+            if budget_stop is not None and budget_stop.is_set():
+                return {"target": target, "skipped_over_budget": True}
+            async with semaphore:
+                if budget_stop is not None and budget_stop.is_set():
+                    return {"target": target, "skipped_over_budget": True}
+                run_id = uuid.uuid4().hex
+                source_type = _resolve_source_type(target, "auto")
+                try:
+                    result = await graph.ainvoke(
+                        {
+                            "run_id": run_id,
+                            "thread_id": run_id,
+                            "input": target,
+                            "source_type": source_type,
+                            "url": target if source_type == "url" else None,
+                            "generate_cover_letter": generate_cover_letter_flag,
+                            "errors": [],
+                        },
+                        config={"configurable": {"thread_id": run_id}},
+                    )
+                except Exception as exc:  # one bad JD must not sink the batch
+                    return {"target": target, "failed": f"{type(exc).__name__}: {exc}"}
+                finally:
+                    if budget_stop is not None:
+                        spent, premium_records, priced_records = _ledger_spend_since(ledger_start)
+                        if premium_records > priced_records:
+                            # Any premium call that reported no cost makes the
+                            # running total an undercount, so the cap trips late
+                            # or never. Partial data is not safer than none —
+                            # an unmeasurable budget is not a budget.
+                            unmeasurable.set()
+                            budget_stop.set()
+                        elif spent >= max_cost:
+                            budget_stop.set()
+                jd_meta = result.get("jd_meta")
+                scores = result.get("scores")
+                return {
+                    "target": target,
+                    "company": jd_meta.company if jd_meta else "?",
+                    "role": jd_meta.title if jd_meta else "?",
+                    "score_value": scores.weighted_total if scores else None,
+                    "score": f"{scores.weighted_total:.2f}" if scores else "—",
+                    "recommendation": result.get("recommendation", "skip"),
+                    "report": result.get("report_path") or "",
+                    "errors": result.get("errors") or [],
+                    "artifact_warnings": result.get("artifact_warnings") or [],
+                }
+
+        return await asyncio.gather(*(run_one(target) for target in targets))
+
+    rows = asyncio.run(run_all())
+
+    table = Table(title=f"Batch evaluation ({len(rows)} jobs)")
+    table.add_column("Company", overflow="fold")
+    table.add_column("Role", overflow="fold")
+    table.add_column("Score", justify="right")
+    table.add_column("Rec")
+    table.add_column("Report", overflow="fold")
+    # Sort on the numeric score. Sorting the display string put "—" above 5.00.
+    for row in sorted(rows, key=lambda item: item.get("score_value") or -1.0, reverse=True):
+        if row.get("failed"):
+            table.add_row(_short(row["target"], 40), "[red]FAILED[/red]", "—", "—", row["failed"][:60])
+            continue
+        if row.get("skipped_over_budget"):
+            table.add_row(_short(row["target"], 40), "[yellow]OVER BUDGET[/yellow]", "—", "—", "not started")
+            continue
+        table.add_row(
+            _short(row["company"], 24),
+            _short(row["role"], 32),
+            row["score"],
+            row["recommendation"],
+            _short(row["report"], 48),
+        )
+    console.print(table)
+
+    flagged = [row for row in rows if row.get("artifact_warnings")]
+    if flagged:
+        console.print(f"\n[red]{len(flagged)} job(s) produced artifacts you must review before sending:[/red]")
+        for row in flagged:
+            for warning in row["artifact_warnings"]:
+                console.print(f"- {row.get('company', row['target'])}: {warning}")
+
+    warned = [row for row in rows if row.get("errors")]
+    if warned:
+        console.print(f"\n[yellow]{len(warned)} job(s) completed with warnings:[/yellow]")
+        for row in warned:
+            console.print(f"- {row.get('company', row['target'])}: {row['errors'][0]}")
+
+    spend = _ledger_cost_since(ledger_start)
+    console.print(f"\nPremium spend this batch: [bold]${spend:.2f}[/bold] over {len(rows)} job(s).")
+    if unmeasurable.is_set():
+        console.print(
+            "[red]Premium calls recorded no cost, so --max-cost could not be enforced.[/red] "
+            "Remaining jobs were not started. Check that the premium command still passes "
+            "`--output-format json`."
+        )
+    elif budget_stop is not None and budget_stop.is_set():
+        console.print(f"[yellow]Budget cap ${max_cost:.2f} reached — remaining jobs were not started.[/yellow]")
+
+    # A job whose LLM calls all failed still "completes" — every node falls back
+    # to placeholder content and the tracker row is written as if it were real.
+    # A provider outage would otherwise show up as 50 successes.
+    degraded = [
+        row
+        for row in rows
+        if not row.get("failed")
+        and any(LLM_FAILURE_MARKER in error for error in row.get("errors") or [])
+    ]
+    if degraded:
+        console.print(
+            f"\n[red]{len(degraded)} job(s) ran on fallback content because an LLM "
+            "provider failed — their reports and artifacts are not trustworthy:[/red]"
+        )
+        for row in degraded:
+            console.print(f"- {row.get('company', row['target'])}")
+
+    failures = [row for row in rows if row.get("failed")]
+    if len(failures) + len(degraded) > max_failures:
+        console.print(
+            f"[red]{len(failures)} failed + {len(degraded)} degraded "
+            f"(--max-failures {max_failures}).[/red]"
+        )
+        raise typer.Exit(1)
+
+
+def _batch_preflight(budget_enforced: bool = False) -> None:
+    """Fail before a multi-hour run, not during it.
+
+    A stale CV or a premium command that is not on PATH degrades every job in
+    the batch identically, and the damage is only visible hours later.
+    """
+    if os.environ.get("JOB_HUNT_SKIP_CV_SYNC_CHECK") != "1":
+        from job_hunt.services import cv_sync_check
+
+        sync_result = cv_sync_check.run()
+        for warning in sync_result.warnings:
+            console.print(f"[yellow]cv-sync-check:[/yellow] {warning}")
+        if sync_result.errors:
+            for error in sync_result.errors:
+                console.print(f"[red]cv-sync-check:[/red] {error}")
+            console.print("[red]Aborting batch.[/red] Run `job-hunt tracker check-sync` for details.")
+            raise typer.Exit(1)
+
+    settings = load_settings()
+    command = settings.llm.premium.command
+    if not command:
+        console.print("[red]No premium command configured (llm.premium.command is empty).[/red]")
+        raise typer.Exit(1)
+    if not shutil.which(command[0]):
+        console.print(
+            f"[red]Premium command '{command[0]}' is not on PATH.[/red] Every CV and cover "
+            "letter in this batch would silently fall back to the cheap tier."
+        )
+        raise typer.Exit(1)
+
+    if budget_enforced:
+        # --max-cost is computed from ledger records. Without the ledger, or
+        # without JSON output to populate cost_usd, the cap reads $0.00 forever
+        # and silently lets the whole list run.
+        if not settings.observability.local_ledger.enabled:
+            console.print(
+                "[red]--max-cost needs the local ledger.[/red] Enable "
+                "observability.local_ledger or drop the cap."
+            )
+            raise typer.Exit(1)
+        # Ask the provider, not a substring: `["claude", "-p", "json"]` would
+        # pass a naive check while recording no cost, and
+        # `--output-format=json` would be rejected despite being supported.
+        if not provider_wants_json(command):
+            console.print(
+                "[red]--max-cost needs real cost data.[/red] The premium command must pass "
+                "`--output-format json`; otherwise usage is estimated and cost_usd is null."
+            )
+            raise typer.Exit(1)
+
+
+def _partition_already_evaluated(targets: list[str]) -> tuple[list[str], list[tuple[str, object]]]:
+    """Split targets into (to run, already in the tracker).
+
+    Matching is by the company/role inferred from the URL, so it only catches
+    what `loop` can already infer — a miss costs a duplicate evaluation, never
+    a wrong skip.
+    """
+    tracker = TrackerRepository(Path("data/applications.md"))
+    runnable: list[str] = []
+    skipped: list[tuple[str, object]] = []
+    for target in targets:
+        entry = None
+        try:
+            inferred = _infer_loop_target(url=target, description="")
+            if inferred.get("company") and inferred.get("role"):
+                entry, score = tracker.find_match(company=inferred["company"], role=inferred["role"])
+                if score < 0.85:
+                    entry = None
+        except Exception:
+            entry = None
+        if entry is not None:
+            skipped.append((target, entry))
+        else:
+            runnable.append(target)
+    return runnable, skipped
+
+
+def _ledger_path() -> Path:
+    """Ledger location as observability.write_usage_ledger computes it.
+
+    Hardcoding `data/` here made --max-cost a silent no-op for anyone whose
+    paths.data_dir is not the default.
+    """
+    return Path(load_settings().paths.data_dir) / "usage-ledger.jsonl"
+
+
+def _ledger_line_count() -> int:
+    path = _ledger_path()
+    if not path.exists():
+        return 0
+    with path.open("r", encoding="utf-8") as handle:
+        return sum(1 for _ in handle)
+
+
+def _ledger_cost_since(start_line: int) -> float:
+    """Sum reported USD cost of ledger records written after ``start_line``."""
+    return _ledger_spend_since(start_line)[0]
+
+
+def _ledger_spend_since(start_line: int) -> tuple[float, int, int]:
+    """Return ``(total_usd, premium_records, records_with_a_cost)``.
+
+    The counts exist so a budget cap can tell "nothing was spent" from "spend
+    is not being recorded". Both look like $0.00 to a simple sum, and the
+    second one silently disables the cap.
+    """
+    path = _ledger_path()
+    if not path.exists():
+        return 0.0, 0, 0
+    total = 0.0
+    premium_records = 0
+    priced_records = 0
+    with path.open("r", encoding="utf-8") as handle:
+        for index, line in enumerate(handle):
+            if index < start_line or not line.strip():
+                continue
+            try:
+                record = json.loads(line)
+            except ValueError:
+                continue
+            if record.get("model_tier") != "premium":
+                continue
+            premium_records += 1
+            cost = record.get("cost_usd")
+            # bool is an int subclass, and JSON round-trips NaN/Infinity — any
+            # of those would count as "priced" while corrupting the total.
+            if isinstance(cost, (int, float)) and not isinstance(cost, bool) and math.isfinite(cost):
+                priced_records += 1
+                total += float(cost)
+    return total, premium_records, priced_records
 
 
 def _resolve_source_type(target: str, source_type: str) -> str:
@@ -2219,9 +2564,14 @@ def apply_answers(
     if report_context and report_context.get("path"):
         report_path = Path(report_context["path"])
         if report_path.exists():
-            report_full = report_path.read_text(encoding="utf-8")
             section_g = report_context.get("application_section") or ""
-    if not report_full:
+            # Section G is the extract of this report that answers form
+            # questions. Sending the whole report alongside it adds ~13k
+            # tokens of duplicate context per call, so the full text is a
+            # fallback for when the section could not be located.
+            if not section_g:
+                report_full = report_path.read_text(encoding="utf-8")
+    if not section_g and not report_full:
         console.print(
             f"[yellow]No matching report found for {company} / {role}; "
             "answers will be grounded in the CV only.[/yellow]"
@@ -2260,14 +2610,159 @@ def apply_close_session() -> None:
     console.print("Browser will close after saving the persistent profile.")
 
 
-def _active_apply_artifact_dir() -> Path:
+@app.command("apply-status")
+def apply_status(
+    controls: bool = typer.Option(
+        False,
+        "--controls",
+        help="Include the full form-control summary (label/type/value/required).",
+    ),
+    session: str | None = typer.Option(
+        None,
+        "--session",
+        help="Artifact-dir name substring to disambiguate between live sessions.",
+    ),
+) -> None:
+    """Print a compact text report of the live fill-only page (no screenshot).
+
+    Token-efficient replacement for reading a screenshot or driving a browser
+    MCP: URL, Workday step, error banners, required-but-empty fields, and
+    (with --controls) every visible form control with its current value.
+    """
+    art_dir = _active_apply_artifact_dir(session)
+    sentinel = apply_ipc.submit_command(
+        art_dir, apply_ipc.COMMAND_TYPE_STATUS, {"controls": controls}
+    )
+    response = apply_ipc.wait_for_response(art_dir, apply_ipc.command_id_of(sentinel))
+    if response is None:
+        console.print(
+            "[red]No response from the fill-only session (timeout). "
+            "It may be dead — restart with `apply --fill-only`.[/red]"
+        )
+        raise typer.Exit(1)
+    for line in page_summary.render_status_lines(response):
+        console.print(line)
+
+
+@app.command("apply-do")
+def apply_do(
+    click: str | None = typer.Option(
+        None, "--click", help="Click a button/link by its visible label."
+    ),
+    fill: str | None = typer.Option(
+        None, "--fill", help="Fill an input by label: 'label=value'."
+    ),
+    select: str | None = typer.Option(
+        None, "--select", help="Pick a dropdown option by label: 'label=option'."
+    ),
+    check: str | None = typer.Option(
+        None, "--check", help="Check a checkbox/radio by its label."
+    ),
+    session: str | None = typer.Option(
+        None,
+        "--session",
+        help="Artifact-dir name substring to disambiguate between live sessions.",
+    ),
+) -> None:
+    """Run one targeted action inside the live fill-only session.
+
+    The escape hatch for fixing a single missed field without an interactive
+    browser session. Never touches Submit: submit-like labels are rejected —
+    the final click stays human-only (or goes through the gated --auto-submit).
+    """
+    try:
+        op, label, value = apply_ops.parse_op_args(
+            click=click, fill=fill, select=select, check=check
+        )
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    if op == apply_ops.OP_CLICK and _looks_like_submit_label(label):
+        console.print(
+            "[red]apply-do refuses submit-like clicks; the final Submit stays "
+            "manual (or use the gated `apply --auto-submit`).[/red]"
+        )
+        raise typer.Exit(1)
+    art_dir = _active_apply_artifact_dir(session)
+    sentinel = apply_ipc.submit_command(
+        art_dir,
+        apply_ipc.COMMAND_TYPE_DO,
+        {"op": op, "label": label, "value": value},
+    )
+    response = apply_ipc.wait_for_response(art_dir, apply_ipc.command_id_of(sentinel))
+    if response is None:
+        console.print(
+            "[red]No response from the fill-only session (timeout). "
+            "It may be dead — restart with `apply --fill-only`.[/red]"
+        )
+        raise typer.Exit(1)
+    if response.get("ok"):
+        console.print(f"[green]Done:[/green] {op} '{label}'"
+                      + (f" = '{value}'" if value else ""))
+    else:
+        console.print(
+            f"[red]Failed:[/red] {op} '{label}' — {response.get('detail') or 'no matching element'}"
+        )
+    if response.get("url"):
+        console.print(f"URL now: {response['url']}")
+    required_empty = response.get("required_empty")
+    if required_empty:
+        console.print(f"Required still empty ({len(required_empty)}):")
+        for item in required_empty:
+            console.print(f"  - {item}")
+    elif required_empty == []:
+        console.print("Required still empty: none")
+    if not response.get("ok"):
+        raise typer.Exit(1)
+
+
+# Deny-list for apply-do clicks. Final-submission buttons across ATSes say
+# more than just "Submit" (Greenhouse/Lever/Ashby use Apply/Finish/Done/…),
+# so anything that plausibly finalizes an application is refused; the human
+# (or the multi-gated --auto-submit) performs that click. Step-advance labels
+# like "Save and Continue" / "Next" stay allowed.
+_SUBMIT_LABEL_RE = re.compile(
+    r"\bsubmit\b|\bsend\b|\bapply\b|\bfinish\b|\bcomplete\b|\bdone\b"
+    r"|\bconfirm\b|\bfinali[sz]e\b",
+    re.I,
+)
+
+
+def _looks_like_submit_label(label: str) -> bool:
+    return bool(_SUBMIT_LABEL_RE.search(label))
+
+
+class ApplyDoRefused(Exception):
+    """An apply-do op was refused by a safety/ambiguity check (not a miss)."""
+
+
+def _active_apply_artifact_dir(session: str | None = None) -> Path:
     """Find the most-recent active session and warn if its heartbeat is stale.
 
     Phase 3.3: prefer ``.session.json`` heartbeat freshness; fall back to
     ``.cdp`` for sessions started by an older runner that doesn't write a
-    heartbeat yet.
+    heartbeat yet. ``session`` (a substring of the artifact dir name)
+    disambiguates when several sessions are alive at once.
     """
-    art_dir = apply_ipc.find_active_session_dir(Path("artifacts/apply"))
+    root = Path("artifacts/apply")
+    alive = apply_ipc.find_alive_session_dirs(root)
+    if session:
+        matches = [d for d in alive if session in d.name]
+        if len(matches) == 1:
+            return matches[0]
+        console.print(
+            f"[red]--session '{session}' matches {len(matches)} live session(s): "
+            f"{', '.join(d.name for d in matches) or 'none'}[/red]"
+        )
+        raise typer.Exit(1)
+    if len(alive) > 1:
+        console.print(
+            "[red]Multiple live fill-only sessions; pick one with --session:[/red]"
+        )
+        for d in alive:
+            console.print(f"- {d.name}")
+        raise typer.Exit(1)
+    art_dir = apply_ipc.find_active_session_dir(root)
     if art_dir is None:
         console.print(
             "[red]No active fill-only session found. Start one with: apply --fill-only[/red]"
@@ -2305,6 +2800,7 @@ def _build_agent_apply_prompt(
     smoke_command = "printf 'n\\n' | " + base_command + " --headless"
     replace_command = ".venv/bin/job-hunt apply-replace-pdf '<new-resume.pdf>'"
     capture_command = ".venv/bin/job-hunt apply-capture-page"
+    status_command = ".venv/bin/job-hunt apply-status"
 
     return f"""# Agent Apply Runbook
 
@@ -2319,6 +2815,11 @@ Hard safety rules:
 - Do not expose secrets, cookies, OAuth tokens, or webhook URLs in the conversation.
 - Do not record the application as Applied until the user explicitly confirms they clicked Submit.
 
+Token rules (cheapest source of truth first):
+- Never drive the application page through a browser MCP (Playwright MCP etc.); all browser interaction goes through these CLI commands.
+- Verify results from `apply-review.json` (and `{status_command}`) first. Read a screenshot image only when the JSON shows a problem (`required_empty`, `validation_issues`, `warnings`, or `pdf: null` when a PDF was expected).
+- Fix a single missed field with `.venv/bin/job-hunt apply-do --fill 'label=value'` (also `--click/--select/--check`) instead of taking over the browser.
+
 Fill command, run this in the background so the browser stays open:
 
 ```bash
@@ -2331,20 +2832,21 @@ Execution protocol:
 3. Confirm the PDF exists if `--pdf` is present.
 4. Run the fill command in visible browser mode.
 5. Read the terminal output. It should list attached PDF, auto-filled fields, skipped fields, visible actions, artifact dir, and a review screenshot path.
-6. Inspect the browser or the newest `apply-review-*.png` in the artifact dir. Summarize for the user:
+6. Read `apply-review.json` in the artifact dir (NOT the screenshot). Summarize for the user:
    - company and role
    - fields filled
-   - fields needing attention
-   - PDF filename shown in the form
+   - fields needing attention (`required_empty`, `validation_issues`, `warnings`)
+   - PDF filename (`pdf` key)
    - any risk, missing answer, or work-authorization question
-7. Ask the user to review the visible browser. If the user requests edits, update the open form when possible; otherwise tell the user the exact field/value to change.
+   Only read the newest `apply-review-*.jpg` when the JSON shows a problem. For a live view of the page state, run `{status_command}` (add `--controls` for the full field list).
+7. Ask the user to review the visible browser. If the user requests edits, fix single fields with `apply-do --fill 'label=value'`; otherwise tell the user the exact field/value to change.
 8. If the user asks to swap the PDF, run:
 
 ```bash
 {replace_command}
 ```
 
-9. Wait a few seconds, then inspect the newest screenshot to verify the replacement.
+9. Wait a few seconds, then confirm the swap from the command output or `{status_command}`.
 10. When the user says it is ready, instruct the user to manually click the final Submit/Apply button in the browser.
 11. After the user confirms they submitted, capture the current confirmation page while the browser is still open:
 
@@ -2352,7 +2854,7 @@ Execution protocol:
 {capture_command}
 ```
 
-12. Wait a few seconds, then inspect the newest screenshot for a confirmation such as "Thank you for applying" or "application received".
+12. Wait a few seconds, then inspect the newest `apply-page-*.jpg` screenshot for a confirmation such as "Thank you for applying" or "application received".
 13. Record the application:
 
 ```bash
@@ -2532,6 +3034,31 @@ def _loop_agent_apply_command(*, url: str, company: str | None, role: str | None
 
 _BROWSER_PROFILE = Path("storage/browser-profile")
 _CDP_PORT = 9222
+
+
+# Session screenshots are agent/user evidence, not print material: full-page
+# JPEG at this quality is ~5-10x smaller than the old PNG and cheaper for the
+# agent to read, with no loss of legibility for form text.
+_SCREENSHOT_JPEG_QUALITY = 60
+
+
+async def _save_session_screenshot(page, art_dir: Path, prefix: str) -> Path:
+    path = art_dir / f"{prefix}-{uuid.uuid4().hex[:8]}.jpg"
+    try:
+        await page.screenshot(
+            path=str(path), full_page=True,
+            type="jpeg", quality=_SCREENSHOT_JPEG_QUALITY,
+            timeout=15000,
+        )
+    except Exception:
+        # Very tall/hostile pages can stall full-page capture; a viewport
+        # shot is still useful evidence and keeps the session responsive.
+        await page.screenshot(
+            path=str(path), full_page=False,
+            type="jpeg", quality=_SCREENSHOT_JPEG_QUALITY,
+            timeout=10000,
+        )
+    return path
 
 
 async def _open_apply_page(
@@ -2791,8 +3318,18 @@ async def _open_apply_page(
                         "[yellow]Auto-submit skipped: Submit button not located on Review page.[/yellow]"
                     )
 
-        screenshot = art_dir / f"apply-review-{uuid.uuid4().hex[:8]}.png"
-        await page.screenshot(path=str(screenshot), full_page=True)
+        screenshot = await _save_session_screenshot(page, art_dir, "apply-review")
+        if required_empty or validation_issues:
+            # Failure-path aid: dump a compact form-control summary so the agent
+            # can diagnose from JSON instead of reading the screenshot.
+            controls = await page_summary.collect_form_controls(page)
+            (art_dir / "apply-controls.json").write_text(
+                json.dumps(
+                    {"url": page.url, "form_controls": controls},
+                    ensure_ascii=False, indent=2,
+                ),
+                encoding="utf-8",
+            )
         summary_path = _write_apply_review_summary(
             artifact_dir=art_dir,
             url=url,
@@ -2862,7 +3399,11 @@ async def _open_apply_page(
             cdp_sentinel = art_dir / ".cdp"
             cdp_sentinel.write_text("active")
             session_started = asyncio.get_event_loop().time()
-            apply_ipc.write_heartbeat(art_dir, started_at=session_started)
+            session_token = uuid.uuid4().hex
+            apply_ipc.clear_stale_responses(art_dir)
+            apply_ipc.write_heartbeat(
+                art_dir, started_at=session_started, session_token=session_token
+            )
             apply_run_log.emit(
                 art_dir, "session.started", url=url, company=company, role=role,
                 pdf=str(pdf) if pdf else None,
@@ -2888,7 +3429,10 @@ async def _open_apply_page(
                     break
                 # Heartbeat refresh.
                 if now - last_heartbeat_at >= apply_ipc.HEARTBEAT_REFRESH_SECONDS:
-                    apply_ipc.write_heartbeat(art_dir, started_at=session_started)
+                    apply_ipc.write_heartbeat(
+                        art_dir, started_at=session_started,
+                        session_token=session_token,
+                    )
                     last_heartbeat_at = now
                 await asyncio.sleep(2)
 
@@ -2897,6 +3441,24 @@ async def _open_apply_page(
 
                 for cmd in pending:
                     last_activity_at = asyncio.get_event_loop().time()
+                    # Authenticate every sentinel against the per-session nonce:
+                    # a stale script or stray file must not drive the browser.
+                    if cmd.token != session_token:
+                        apply_run_log.emit(
+                            art_dir, "command.rejected",
+                            kind=cmd.kind, reason="bad_session_token",
+                        )
+                        console.print(
+                            f"[red]Rejected command '{cmd.kind}': session token mismatch.[/red]"
+                        )
+                        try:
+                            apply_ipc.write_response(
+                                art_dir, cmd.id,
+                                {"ok": False, "detail": "session token mismatch"},
+                            )
+                        except Exception:
+                            pass
+                        continue
                     if cmd.kind == apply_ipc.COMMAND_TYPE_REPLACE_PDF:
                         new_pdf_str = str(cmd.payload.get("pdf", "")).strip()
                         # Reject empty payloads up front: ``Path("")`` would
@@ -2915,8 +3477,9 @@ async def _open_apply_page(
                             await _attach_resume(page, new_pdf)
                             await page.wait_for_timeout(1500)
                             shutil.copy2(new_pdf, art_dir / new_pdf.name)
-                            last_screenshot = art_dir / f"apply-review-{uuid.uuid4().hex[:8]}.png"
-                            await page.screenshot(path=str(last_screenshot), full_page=True)
+                            last_screenshot = await _save_session_screenshot(
+                                page, art_dir, "apply-review"
+                            )
                             _append_apply_review_event(
                                 artifact_dir=art_dir,
                                 event=f"PDF replaced: {new_pdf.name}",
@@ -2935,8 +3498,9 @@ async def _open_apply_page(
                             )
                             console.print(f"[red]PDF not found:[/red] {new_pdf_str}")
                     elif cmd.kind == apply_ipc.COMMAND_TYPE_CAPTURE_PAGE:
-                        last_screenshot = art_dir / f"apply-page-{uuid.uuid4().hex[:8]}.png"
-                        await page.screenshot(path=str(last_screenshot), full_page=True)
+                        last_screenshot = await _save_session_screenshot(
+                            page, art_dir, "apply-page"
+                        )
                         current_title = await page.title()
                         _append_apply_review_event(
                             artifact_dir=art_dir,
@@ -2954,6 +3518,59 @@ async def _open_apply_page(
                             page, art_dir, url, company, role, report_context,
                             pdf, role_warnings,
                         )
+                    elif cmd.kind == apply_ipc.COMMAND_TYPE_STATUS:
+                        # Fail closed: a status/do handler crash must never
+                        # kill the fill-only session.
+                        try:
+                            status_payload = await _collect_status_payload(
+                                page,
+                                include_controls=bool(cmd.payload.get("controls")),
+                                filled_hint=filled,
+                            )
+                            apply_ipc.write_response(art_dir, cmd.id, status_payload)
+                            apply_run_log.emit(
+                                art_dir, "command.status",
+                                url=page.url,
+                                required_empty_count=len(status_payload.get("required_empty") or []),
+                                error_count=len(status_payload.get("errors") or []),
+                            )
+                            console.print("[green]Status request answered.[/green]")
+                        except Exception as exc:
+                            apply_run_log.emit(
+                                art_dir, "command.status.failed",
+                                error=_short(str(exc), 160),
+                            )
+                            console.print(f"[red]Status request failed:[/red] {exc}")
+                    elif cmd.kind == apply_ipc.COMMAND_TYPE_DO:
+                        try:
+                            do_result = await _handle_do_command(
+                                page, cmd.payload, filled_hint=filled,
+                            )
+                            apply_ipc.write_response(art_dir, cmd.id, do_result)
+                            apply_run_log.emit(
+                                art_dir,
+                                "command.do" if do_result.get("ok") else "command.do.failed",
+                                op=do_result.get("op"), label=do_result.get("label"),
+                                detail=do_result.get("detail") or None,
+                            )
+                            _append_apply_review_event(
+                                artifact_dir=art_dir,
+                                event=(
+                                    f"apply-do {do_result.get('op')} '{do_result.get('label')}': "
+                                    + ("ok" if do_result.get("ok") else f"failed ({do_result.get('detail') or 'no match'})")
+                                ),
+                            )
+                            console.print(
+                                f"[green]apply-do handled:[/green] {do_result.get('op')} '{do_result.get('label')}'"
+                                if do_result.get("ok")
+                                else f"[red]apply-do failed:[/red] {do_result.get('op')} '{do_result.get('label')}'"
+                            )
+                        except Exception as exc:
+                            apply_run_log.emit(
+                                art_dir, "command.do.failed",
+                                error=_short(str(exc), 160),
+                            )
+                            console.print(f"[red]apply-do crashed:[/red] {exc}")
                     elif cmd.kind == apply_ipc.COMMAND_TYPE_CLOSE_SESSION:
                         _append_apply_review_event(
                             artifact_dir=art_dir,
@@ -3036,8 +3653,16 @@ async def _handle_refill_current_page(
     )
     labels = await page.locator("button, a[role=button], input[type=submit]").all_inner_texts()
     actions = [_short(label.strip(), 80) for label in labels if label.strip()]
-    last_screenshot = art_dir / f"apply-review-{uuid.uuid4().hex[:8]}.png"
-    await page.screenshot(path=str(last_screenshot), full_page=True)
+    last_screenshot = await _save_session_screenshot(page, art_dir, "apply-review")
+    if required_empty or refill_validation_issues:
+        controls = await page_summary.collect_form_controls(page)
+        (art_dir / "apply-controls.json").write_text(
+            json.dumps(
+                {"url": page.url, "form_controls": controls},
+                ensure_ascii=False, indent=2,
+            ),
+            encoding="utf-8",
+        )
     _write_apply_review_summary(
         artifact_dir=art_dir,
         url=url,
@@ -3075,6 +3700,220 @@ async def _handle_refill_current_page(
         for item in required_empty[:20]:
             console.print(f"- {item}")
     return last_screenshot
+
+
+async def _collect_status_payload(
+    page, *, include_controls: bool, filled_hint: list[str]
+) -> dict:
+    """Build the compact apply-status response for the live page.
+
+    ``filled_hint`` is the session's accumulated ``filled[]`` list, used to
+    suppress required-empty false positives the same way the fill path does.
+    """
+    try:
+        title = await page.title()
+    except Exception:
+        title = ""
+    step = ""
+    if "myworkdayjobs.com" in page.url:
+        try:
+            step = await _workday_current_step(page)
+        except Exception:
+            step = ""
+    required_empty = _filter_required_empty_fields(
+        await _required_empty_fields(page), filled_hint
+    )
+    errors = await page_summary.collect_error_banners(page)
+    try:
+        labels = await page.locator(
+            "button, a[role=button], input[type=submit]"
+        ).all_inner_texts()
+        actions = [_short(label.strip(), 80) for label in labels if label.strip()][:12]
+    except Exception:
+        actions = []
+    payload: dict = {
+        "ok": True,
+        "url": page.url,
+        "title": title,
+        "workday_step": step,
+        "errors": errors,
+        "required_empty": required_empty,
+        "actions": actions,
+    }
+    if include_controls:
+        payload["form_controls"] = await page_summary.collect_form_controls(page)
+    return payload
+
+
+async def _handle_do_command(page, payload: dict, *, filled_hint: list[str]) -> dict:
+    """Execute one apply-do op against the live page; always returns a response."""
+    op = str(payload.get("op") or "")
+    label = str(payload.get("label") or "")
+    value = str(payload.get("value") or "")
+    ok = False
+    detail = ""
+    if not op or not label:
+        detail = "missing op/label"
+    elif op == apply_ops.OP_CLICK and _looks_like_submit_label(label):
+        # Defense in depth: the CLI already refuses submit-like clicks, but a
+        # hand-written sentinel must not bypass the human-only submit rule.
+        detail = "submit-like click refused"
+    else:
+        try:
+            ok = await apply_ops.execute_op(
+                page, op, label, value,
+                click=_do_click_by_label,
+                fill=_do_fill_by_label,
+                select=_do_select_by_label,
+                check=_do_check_by_label,
+            )
+        except ApplyDoRefused as exc:
+            detail = str(exc)
+        except Exception as exc:
+            detail = _short(str(exc), 160)
+    if ok and op == apply_ops.OP_CLICK:
+        # A click may navigate or trigger validation; let the DOM settle so
+        # the required_empty/url below describe the resulting page, not the
+        # one the click left behind.
+        try:
+            await page.wait_for_load_state("domcontentloaded", timeout=5000)
+        except Exception:
+            pass
+        await page.wait_for_timeout(1200)
+    required_empty = _filter_required_empty_fields(
+        await _required_empty_fields(page), filled_hint
+    )
+    return {
+        "ok": ok,
+        "op": op,
+        "label": label,
+        "value": value,
+        "detail": detail,
+        "url": page.url,
+        "required_empty": required_empty,
+    }
+
+
+async def _resolve_unique_target(candidates, label: str):
+    """First locator with exactly one match wins; >1 matches is a hard refusal.
+
+    Candidates are ordered exact-match-first so a precise label never loses to
+    a broader substring locator, and ``.first`` never silently picks among
+    multiple hits (red-team fix: partial first-match mutating the wrong field).
+    """
+    for locator in candidates:
+        try:
+            n = await locator.count()
+        except Exception:
+            continue
+        if n == 0:
+            continue
+        if n > 1:
+            raise ApplyDoRefused(f"ambiguous: {n} elements match '{label}'")
+        return locator.first
+    return None
+
+
+async def _element_looks_like_submit(target) -> bool:
+    """Read back the resolved element's own text/labels before clicking.
+
+    The CLI-side guard only sees the requested label; without this, clicking
+    'Save' could land on a 'Save & Submit' button.
+    """
+    try:
+        text = await target.evaluate(
+            "el => [el.innerText, el.value, el.getAttribute('aria-label')]"
+            ".filter(Boolean).join(' ')"
+        )
+    except Exception:
+        return False
+    return _looks_like_submit_label(str(text or ""))
+
+
+async def _do_click_by_label(page, label: str) -> bool:
+    pattern = re.compile(re.escape(label), re.I)
+    target = await _resolve_unique_target(
+        (
+            page.get_by_role("button", name=label, exact=True),
+            page.get_by_role("link", name=label, exact=True),
+            page.get_by_role("button", name=pattern),
+            page.get_by_role("link", name=pattern),
+            page.locator("button, [role='button'], a, input[type='submit']").filter(
+                has_text=pattern
+            ),
+        ),
+        label,
+    )
+    if target is None:
+        return False
+    if await _element_looks_like_submit(target):
+        raise ApplyDoRefused("resolved element looks like a final submit control")
+    try:
+        await target.click(timeout=3000)
+        return True
+    except Exception:
+        return False
+
+
+async def _do_fill_by_label(page, label: str, value: str) -> bool:
+    pattern = re.compile(re.escape(label), re.I)
+    target = await _resolve_unique_target(
+        (
+            page.get_by_label(label, exact=True),
+            page.get_by_label(pattern),
+            page.get_by_placeholder(pattern),
+        ),
+        label,
+    )
+    if target is not None:
+        try:
+            await target.fill(value, timeout=3000)
+            return True
+        except Exception:
+            pass
+    # Workday-style: input inside the question container matching the label text.
+    try:
+        return await _fill_workday_input_in_question(page, label, value, force=True)
+    except Exception:
+        return False
+
+
+async def _do_select_by_label(page, label: str, value: str) -> bool:
+    pattern = re.compile(re.escape(label), re.I)
+    target = await _resolve_unique_target(
+        (page.get_by_label(label, exact=True), page.get_by_label(pattern)), label
+    )
+    if target is not None:
+        try:
+            await target.select_option(label=value, timeout=3000)
+            return True
+        except Exception:
+            pass
+    try:
+        return await _select_workday_dropdown_by_label(page, label, [value], force=True)
+    except Exception:
+        return False
+
+
+async def _do_check_by_label(page, label: str) -> bool:
+    pattern = re.compile(re.escape(label), re.I)
+    target = await _resolve_unique_target(
+        (
+            page.get_by_role("checkbox", name=label, exact=True),
+            page.get_by_role("radio", name=label, exact=True),
+            page.get_by_role("checkbox", name=pattern),
+            page.get_by_role("radio", name=pattern),
+            page.get_by_label(pattern),
+        ),
+        label,
+    )
+    if target is None:
+        return False
+    try:
+        await target.check(timeout=3000)
+        return True
+    except Exception:
+        return False
 
 
 async def _enter_application_form(page) -> None:

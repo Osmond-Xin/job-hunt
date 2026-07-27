@@ -59,7 +59,7 @@ async def generate_cover_letter(state: JobHuntState, config: RunnableConfig) -> 
         mode=state.get("mode", "full"),
     )
 
-    body_md, errors = await generate_with_audit(
+    audited = await generate_with_audit(
         state,
         node_name="generate_cover_letter",
         prompt=prompt,
@@ -69,8 +69,26 @@ async def generate_cover_letter(state: JobHuntState, config: RunnableConfig) -> 
         max_tokens=900,
         tier="premium",
     )
+    errors = audited.errors
+    if audited.status == "failed":
+        # No PDF at all beats a PDF the auditor rejected. Unlike the CV there
+        # is no known-good fallback to fall back to, and the cover letter is
+        # optional — so withhold it and say so.
+        return {
+            "errors": errors,
+            "cover_letter_path": None,
+            "artifact_warnings": [
+                f"cover letter withheld (audit failed): {'; '.join(audited.issues)}"
+            ],
+        }
+    body_md = audited.content
     if not body_md:
         return {"errors": errors}
+    unverified = (
+        ["cover letter is UNVERIFIED (auditor unavailable)"]
+        if audited.status == "unavailable"
+        else []
+    )
 
     paragraphs = _split_paragraphs(body_md)
 
@@ -111,6 +129,7 @@ async def generate_cover_letter(state: JobHuntState, config: RunnableConfig) -> 
             "cover_letter_path": str(pdf_path),
             "evaluation_blocks": {"cover_letter": body_md},
             "errors": errors,
+            "artifact_warnings": unverified,
         }
 
     except Exception as exc:

@@ -34,7 +34,7 @@ async def tailor_cv(state: JobHuntState, config: RunnableConfig) -> dict:
         evaluation_blocks=state.get("evaluation_blocks", {}),
         mode=state.get("mode", "full"),
     )
-    body, errors = await generate_with_audit(
+    audited = await generate_with_audit(
         state,
         node_name="tailor_cv",
         prompt=prompt,
@@ -44,9 +44,26 @@ async def tailor_cv(state: JobHuntState, config: RunnableConfig) -> dict:
         max_tokens=2800,
         tier="premium",
     )
-    if not body:
-        return {"errors": errors}
-    return {"cv_tailored": body, "errors": errors}
+    if audited.status == "failed":
+        # A tailored CV the auditor rejected three times is worse than no
+        # tailoring: downstream renders the hand-written master CV instead,
+        # which is known-good. The rejected draft is not silently shipped.
+        return {
+            "errors": audited.errors,
+            "artifact_warnings": [f"tailored CV withheld (audit failed): {'; '.join(audited.issues)}"],
+        }
+    if not audited.content:
+        return {"errors": audited.errors}
+    warnings = (
+        [f"tailored CV is UNVERIFIED (auditor unavailable)"]
+        if audited.status == "unavailable"
+        else []
+    )
+    return {
+        "cv_tailored": audited.content,
+        "errors": audited.errors,
+        "artifact_warnings": warnings,
+    }
 
 
 # "## Professional Summary" section up to (not including) the next H2.

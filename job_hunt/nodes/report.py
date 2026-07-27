@@ -37,6 +37,15 @@ async def write_report(state: JobHuntState, config: RunnableConfig) -> dict:
         lines.append(f"**URL**: {url}")
     lines.append("")
 
+    # Right under the header, before anything else: console output scrolls away
+    # during a long batch, the report is what the operator still has when they
+    # come back to decide whether to send this.
+    artifact_warnings = state.get("artifact_warnings") or []
+    if artifact_warnings:
+        lines += ["## ⚠️ Artifacts needing review", ""]
+        lines += [f"- {warning}" for warning in artifact_warnings]
+        lines += ["", "Do not send these without reading them first.", ""]
+
     if scores:
         lines += ["## Score Breakdown", ""]
         for dim in scores.dimensions:

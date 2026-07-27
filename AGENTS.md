@@ -24,6 +24,9 @@ For a complete executable runbook that another agent can follow end to end, read
 .venv/bin/job-hunt config doctor
 .venv/bin/job-hunt evaluate '<job-url-or-text>'
 
+# Bulk: evaluate a list of URLs, one summary table
+.venv/bin/job-hunt evaluate-batch urls.txt --concurrency 3
+
 # Minimal entry: user only gives URL
 .venv/bin/job-hunt loop '<job-or-application-url>'
 
@@ -88,7 +91,9 @@ Never click the Submit button yourself. Never record before user confirms.
   - `--confirmed`: skips browser and confirmation, records directly as Applied
   - `--no-browser`: skips Playwright, prompts for confirmation via stdin
   - `--headless`: runs Chromium headless (smoke tests only)
-- `apply-replace-pdf` / `apply-capture-page` / `apply-refill-current-page` / `apply-close-session` write per-command `.cmd-<uuid>.json` sentinels (race-free). They also drop compatibility sentinels for already-running fill loops. Each subcommand warns when the heartbeat is >30s stale ("session likely dead, restart with apply --fill-only").
+- `apply-replace-pdf` / `apply-capture-page` / `apply-refill-current-page` / `apply-close-session` write per-command `.cmd-<uuid>.json` sentinels (race-free). Each subcommand warns when the heartbeat is >30s stale ("session likely dead, restart with apply --fill-only").
+- `apply-status [--controls]` / `apply-do --click/--fill/--select/--check` are request/response commands: sentinel in, `.res-<uuid>.json` out (30 s poll). They are the token-cheap replacement for reading screenshots or driving a browser MCP; `apply-do` rejects submit-like click labels at both ends.
+- Verification order for agents: `apply-review.json` → `apply-status` → screenshot image only when the JSON shows a problem. Never drive application pages through a browser MCP.
 - `job_hunt/cli.py::_open_apply_page` — opens Playwright with a persistent browser profile (`storage/browser-profile/`), navigates to the URL, runs auto-fill, then attaches the PDF.
 - `job_hunt/cli.py::_attach_resume` — attaches PDF using file chooser (clicking the exact-name "Upload File"/"Replace" button) before falling back to `set_input_files`. Auto-fill runs before PDF attachment so React components are fully initialized.
 - `_record_manual_submission` is the only helper that mutates tracker state for manual submissions.
@@ -115,15 +120,17 @@ Each apply session writes to a per-application directory:
 
 ```
 artifacts/apply/{YYYY-MM-DD}-{company-slug}-{role-slug}/
-  apply-review-{hash}.png    ← screenshot taken after fill (and after each PDF replacement)
-  apply-page-{hash}.png      ← screenshot taken after manual submit / capture request
+  apply-review-{hash}.jpg    ← screenshot taken after fill (and after each PDF replacement)
+  apply-page-{hash}.jpg      ← screenshot taken after manual submit / capture request
   apply-review.md            ← review log and drafted answers
   apply-review.json          ← machine-readable review state, incl. validation_issues[]
+  apply-controls.json        ← form-control summary, written when fill left problems
   apply-run.jsonl            ← structured event log (one JSON per line)
   {resume-filename}.pdf      ← copy of the PDF submitted
   .cdp                       ← compatibility sentinel present while fill-only session is active
   .session.json              ← heartbeat (pid + last_heartbeat)
   .cmd-<uuid>.json           ← per-command sentinel (transient)
+  .res-<uuid>.json           ← per-command response (transient)
   login-modal-unknown.png    ← only present when login modal misbehaves
   login-modal-unknown.html   ← DOM dump matching the screenshot above
 ```

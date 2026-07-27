@@ -14,7 +14,9 @@ be self-contained and answerable by following its 6 numbered axes.
 **Role**: {{ role }}
 {% if jd_text %}
 **JD excerpt**:
+<<<JD_TEXT_BEGIN>>>
 {{ jd_text[:1500] }}
+<<<JD_TEXT_END>>>
 {% endif %}
 {% if cv_excerpt %}
 **Candidate CV excerpt** (used in axis 6):

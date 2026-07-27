@@ -29,6 +29,9 @@ narrative:
   # Optional: a truthful one-line work-authorization / availability statement,
   # rendered near the close of full-mode cover letters (e.g. PGWP timeline).
   availability: "Example: eligible to work full-time in Canada; available immediately."
+  # Optional: single-line version of the same fact, rendered under the contact
+  # row in the CV PDF header. Omit to leave the resume header unchanged.
+  work_auth_line: "Example: authorized to work full-time in Canada — no sponsorship required."
 
 apply:
   cover_letter_default: false

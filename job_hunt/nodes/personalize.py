@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import datetime
 from pathlib import Path
 
@@ -13,6 +14,15 @@ from job_hunt.nodes._prompts import render
 
 _STORY_BANK_PATH = Path("interview-prep/story-bank.md")
 _DRAFT_ANSWERS_SCORE_THRESHOLD = 4.5
+
+# The story bank is read-modify-written whole. The critical section below is
+# synchronous end to end, so today asyncio cannot interleave two `evaluate-batch`
+# jobs inside it and the lock is not load-bearing. It is kept because that
+# safety is an accident of there being no `await` between the read and the
+# write: add one (async file I/O, a lookup, a retry) and concurrent jobs would
+# start overwriting each other's stories with no other signal. Locking the
+# invariant is cheaper than re-deriving it later.
+_STORY_BANK_LOCK = asyncio.Lock()
 
 
 async def personalization_plan(state: JobHuntState, config: RunnableConfig) -> dict:
@@ -98,7 +108,11 @@ async def update_story_bank(state: JobHuntState, config: RunnableConfig) -> dict
     interview_content = state.get("evaluation_blocks", {}).get("interview_prep", "")
     if not interview_content:
         return {"errors": []}
+    async with _STORY_BANK_LOCK:
+        return _append_story(state, interview_content)
 
+
+def _append_story(state: JobHuntState, interview_content: str) -> dict:
     jd_meta = state.get("jd_meta")
     company = jd_meta.company if jd_meta else "Unknown"
     role = jd_meta.title if jd_meta else "Unknown"

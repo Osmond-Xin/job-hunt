@@ -373,3 +373,38 @@ def test_format_tracker_entry_escapes_pipes():
     parsed = parse_tracker_line(row)
     assert parsed.company == "Acme | Corp"
     assert parsed.role == "AI Engineer | Remote"
+
+
+def test_find_match_rejects_generic_token_company_collision(tmp_path: Path) -> None:
+    """Regression (2026-07-09): 'CoLab Software' must not match 'Jonas Software'.
+
+    The shared generic token "Software" pushed the raw company ratio to 0.79
+    and the combined score past the 0.70 caller threshold, flipping the wrong
+    tracker row to Applied on a real submission.
+    """
+    from job_hunt.repositories.tracker_repo import TrackerRepository
+
+    apps = tmp_path / "applications.md"
+    _write_apps(apps, [
+        "| 126 | 2026-04-26 | Jonas Software | Junior AI Software Engineer "
+        "| 3.6/5 | Evaluated | ✅ | — | note |",
+    ])
+    tracker = TrackerRepository(apps)
+    entry, score = tracker.find_match(
+        company="CoLab Software", role="Forward Deployed Engineer"
+    )
+    assert entry is None or score < 0.70
+
+
+def test_find_match_still_matches_suffix_variants(tmp_path: Path) -> None:
+    from job_hunt.repositories.tracker_repo import TrackerRepository
+
+    apps = tmp_path / "applications.md"
+    _write_apps(apps, [
+        "| 1 | 2026-07-01 | Mariner Partners Inc. | AI Engineer - Healthcare "
+        "| 3.3/5 | Evaluated | ✅ | — | note |",
+    ])
+    tracker = TrackerRepository(apps)
+    entry, score = tracker.find_match(company="Mariner", role="AI Engineer - Healthcare")
+    assert entry is not None
+    assert score >= 0.70

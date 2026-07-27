@@ -4,11 +4,24 @@ This workflow is for Claude Code, Codex CLI, or another local agent that can run
 
 The invariant is simple: the agent may prepare, fill, replace, screenshot, and record, but the user manually performs the final submission click.
 
+## Token Rules (read this first)
+
+Driving the application page through a browser MCP (Playwright MCP, chrome-devtools MCP, …) costs 10k-30k tokens per page snapshot and is **prohibited** — it is also unsafe against the running fill-only browser (see Browser Profile). All browser interaction goes through the CLI commands in this document. Cheapest source of truth first:
+
+1. **`apply-review.json`** — structured fill result (`filled`, `skipped`, `required_empty`, `validation_issues`, `warnings`, `pdf`). Read this after every fill/refill. When it is clean, do NOT read the screenshot.
+2. **`job-hunt apply-status`** — live text report of the open page (URL, Workday step, error banners, required-but-empty fields; `--controls` adds every visible form control with its current value). Use it to answer "where is the form stuck" without images.
+3. **`job-hunt apply-do`** — one targeted action (`--click 'label'`, `--fill 'label=value'`, `--select 'label=option'`, `--check 'label'`) inside the live session. Use it to fix a single missed field instead of taking over the browser.
+4. **Screenshots** (`apply-review-*.jpg`) — last resort, only when the JSON/status output shows a problem you cannot diagnose from text, or for confirmation-page evidence.
+
+Token rules never apply to the artifacts themselves. The tailored CV, cover letter, and application answers are always generated on the premium tier — do not route them to the cheap tier to save tokens.
+
 This document is the stable handoff contract for application automation. If another agent continues the work, it should preserve the command semantics and safety boundaries here.
 
 ## Roles
 
 - `job-hunt apply --fill-only`: opens a persistent Chromium browser, fills all safe fields, keeps the browser open via a heartbeat-driven loop with idle-based timeout (60 min idle exit, not a hard 30/10-min deadline). Agent runs this in the background.
+- `job-hunt apply-status [--controls]`: prints a compact text report of the live page (no screenshot). Agent runs this to check where the form stands.
+- `job-hunt apply-do --click/--fill/--select/--check`: runs one targeted action in the open session. Agent runs this to fix a single missed field. Submit-like click labels are rejected.
 - `job-hunt apply-replace-pdf <pdf>`: replaces the resume in the open browser session without closing or restarting. Agent runs this when the user asks to swap the PDF.
 - `job-hunt apply-capture-page`: captures the current browser page in the open session. Agent runs this after the user submits, before recording, to preserve confirmation-page evidence.
 - `job-hunt apply --no-browser --confirmed`: records the submission to the tracker, activity log, and Slack after the user confirms they clicked Submit. No browser interaction.
@@ -27,6 +40,10 @@ The current CLI implementation lives in `job_hunt/cli.py`.
   - `--auto-submit`: gated by Review-gate-clean; see "Auto-submit" section below.
 - `apply_replace_pdf`: public `job-hunt apply-replace-pdf` command. Writes a per-command sentinel `.cmd-<uuid>.json` into the active session's artifact dir plus a compatibility `.replace_pdf`; the running `--fill-only` loop drains pending commands every ~2 s in mtime order, so two replace requests in quick succession process serially without racing.
 - `apply_capture_page`: public `job-hunt apply-capture-page` command. Writes a `.cmd-<uuid>.json` (kind=`capture_page`) plus compatibility `.capture_page`; the running loop captures the current page and appends an event to `apply-review.md` and `apply-run.jsonl`.
+- `apply_status`: public `job-hunt apply-status` command. Writes a `.cmd-<uuid>.json` (kind=`status`); the loop answers via `.res-<uuid>.json` with URL, title, Workday step, error banners, filtered `required_empty`, visible actions, and (with `--controls`) the full form-control summary. The subcommand polls for the response (30 s timeout) and prints compact text.
+- `apply_do`: public `job-hunt apply-do` command. Exactly one of `--click 'label'` / `--fill 'label=value'` / `--select 'label=option'` / `--check 'label'`. Writes a `.cmd-<uuid>.json` (kind=`do`); the loop runs the op via label-based locators (exact match first, ambiguous matches refused, with Workday dropdown/question fallbacks) and answers with `ok`, `detail`, the post-op URL, and the `required_empty` list. Submit-like click labels (`submit/apply/finish/complete/done/confirm/finalize/send`) are rejected at the CLI, at the loop handler, and again against the resolved element's own text before clicking.
+- Session security: the fill-only loop stamps a per-session token into `.session.json`; `submit_command` copies it into every sentinel and the loop rejects sentinels whose token does not match (`command.rejected` event). Command/response ids are hex-validated and derived from filenames, and sentinel/response files are written atomically. `apply-status --controls` masks password/OTP/SSN-SIN/DOB/compensation values (`<filled>` instead of the raw value).
+- When more than one fill-only session is alive, `apply-status` / `apply-do` require `--session <artifact-dir-substring>`.
 - `_open_apply_page`: launches Playwright with `launch_persistent_context` (profile at `storage/browser-profile/`), navigates, runs auto-fill first, then attaches PDF.
 - `_attach_resume`: priority 1 = click upload/attach/replace buttons or Airtable-style `browse` links → file chooser; priority 2 = `set_input_files` on all file inputs. Auto-fill always runs before PDF attachment so React components are fully initialized.
 - `_auto_fill_application`: fills name, email, phone, LinkedIn/GitHub/portfolio, location, safe text fields, standard textareas, Airtable-style rich textboxes, and radio buttons with safe canned answers. Rich-text answers are only reported as filled after the page is read back and the answer is confirmed to persist.
@@ -51,20 +68,24 @@ Step 1 — Fill (run in background):
     --company '<company>' --role '<role>' --pdf '<resume.pdf>' \
     --fill-only
 
-Step 2 — Verify (agent reads screenshot):
-  Read artifacts/apply/{slug}/apply-review-{hash}.png
+Step 2 — Verify (agent reads JSON, not the screenshot):
+  Read artifacts/apply/{slug}/apply-review.json
   Report to user: filled fields, PDF filename, any skipped questions
+  If required_empty / validation_issues / warnings are non-empty (or pdf is
+  null when one was expected): run `job-hunt apply-status --controls`, fix
+  single fields with `job-hunt apply-do`, and only read the newest
+  apply-review-*.jpg if still unclear.
 
 Step 3 — Swap PDF if needed:
   .venv/bin/job-hunt apply-replace-pdf '<other-resume.pdf>'
-  Wait ~3 s, read the new apply-review-*.png screenshot to confirm
+  Wait ~3 s, confirm from the command output or apply-status
 
 Step 4 — User submits:
   User clicks Submit Application in the open browser
 
 Step 5 — Capture confirmation page:
   .venv/bin/job-hunt apply-capture-page
-  Wait ~3 s, read the new apply-page-*.png screenshot
+  Wait ~3 s, read the new apply-page-*.jpg screenshot
 
 Step 6 — Record (after user confirms):
   .venv/bin/job-hunt apply '<url>' \
@@ -78,21 +99,24 @@ Each apply session has its own directory:
 
 ```
 artifacts/apply/{YYYY-MM-DD}-{company-slug}-{role-slug}/
-  apply-review-{hash}.png    ← after initial fill
-  apply-review-{hash}.png    ← after each PDF swap
-  apply-page-{hash}.png      ← manual confirmation/success page capture
+  apply-review-{hash}.jpg    ← after initial fill
+  apply-review-{hash}.jpg    ← after each PDF swap
+  apply-page-{hash}.jpg      ← manual confirmation/success page capture
   apply-review.md            ← human-readable review log
   apply-review.json          ← machine-readable review state, incl. validation_issues[]
+  apply-controls.json        ← form-control summary; written when the fill left
+                               required_empty / validation_issues non-empty
   apply-run.jsonl            ← structured event stream (one JSON per line)
   {resume-filename}.pdf      ← copy of the submitted PDF
   .cdp                       ← compatibility sentinel; present while fill-only session is active
   .session.json              ← heartbeat (pid + last_heartbeat)
   .cmd-<uuid>.json           ← per-command sentinel (transient)
+  .res-<uuid>.json           ← per-command response (transient; apply-status / apply-do)
   login-modal-unknown.png    ← only present when login modal misbehaves
   login-modal-unknown.html   ← DOM dump matching the screenshot above
 ```
 
-The agent should always read the **most recent** `apply-review-*.png` in the session directory.
+Screenshots are full-page JPEGs (quality 60) since 2026-07-09; sessions before that wrote `.png`. When a screenshot must be read, take the **most recent** `apply-review-*.jpg` — but prefer `apply-review.json` / `apply-status` first (see Token Rules).
 
 ## Browser Profile
 
@@ -139,7 +163,7 @@ After the user manually clicks Submit and says the page changed, run:
 .venv/bin/job-hunt apply-capture-page
 ```
 
-The running process captures the current page as `apply-page-*.png` and appends an event to `apply-review.md`. This is best-effort evidence; the user confirmation remains the source of truth for recording.
+The running process captures the current page as `apply-page-*.jpg` and appends an event to `apply-review.md`. This is best-effort evidence; the user confirmation remains the source of truth for recording.
 
 ## Fallback Recording
 
@@ -225,7 +249,7 @@ printf 'n\n' | .venv/bin/job-hunt apply \
 Expected output:
 - `Attached PDF` when a file input is present
 - `Auto-filled fields` lists safe fields
-- `Review screenshot: artifacts/apply/{slug}/apply-review-*.png`
+- `Review screenshot: artifacts/apply/{slug}/apply-review-*.jpg`
 - `No tracker changes made.`
 
 Known smoke target (Ashby — Cohere Security Agents):

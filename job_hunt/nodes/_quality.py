@@ -3,25 +3,35 @@
 The operator's standing instruction: trade tokens for quality. Every gated
 artifact is audited by a second LLM pass against the hard framing rules; a
 failing draft is regenerated with the auditor's issues as explicit feedback,
-up to ``_MAX_ATTEMPTS`` times. The last draft is used either way — a failed
-audit downgrades to a warning, never a blocked pipeline.
+up to ``_MAX_ATTEMPTS`` times. A draft that never passes is returned with
+``status="failed"`` so callers can withhold it — it is never presented as if
+it had been verified.
 
-Tier split: callers pick the generation tier (premium for outward-facing
-artifacts like the tailored CV and cover letter; cheap for the rest). The
-audit pass always runs on the cheap tier — a different model family acting
-as an independent reviewer. When the premium tier is unavailable, generation
-retries once on the cheap tier so the pipeline degrades instead of stalling.
+The audit is asymmetric on purpose: a rejection is accepted from anywhere in
+the auditor's reply, while an approval is only honoured when the whole reply
+is the verdict object and it lists no issues. Being wrong in the direction of
+"regenerate" costs tokens; being wrong the other way sends a bad résumé.
+
+Tier split: callers pick the generation tier — premium for everything a
+recruiter reads (tailored CV, cover letter, application answers), cheap for
+analysis. Regenerations stay on the caller's tier. The audit pass always runs
+on the cheap tier: a different model family reviewing the draft is an
+independent check, not self-approval. When the premium tier is unavailable,
+generation retries once on the cheap tier so the pipeline degrades instead of
+stalling.
 """
 
 from __future__ import annotations
 
+import json
 import re
+from dataclasses import dataclass, field
 from typing import Literal
 
 from job_hunt.models.state import JobHuntState
 from job_hunt.nodes._llm import call_node_llm_or_fallback
 from job_hunt.nodes._prompts import render
-from job_hunt.services.llm.content import extract_json_object
+from job_hunt.services.llm.content import extract_json_object, normalize_llm_content
 
 _MAX_ATTEMPTS = 3
 
@@ -34,6 +44,32 @@ TENURE_SELF_LABEL_RE = re.compile(
 )
 
 _CODE_FENCE_RE = re.compile(r"^```[a-z]*\s*\n|\n```\s*$", re.IGNORECASE)
+
+@dataclass
+class AuditedArtifact:
+    """A generated artifact plus the verdict of the audit that gated it.
+
+    ``status`` is what callers must branch on — an artifact that never passed
+    an audit must not be presented to a recruiter as if it had:
+
+    - ``passed``      — the auditor approved this draft.
+    - ``failed``      — the auditor rejected every attempt. The draft is
+                        returned so it can be inspected, never shipped as-is.
+    - ``unavailable`` — the auditor could not be reached. Not the artifact's
+                        fault, so it is usable, but it is unverified and the
+                        operator has to be told.
+    - ``skipped``     — generation itself produced nothing; ``content`` empty.
+    """
+
+    content: str
+    status: Literal["passed", "failed", "unavailable", "skipped"]
+    errors: list[str] = field(default_factory=list)
+    issues: list[str] = field(default_factory=list)
+
+    @property
+    def verified(self) -> bool:
+        return self.status == "passed"
+
 
 _FEEDBACK_TEMPLATE = """{prompt}
 
@@ -61,15 +97,16 @@ async def generate_with_audit(
     temperature: float,
     max_tokens: int,
     tier: Literal["cheap", "premium"] = "cheap",
-) -> tuple[str, list[str]]:
-    """Run the generate/audit loop. Returns (artifact, errors).
+) -> AuditedArtifact:
+    """Run the generate/audit loop and report whether the result was verified.
 
-    Empty artifact means the generator LLM was unavailable (fallback path);
-    callers keep their existing degradation behaviour.
+    Callers must not treat an unverified artifact as shippable — see
+    ``AuditedArtifact.status``.
     """
     errors: list[str] = []
     draft = ""
     issues: list[str] = []
+    auditor_down = False
 
     for attempt in range(1, _MAX_ATTEMPTS + 1):
         gen_prompt = prompt
@@ -77,6 +114,10 @@ async def generate_with_audit(
             gen_prompt = _FEEDBACK_TEMPLATE.format(
                 prompt=prompt, draft=draft, issues="\n".join(f"- {issue}" for issue in issues)
             )
+        # Every attempt keeps the caller's tier. Dropping regenerations to the
+        # cheap tier would mean a draft that failed its audit — the one most
+        # likely to ship badly — is the one written by the weaker model.
+        attempt_tier = tier
         result, gen_errors = await call_node_llm_or_fallback(
             state,
             node_name=node_name,
@@ -85,11 +126,11 @@ async def generate_with_audit(
             fallback_content="",
             temperature=temperature,
             max_tokens=max_tokens,
-            tier=tier,
+            tier=attempt_tier,
         )
         errors += gen_errors
         candidate = _CODE_FENCE_RE.sub("", result.content.strip()).strip()
-        if not candidate and tier == "premium":
+        if not candidate and attempt_tier == "premium":
             errors.append(
                 f"{node_name}: premium generation unavailable; retrying on cheap tier"
             )
@@ -106,32 +147,48 @@ async def generate_with_audit(
             errors += gen_errors
             candidate = _CODE_FENCE_RE.sub("", result.content.strip()).strip()
         if not candidate:
-            return "", errors
+            return AuditedArtifact(content="", status="skipped", errors=errors)
         draft = candidate
 
-        issues = await _audit(state, node_name=node_name, artifact_type=artifact_type, draft=draft)
+        issues, auditor_down = await _audit(
+            state, node_name=node_name, artifact_type=artifact_type, draft=draft
+        )
+        if auditor_down:
+            errors.append(
+                f"{node_name}: quality auditor unavailable; artifact is UNVERIFIED. "
+                "Read it before sending it to anyone."
+            )
+            return AuditedArtifact(content=draft, status="unavailable", errors=errors)
         if not issues:
-            return draft, errors
+            return AuditedArtifact(content=draft, status="passed", errors=errors)
 
     errors.append(
-        f"{node_name}: quality audit still failing after {_MAX_ATTEMPTS} attempts; "
-        f"using last draft. Open issues: {'; '.join(issues)}"
+        f"{node_name}: quality audit FAILED after {_MAX_ATTEMPTS} attempts; artifact "
+        f"withheld. Open issues: {'; '.join(issues)}"
     )
-    return draft, errors
+    return AuditedArtifact(content=draft, status="failed", errors=errors, issues=issues)
 
 
 async def _audit(
     state: JobHuntState, *, node_name: str, artifact_type: str, draft: str
-) -> list[str]:
-    """Return the list of audit issues; empty list means pass."""
+) -> tuple[list[str], bool]:
+    """Audit a draft. Returns ``(issues, auditor_unavailable)``.
+
+    An empty issue list means pass — but only when the second element is
+    False. "The auditor never answered" and "the auditor approved" used to be
+    the same return value, which is how unverified drafts shipped silently.
+    """
     # Deterministic gate first — free, and guarantees the hard rule even when
     # the auditor LLM is unavailable.
     violation = TENURE_SELF_LABEL_RE.search(draft)
     if violation:
-        return [
-            f"Tenure self-label {violation.group(0)!r} — replace with a neutral phrase; "
-            "never advertise quantified tenure totals."
-        ]
+        return (
+            [
+                f"Tenure self-label {violation.group(0)!r} — replace with a neutral phrase; "
+                "never advertise quantified tenure totals."
+            ],
+            False,
+        )
 
     prompt = render(
         "evaluate/quality_audit.md",
@@ -155,10 +212,50 @@ async def _audit(
         tier="cheap",
     )
     if audit_errors or not result.content.strip():
-        # Auditor unavailable — accept the draft rather than block the run.
-        return []
-    data = extract_json_object(result.content) or {}
-    if data.get("verdict") == "fail":
-        issues = [str(issue) for issue in data.get("issues", []) if str(issue).strip()]
-        return issues or ["Auditor failed the draft without specific issues; tighten rule compliance."]
-    return []
+        # Auditor unreachable. The draft is not blocked, but it is reported as
+        # unverified rather than passed — the caller decides what to do.
+        return [], True
+    # Detecting a rejection is deliberately permissive: the first JSON object in
+    # the reply counts, and either a "fail" verdict or any listed issue — even
+    # alongside a "pass" — rejects the draft. Erring toward rejection only costs
+    # a regeneration. (A reply whose *first* object is clean but which hides a
+    # later failure verdict does not reach here as a pass either: the strict
+    # check below refuses anything that is not JSON end to end.)
+    loose = extract_json_object(result.content) or {}
+    loose_issues = [str(issue) for issue in loose.get("issues") or [] if str(issue).strip()]
+    if str(loose.get("verdict") or "").strip().lower() == "fail" or loose_issues:
+        return (
+            loose_issues
+            or ["Auditor failed the draft without specific issues; tighten rule compliance."],
+            False,
+        )
+
+    # Accepting an approval is deliberately strict. `extract_json_object` scans
+    # for the first JSON object anywhere in the text, so a reply like
+    # 'This draft has problems. {"verdict":"pass","issues":[]}' would otherwise
+    # read as approval. The audit prompt specifies JSON only, so a pass counts
+    # only when the entire reply is that verdict object.
+    strict = _whole_response_object(result.content)
+    if strict is None or str(strict.get("verdict") or "").strip().lower() != "pass":
+        return [], True
+
+    issues_raw = strict.get("issues", [])
+    if not isinstance(issues_raw, list):
+        # Schema says a list. `null`, a string, or a missing type is a reply we
+        # cannot read as an approval — unverified, not passed.
+        return [], True
+    issues = [str(issue) for issue in issues_raw if str(issue).strip()]
+    if issues:
+        # "pass" while still listing problems is self-contradictory. Take the
+        # problems seriously and regenerate.
+        return issues, False
+    return [], False
+
+
+def _whole_response_object(text: str) -> dict | None:
+    """Parse the reply only when it is entirely one JSON object."""
+    try:
+        parsed = json.loads(normalize_llm_content(text))
+    except (ValueError, TypeError):
+        return None
+    return parsed if isinstance(parsed, dict) else None

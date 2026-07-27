@@ -54,6 +54,10 @@ class CandidateProfile(BaseModel):
     # ``narrative.availability``). Rendered truthfully in full-mode cover
     # letters so recruiters see the PGWP timeline instead of screening out.
     availability: str = ""
+    # One-line work-authorization statement (from ``narrative.work_auth_line``)
+    # for the CV PDF header — the tailored-CV path strips cv.md's contact
+    # block, so the resume would otherwise carry no work-authorization line.
+    work_auth_line: str = ""
     # The mode this profile was loaded under. Allows downstream code that
     # already has the profile in hand to inspect mode without re-reading
     # profile.yml. Mirrors what ``current_mode()`` returned at load time.

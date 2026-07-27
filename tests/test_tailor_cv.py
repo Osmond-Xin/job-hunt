@@ -98,18 +98,23 @@ def test_tailor_cv_returns_body_and_strips_code_fence(monkeypatch) -> None:
     assert result["errors"] == []
 
 
-def test_tailor_cv_tenure_self_label_fails_audit_with_warning(monkeypatch) -> None:
-    # The deterministic gate rejects every attempt; the node keeps the last
-    # draft but surfaces the unresolved audit failure.
+def test_tailor_cv_withholds_a_draft_that_never_passed_audit(monkeypatch) -> None:
+    """A CV the auditor rejected every time must not reach the PDF.
+
+    The deterministic tenure gate rejects all three attempts. Rather than
+    shipping the last bad draft, the node returns no `cv_tailored` at all so
+    downstream renders the hand-written master CV, and flags the artifact.
+    """
     monkeypatch.setattr(
         quality_module,
         "call_node_llm_or_fallback",
         _fake_llm("## Experience\n\nEngineer with 20+ years of experience.\n"),
     )
     result = asyncio.run(tailor_cv(dict(_BASE_STATE), None))
-    assert "cv_tailored" in result
-    assert any("quality audit still failing" in err for err in result["errors"])
+    assert "cv_tailored" not in result
+    assert any("quality audit FAILED" in err for err in result["errors"])
     assert any("Tenure self-label" in err for err in result["errors"])
+    assert any("withheld" in warning for warning in result["artifact_warnings"])
 
 
 def test_tailor_cv_empty_llm_output_falls_back(monkeypatch) -> None:

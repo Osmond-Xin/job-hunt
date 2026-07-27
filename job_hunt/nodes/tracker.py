@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import datetime
 from pathlib import Path
 
@@ -13,9 +14,25 @@ from job_hunt.repositories.tracker_repo import TrackerEntry, TrackerRepository
 _TRACKER_PATH = Path("data/applications.md")
 _MATCH_THRESHOLD = 0.70
 
+# Both nodes read-modify-write the whole tracker file and derive the next row
+# number from what they read. TrackerRepository is fully synchronous, so the
+# critical sections below cannot currently be interleaved by asyncio and this
+# lock is insurance rather than a fix — it holds the invariant if anyone later
+# introduces an `await` between the read and the write.
+#
+# What it does NOT protect against: a second OS process. Two `evaluate-batch`
+# runs, or a batch racing the scheduler's email ingest, can still duplicate row
+# numbers. Do not run them at the same time.
+_WRITE_LOCK = asyncio.Lock()
+
 
 async def write_tracker_addition(state: JobHuntState, config: RunnableConfig) -> dict:
     """Append a new row to the tracker if the job does not already exist."""
+    async with _WRITE_LOCK:
+        return await _write_tracker_addition(state)
+
+
+async def _write_tracker_addition(state: JobHuntState) -> dict:
     repo = TrackerRepository(_TRACKER_PATH)
     jd_meta = state.get("jd_meta")
     scores = state.get("scores")
@@ -56,6 +73,11 @@ async def write_tracker_addition(state: JobHuntState, config: RunnableConfig) ->
 
 async def merge_or_update_tracker(state: JobHuntState, config: RunnableConfig) -> dict:
     """If a matching row already exists, update score/status/report fields."""
+    async with _WRITE_LOCK:
+        return await _merge_or_update_tracker(state)
+
+
+async def _merge_or_update_tracker(state: JobHuntState) -> dict:
     repo = TrackerRepository(_TRACKER_PATH)
     jd_meta = state.get("jd_meta")
     scores = state.get("scores")

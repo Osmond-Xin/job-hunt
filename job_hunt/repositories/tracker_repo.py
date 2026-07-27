@@ -153,6 +153,20 @@ class TrackerRepository:
         role_norm = normalize(role or "")
         for entry in entries:
             company_score = 1.0 if normalize(entry.company) == company_norm else fuzz.ratio(normalize(entry.company), company_norm) / 100
+            # Generic tokens ("Software", "Inc", …) inflate the raw ratio:
+            # "CoLab Software" vs "Jonas Software" scores 0.79 and once matched
+            # a wrong tracker row on a real submission (2026-07-09). Distinct
+            # companies must also be similar on their distinctive tokens.
+            if company_score < 1.0:
+                distinctive = (
+                    fuzz.ratio(
+                        _distinctive_company_name(entry.company),
+                        _distinctive_company_name(company),
+                    )
+                    / 100
+                )
+                if distinctive < 0.60:
+                    continue
             if role_norm:
                 role_score = 1.0 if normalize(entry.role) == role_norm else fuzz.token_sort_ratio(entry.role, role or "") / 100
             else:
@@ -197,6 +211,22 @@ def parse_tracker_line(line: str) -> TrackerEntry | None:
 
 def normalize(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", value.lower())
+
+
+_GENERIC_COMPANY_TOKENS = {
+    "software", "inc", "corp", "corporation", "ltd", "llc", "co", "company",
+    "technologies", "technology", "tech", "solutions", "systems",
+    "group", "partners", "labs", "canada", "the",
+}
+
+
+def _distinctive_company_name(name: str) -> str:
+    """Company name reduced to its distinctive tokens for fuzzy comparison."""
+    tokens = [
+        t for t in re.findall(r"[a-z0-9]+", name.lower())
+        if t not in _GENERIC_COMPANY_TOKENS
+    ]
+    return "".join(tokens) or normalize(name)
 
 
 def _cell(value: object) -> str:
