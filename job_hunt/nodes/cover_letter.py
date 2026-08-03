@@ -11,9 +11,9 @@ from langchain_core.runnables import RunnableConfig
 from job_hunt.models.state import JobHuntState
 from job_hunt.nodes._prompts import render
 from job_hunt.nodes._quality import generate_with_audit
-from job_hunt.nodes.pdf import detect_paper_size
+from job_hunt.nodes.artifact_paths import run_output_dir
+from job_hunt.nodes.pdf import artifact_template_env, detect_paper_size
 
-_OUTPUT_DIR = Path("output")
 _TEMPLATES_DIR = Path("templates")
 _FONTS_DIR = (_TEMPLATES_DIR / "fonts").resolve()
 _TEMPLATE_NAME = "cover-letter.html.j2"
@@ -93,19 +93,15 @@ async def generate_cover_letter(state: JobHuntState, config: RunnableConfig) -> 
     paragraphs = _split_paragraphs(body_md)
 
     try:
-        from jinja2 import Environment, FileSystemLoader
-
         if not (_TEMPLATES_DIR / _TEMPLATE_NAME).exists():
             return {
                 "errors": errors + [f"{_TEMPLATE_NAME} template not found; skipping cover letter."],
             }
 
-        run_id = state.get("run_id", "unknown")
-        out_dir = _OUTPUT_DIR / run_id
+        out_dir = run_output_dir(state)
         out_dir.mkdir(parents=True, exist_ok=True)
 
-        env = Environment(loader=FileSystemLoader(str(_TEMPLATES_DIR)), autoescape=True)
-        template = env.get_template(_TEMPLATE_NAME)
+        template = artifact_template_env().get_template(_TEMPLATE_NAME)
         paper_size = detect_paper_size(jd_meta)
         html = template.render(
             profile=profile,

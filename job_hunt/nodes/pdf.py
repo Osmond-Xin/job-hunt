@@ -10,8 +10,8 @@ from langchain_core.runnables import RunnableConfig
 from job_hunt.models.state import JobHuntState
 from job_hunt.nodes._prompts import render
 from job_hunt.nodes._quality import generate_with_audit
+from job_hunt.nodes.artifact_paths import run_output_dir
 
-_OUTPUT_DIR = Path("output")
 _TEMPLATES_DIR = Path("templates")
 _FONTS_DIR = (_TEMPLATES_DIR / "fonts").resolve()
 
@@ -98,8 +98,48 @@ def cv_markdown_to_html(cv_md: str, *, strip_contact_block: bool = True) -> str:
         parts = re.split(r"^\s*-{3,}\s*$", cv_md, maxsplit=1, flags=re.MULTILINE)
         if len(parts) > 1:
             body_md = parts[1].lstrip()
-    md = MarkdownIt("commonmark", {"html": False, "linkify": True, "typographer": True})
+    # The commonmark preset ships with the linkify core rule off, so the option
+    # alone is a no-op — enable() is what makes bare URLs (project repos, the
+    # portfolio site) clickable in the PDF instead of dead text.
+    md = MarkdownIt(
+        "commonmark", {"html": False, "linkify": True, "typographer": True}
+    ).enable("linkify")
     return md.render(body_md)
+
+
+# Flagship repos a reader should be able to reach from any mention of the name,
+# not just from the one URL in the Projects block.
+_PROJECT_LINKS = {
+    "LearnArken": "https://github.com/Osmond-Xin/LearnArken",
+}
+_PROJECT_NAME_RE = re.compile(r"\b(" + "|".join(map(re.escape, _PROJECT_LINKS)) + r")\b")
+# Existing anchors (so a name inside one is not nested) and any other tag (so
+# href/attribute text is never rewritten). Everything between is a text node.
+_HTML_SKIP_RE = re.compile(r"<a\b[^>]*>.*?</a>|<[^>]+>", re.DOTALL | re.IGNORECASE)
+
+
+def link_project_mentions(html: str) -> str:
+    """Turn every bare project-name mention in rendered HTML into a repo link.
+
+    Operates on text nodes only: names already inside an ``<a>`` and anything
+    within a tag (attribute values, URLs) are left untouched. Matching is
+    case-sensitive, so identifiers like ``LEARNARKEN_LOCAL_ONLY`` do not match.
+    """
+    if not html:
+        return html
+
+    def wrap(match: re.Match[str]) -> str:
+        name = match.group(1)
+        return f'<a href="{_PROJECT_LINKS[name]}">{name}</a>'
+
+    out: list[str] = []
+    cursor = 0
+    for skip in _HTML_SKIP_RE.finditer(html):
+        out.append(_PROJECT_NAME_RE.sub(wrap, html[cursor : skip.start()]))
+        out.append(skip.group(0))
+        cursor = skip.end()
+    out.append(_PROJECT_NAME_RE.sub(wrap, html[cursor:]))
+    return "".join(out)
 
 
 # Country signals that map to North-American letter paper. Everything else → A4.
@@ -120,19 +160,34 @@ def detect_paper_size(jd_meta) -> str:
     return "letter" if _LETTER_COUNTRY_RE.search(location) else "A4"
 
 
+def artifact_template_env():
+    """Jinja environment for the CV and cover-letter templates, with the filters they require.
+
+    autoescape is on so LLM-supplied strings (summary_angle, bullets, keywords,
+    letter paragraphs) cannot break the HTML; cv_html is the only trusted-markup
+    slot (``| safe``). ``project_links`` escapes first and then injects anchors,
+    so it must return Markup to survive autoescaping.
+    """
+    from jinja2 import Environment, FileSystemLoader
+    from markupsafe import Markup, escape
+
+    env = Environment(loader=FileSystemLoader(str(_TEMPLATES_DIR)), autoescape=True)
+    env.filters["project_links"] = lambda value: Markup(
+        link_project_mentions(str(escape(value)))
+    )
+    return env
+
+
 async def generate_cv_html_pdf(state: JobHuntState, config: RunnableConfig) -> dict:
     """Render the shared Jinja2 CV template with per-company state content, then PDF via Playwright."""
     try:
-        from jinja2 import Environment, FileSystemLoader
-
-        run_id = state.get("run_id", "unknown")
         scores = state.get("scores")
         profile = state.get("profile")
         cv = state.get("cv", "")
         jd_meta = state.get("jd_meta")
         pdf_content = scores.pdf_content if scores else None
 
-        out_dir = _OUTPUT_DIR / run_id
+        out_dir = run_output_dir(state)
         out_dir.mkdir(parents=True, exist_ok=True)
 
         template_path = _TEMPLATES_DIR / "cv.html.j2"
@@ -142,10 +197,7 @@ async def generate_cv_html_pdf(state: JobHuntState, config: RunnableConfig) -> d
                 "errors": ["cv.html.j2 template not found; skipping PDF generation."],
             }
 
-        # autoescape so LLM-supplied strings (summary_angle, bullets, keywords)
-        # cannot break the HTML; cv_html is the only trusted-markup slot (| safe).
-        env = Environment(loader=FileSystemLoader(str(_TEMPLATES_DIR)), autoescape=True)
-        template = env.get_template("cv.html.j2")
+        template = artifact_template_env().get_template("cv.html.j2")
 
         paper_size = detect_paper_size(jd_meta)
         # Suppress the embedded "Cover Letter Draft" block in the CV PDF when an
@@ -167,8 +219,8 @@ async def generate_cv_html_pdf(state: JobHuntState, config: RunnableConfig) -> d
         html = template.render(
             profile=profile,
             cv_raw=cv,  # kept for backwards compat; template now prefers cv_html
-            cv_html=cv_markdown_to_html(
-                cv_for_render, strip_contact_block=not cv_tailored
+            cv_html=link_project_mentions(
+                cv_markdown_to_html(cv_for_render, strip_contact_block=not cv_tailored)
             ),
             company=jd_meta.company if jd_meta else "",
             role=jd_meta.title if jd_meta else "",

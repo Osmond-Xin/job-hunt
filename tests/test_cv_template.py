@@ -1,14 +1,11 @@
 from __future__ import annotations
 
-from jinja2 import Environment, FileSystemLoader
-
 from job_hunt.models.job import CandidateProfile
-from job_hunt.nodes.pdf import detect_paper_size
+from job_hunt.nodes.pdf import artifact_template_env, detect_paper_size
 
 
 def _render(**overrides) -> str:
-    env = Environment(loader=FileSystemLoader("templates"), autoescape=False)
-    template = env.get_template("cv.html.j2")
+    template = artifact_template_env().get_template("cv.html.j2")
     base = dict(
         profile=CandidateProfile(
             name="Example Candidate",

@@ -6,7 +6,7 @@ import asyncio
 
 from job_hunt.nodes import _quality as quality_module
 from job_hunt.nodes._quality import TENURE_SELF_LABEL_RE
-from job_hunt.nodes.pdf import cv_markdown_to_html, tailor_cv
+from job_hunt.nodes.pdf import cv_markdown_to_html, link_project_mentions, tailor_cv
 from job_hunt.services.llm.base import ChatResult
 
 
@@ -54,6 +54,52 @@ def test_cv_html_ignores_inline_dashes_when_stripping() -> None:
 
 def test_cv_html_empty_input() -> None:
     assert cv_markdown_to_html("") == ""
+
+
+def test_cv_html_autolinks_bare_urls() -> None:
+    # Project repos are written as bare URLs in cv.md; a recruiter must be able
+    # to click straight through from the PDF.
+    cv_md = "## Projects\n\nGitHub: https://github.com/Osmond-Xin/LearnArken | 2026\n"
+    html = cv_markdown_to_html(cv_md, strip_contact_block=False)
+    assert '<a href="https://github.com/Osmond-Xin/LearnArken">' in html
+
+
+# ----- link_project_mentions -----
+
+_LEARNARKEN_HREF = 'href="https://github.com/Osmond-Xin/LearnArken"'
+
+
+def test_project_mention_becomes_a_link() -> None:
+    html = "<p>Built LearnArken, a fail-closed retrieval system.</p>"
+    assert link_project_mentions(html) == (
+        f'<p>Built <a {_LEARNARKEN_HREF}>LearnArken</a>, a fail-closed retrieval system.</p>'
+    )
+
+
+def test_project_mention_links_every_occurrence() -> None:
+    html = "<p>LearnArken ships.</p><li>LearnArken refuses.</li>"
+    assert link_project_mentions(html).count(_LEARNARKEN_HREF) == 2
+
+
+def test_project_mention_not_nested_inside_existing_anchor() -> None:
+    html = '<p><a href="https://example.com">LearnArken docs</a></p>'
+    assert link_project_mentions(html) == html
+
+
+def test_project_mention_leaves_urls_and_attributes_alone() -> None:
+    # The autolinked repo URL must not have an anchor injected into its href.
+    html = f'<p><a {_LEARNARKEN_HREF}>https://github.com/Osmond-Xin/LearnArken</a></p>'
+    assert link_project_mentions(html) == html
+
+
+def test_project_mention_is_case_sensitive() -> None:
+    # LEARNARKEN_LOCAL_ONLY is an env-var identifier, not a project reference.
+    html = "<li><code>LEARNARKEN_LOCAL_ONLY=1</code> is a hard egress fence.</li>"
+    assert link_project_mentions(html) == html
+
+
+def test_project_mention_empty_input() -> None:
+    assert link_project_mentions("") == ""
 
 
 # ----- tailor_cv node (through the generate→audit loop) -----

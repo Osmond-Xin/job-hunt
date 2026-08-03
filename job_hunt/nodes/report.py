@@ -8,6 +8,7 @@ from pathlib import Path
 from langchain_core.runnables import RunnableConfig
 
 from job_hunt.models.state import JobHuntState
+from job_hunt.nodes.artifact_paths import run_stem
 
 _REPORTS_DIR = Path("reports")
 
@@ -16,7 +17,6 @@ async def write_report(state: JobHuntState, config: RunnableConfig) -> dict:
     jd_meta = state.get("jd_meta")
     scores = state.get("scores")
     blocks = state.get("evaluation_blocks", {})
-    run_id = state.get("run_id", "unknown")
 
     company = jd_meta.company if jd_meta else "Unknown"
     role = jd_meta.title if jd_meta else "Unknown"
@@ -79,13 +79,7 @@ async def write_report(state: JobHuntState, config: RunnableConfig) -> dict:
     report_md = "\n".join(lines)
 
     _REPORTS_DIR.mkdir(parents=True, exist_ok=True)
-    slug = f"{date}-{_slug(company)}-{_slug(role)}"
-    report_path = _REPORTS_DIR / f"{slug}-{run_id[:8]}.md"
+    report_path = _REPORTS_DIR / f"{run_stem(state)}.md"
     report_path.write_text(report_md, encoding="utf-8")
 
     return {"report_md": report_md, "report_path": str(report_path), "errors": []}
-
-
-def _slug(text: str) -> str:
-    import re
-    return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:30]
