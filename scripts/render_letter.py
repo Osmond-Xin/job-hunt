@@ -30,6 +30,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from job_hunt.nodes.pdf import _html_to_pdf, artifact_template_env  # noqa: E402
+from job_hunt.nodes._cv_fit import pdf_page_count  # noqa: E402
 
 SIZE_OVERRIDE = """
 <style>
@@ -119,7 +120,14 @@ def main() -> None:
     html_path.write_text(html, encoding="utf-8")
     pdf_path = out_dir / (args.pdf_name or f"{source.stem}.pdf")
     asyncio.run(_html_to_pdf(str(html_path), str(pdf_path), paper_size="letter"))
-    print(f"PDF: {pdf_path}  ({len(paragraphs)} paragraphs @ {args.body_size}px)")
+    pages = pdf_page_count(pdf_path.read_bytes())
+    print(f"PDF: {pdf_path}  ({len(paragraphs)} paragraphs @ {args.body_size}px, {pages} page(s))")
+    if pages and pages > 1:
+        pdf_path.unlink(missing_ok=True)
+        raise SystemExit(
+            f"REJECTED (PDF deleted): cover letter is {pages} pages. "
+            f"Cut a paragraph or lower --body-size."
+        )
 
 
 if __name__ == "__main__":

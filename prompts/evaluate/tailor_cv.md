@@ -70,16 +70,70 @@ Rewrite the master CV into a tailored resume body for THIS role.
   Certifications.
 {% endif %}
 
+### Length budget — the resume must fit TWO pages
+
+The template adds a summary banner, a highlights list, and a competency row above
+whatever you return, so your body has roughly a page and a half to live in. Stay inside
+this budget; a third page reads as an inability to select, and everything past page two
+is read by nobody.
+
+- **Total body: 700–850 words.** Count before you answer. Over 900 words will not fit.
+- **Projects: at most 2**, at most **4 bullets** each, at most ~35 words per bullet.
+  Long build-log bullets from the master CV must be compressed to their result, not copied.
+- **Experience: every dated role stays**, but bullets are capped — at most **3** for the
+  two most recent or most relevant roles, **1–2** for the rest.
+- **Early Career**: keep as the single one-line list; drop it entirely if you are over
+  budget after everything else.
+- **Skills**: at most 4 groups.
+
+If the budget forces a choice, drop the least JD-relevant evidence — never a dated role,
+never a date, never a metric that is the point of the bullet it lives in.
+
 ### Hard rules
 
 - **Never invent** employers, dates, titles, metrics, tools, or outcomes. Every line must
   be traceable to the master CV. Rewording is allowed; new claims are not.
+- **Never state the kind of work the candidate is looking for.** No job-title or
+  role-scope headline, no objective line, no "seeking a role in X". A CV circulates
+  inside a company, and a stated scope tells every reader which roles *not* to
+  consider the candidate for. Report what was done; leave the targeting to the
+  cover letter.
 - **Never self-label a quantified tenure total** ("X+ years of experience", "two decades",
   "veteran of N years") — it triggers age/over-qualified screens. Role-scoped facts with
   dates are fine; the candidate must not advertise totals. If the master CV's summary
   contains such a label, the rewrite must drop it.
 - Keep metrics exactly as written — never merge numbers across bullets, never round up.
 - No corporate-speak ("synergies", "passionate about", "leverage", "incentivize").
+
+### Emphasis
+
+Bold is a scarce signal. It is spent on **results**, never on identity.
+
+- **Bold the numbers and the outcomes** inside bullets: quantities, percentages,
+  rates, scale, awards, rankings, named honours, and the specific thing that was
+  achieved ("**98.9% match rate**", "**275,156 city-owned trees**", "**1st Place**").
+  Bold the metric and the few words that make it mean something — not the whole
+  sentence. Aim for at most one bolded span per bullet; a bullet with no result
+  worth quantifying gets no bold at all.
+- **Never bold an employer, a job title, a school, or a date.** Those already carry
+  structural emphasis from the heading and are what a reader finds by position, not
+  by weight. Bolding them buries the results in visual noise.
+- The renderer colours bolded text inside bullets with the accent colour, so a
+  recruiter skimming for highlights lands on achievements. Bolding an employer name
+  actively works against that.
+
+### Role and project headings
+
+Put the date range at the end of the `###` heading, separated by ` | `, so employer
+and period read on one line with the period set flush right:
+
+`### Data & ML Engineer (Internship) — FindGrant | Jan 2026 – Mar 2026`
+
+The renderer splits on the **last** ` | ` in the heading. Everything the heading does
+not carry — location, GPA, employment type — stays on the italic meta line beneath it.
+Apply the same pattern to `###` headings under Education. Never put a date range in a
+heading without the ` | ` separator, and never use ` | ` inside a heading for anything
+other than that final date segment.
 
 ### Output format
 

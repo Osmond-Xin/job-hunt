@@ -18,8 +18,13 @@ import html
 import re
 from pathlib import Path
 
+import sys
+
 ROOT = Path(__file__).resolve().parent.parent
 FONTS_DIR = (ROOT / "templates" / "fonts").resolve()
+sys.path.insert(0, str(ROOT))
+
+from job_hunt.nodes._cv_fit import pdf_page_count  # noqa: E402
 
 
 def md_inline(text: str) -> str:
@@ -59,7 +64,18 @@ def md_to_html(markdown: str) -> str:
         for level, prefix in ((1, "# "), (2, "## "), (3, "### ")):
             if stripped.startswith(prefix):
                 close_list()
-                out.append(f"<h{level}>{md_inline(stripped[len(prefix):])}</h{level}>")
+                text = stripped[len(prefix):]
+                if level == 3 and " | " in text:
+                    # `### Role — Employer | Jan 2026 – Mar 2026` puts the dates
+                    # flush right on the same line, so the eye reads employer and
+                    # period together instead of dropping to a second line.
+                    head, _, date = text.rpartition(" | ")
+                    out.append(
+                        f"<h3>{md_inline(head)}"
+                        f'<span class="role-date">{md_inline(date)}</span></h3>'
+                    )
+                else:
+                    out.append(f"<h{level}>{md_inline(text)}</h{level}>")
                 break
         else:
             if stripped.startswith("- "):
@@ -155,6 +171,18 @@ def build_html(body_html: str, title: str) -> str:
     color: #1a1a2e;
     margin-top: 10px;
     margin-bottom: 2px;
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 12px;
+  }}
+  .role-date {{
+    font-family: 'DM Sans', sans-serif;
+    font-size: 9.5px;
+    font-weight: 400;
+    color: #555;
+    white-space: nowrap;
+    flex-shrink: 0;
   }}
   hr.rule {{
     height: 2px;
@@ -178,6 +206,9 @@ def build_html(body_html: str, title: str) -> str:
     white-space: nowrap;
   }}
   strong {{ color: #1a1a2e; }}
+  /* Emphasis carries the numbers and outcomes, not the employer name — a
+     recruiter skimming the accent colour should land on results. */
+  li strong {{ color: hsl(187, 74%, 32%); font-weight: 700; }}
   em {{ color: #555; font-style: italic; }}
   code {{
     font-family: 'JetBrains Mono', Consolas, Menlo, monospace;
@@ -225,6 +256,12 @@ def main() -> None:
     ap.add_argument("--out", type=Path, help="Output directory (default: output/<source stem>)")
     ap.add_argument("--title", default=None, help="<title> for the document / PDF metadata")
     ap.add_argument("--pdf-name", default=None, help="PDF filename (default: <source stem>.pdf)")
+    ap.add_argument(
+        "--max-pages",
+        type=int,
+        default=2,
+        help="Fail if the rendered PDF exceeds this many pages (0 disables the check)",
+    )
     args = ap.parse_args()
 
     source = args.source if args.source.is_absolute() else ROOT / args.source
@@ -233,7 +270,23 @@ def main() -> None:
     out_dir = args.out or (ROOT / "output" / source.stem)
     if not out_dir.is_absolute():
         out_dir = ROOT / out_dir
-    render(source, out_dir, args.title or f"Yi Xin — {source.stem}", args.pdf_name)
+    pdf_path = render(source, out_dir, args.title or f"Yi Xin — {source.stem}", args.pdf_name)
+
+    # Hand-written CVs are deliberately not auto-trimmed the way generated ones are:
+    # the author chose every line, so the right move is to stop and make them choose
+    # again. Trimming words rarely drops a rendered line — whole blocks do.
+    if args.max_pages:
+        pages = pdf_page_count(pdf_path.read_bytes())
+        if pages is None:
+            print("WARNING: could not read the page count from the PDF")
+        elif pages > args.max_pages:
+            pdf_path.unlink(missing_ok=True)
+            raise SystemExit(
+                f"REJECTED (PDF deleted): {pages} pages, budget is {args.max_pages}. "
+                f"Remove a whole bullet or a whole entry, then re-run."
+            )
+        else:
+            print(f"Pages: {pages} (budget {args.max_pages})")
 
 
 if __name__ == "__main__":

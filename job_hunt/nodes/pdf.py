@@ -8,12 +8,17 @@ from pathlib import Path
 from langchain_core.runnables import RunnableConfig
 
 from job_hunt.models.state import JobHuntState
+from job_hunt.nodes._cv_fit import next_trim, pdf_page_count
 from job_hunt.nodes._prompts import render
 from job_hunt.nodes._quality import generate_with_audit
 from job_hunt.nodes.artifact_paths import run_output_dir
 
 _TEMPLATES_DIR = Path("templates")
 _FONTS_DIR = (_TEMPLATES_DIR / "fonts").resolve()
+
+# A résumé that runs past two pages reads as unedited, whatever is on page three.
+MAX_CV_PAGES = 2
+MAX_TRIM_ATTEMPTS = 30
 
 
 async def tailor_cv(state: JobHuntState, config: RunnableConfig) -> dict:
@@ -104,7 +109,20 @@ def cv_markdown_to_html(cv_md: str, *, strip_contact_block: bool = True) -> str:
     md = MarkdownIt(
         "commonmark", {"html": False, "linkify": True, "typographer": True}
     ).enable("linkify")
-    return md.render(body_md)
+    return split_h3_dates(md.render(body_md))
+
+
+# `### Role — Employer | Jan 2026 – Mar 2026`: the trailing segment is pulled out
+# so the template can float it right, keeping employer and period on one line.
+_H3_DATE_RE = re.compile(r"<h3>(.*?) \| ([^|<]+)</h3>", re.DOTALL)
+
+
+def split_h3_dates(html: str) -> str:
+    """Move a trailing ``| date`` segment of an ``<h3>`` into its own span."""
+    return _H3_DATE_RE.sub(
+        lambda m: f'<h3>{m.group(1)}<span class="role-date">{m.group(2)}</span></h3>',
+        html,
+    )
 
 
 # Flagship repos a reader should be able to reach from any mention of the name,
@@ -200,13 +218,12 @@ async def generate_cv_html_pdf(state: JobHuntState, config: RunnableConfig) -> d
         template = artifact_template_env().get_template("cv.html.j2")
 
         paper_size = detect_paper_size(jd_meta)
-        # Suppress the embedded "Cover Letter Draft" block in the CV PDF when an
-        # independent cover-letter PDF is being generated downstream — avoids the
-        # same content appearing twice across the two artifacts.
-        standalone_cover_letter = bool(state.get("generate_cover_letter"))
-        embedded_cover_letter = (
-            "" if standalone_cover_letter else (pdf_content.cover_letter_body if pdf_content else "")
-        )
+        # A cover letter is opt-in: most employers do not ask for one, so the
+        # default artifact is the tailored CV alone. `--cover-letter` produces an
+        # independent one-page PDF downstream; the CV never carries an embedded
+        # copy, which previously meant turning the standalone letter *off* stapled
+        # the letter into the résumé instead of dropping it.
+        embedded_cover_letter = ""
         cv_tailored = state.get("cv_tailored", "")
         summary_angle = pdf_content.summary_angle if pdf_content else ""
         # Prefer the JD-tailored rewrite; the master cv.md is the fallback and
@@ -216,29 +233,46 @@ async def generate_cv_html_pdf(state: JobHuntState, config: RunnableConfig) -> d
         cv_for_render = cv_tailored or cv
         if not cv_tailored and summary_angle:
             cv_for_render = strip_summary_section(cv_for_render)
-        html = template.render(
-            profile=profile,
-            cv_raw=cv,  # kept for backwards compat; template now prefers cv_html
-            cv_html=link_project_mentions(
-                cv_markdown_to_html(cv_for_render, strip_contact_block=not cv_tailored)
-            ),
-            company=jd_meta.company if jd_meta else "",
-            role=jd_meta.title if jd_meta else "",
-            summary_angle=pdf_content.summary_angle if pdf_content else "",
-            top_bullets=pdf_content.top_bullets if pdf_content else [],
-            keywords=pdf_content.keywords if pdf_content else [],
-            cover_letter_body=embedded_cover_letter,
-            fonts_dir=str(_FONTS_DIR),
-            paper_size=paper_size,
-        )
+
+        def render_html(cv_md: str) -> str:
+            return template.render(
+                profile=profile,
+                cv_raw=cv,  # kept for backwards compat; template now prefers cv_html
+                cv_html=link_project_mentions(
+                    cv_markdown_to_html(cv_md, strip_contact_block=not cv_tailored)
+                ),
+                company=jd_meta.company if jd_meta else "",
+                role=jd_meta.title if jd_meta else "",
+                summary_angle=pdf_content.summary_angle if pdf_content else "",
+                top_bullets=pdf_content.top_bullets if pdf_content else [],
+                keywords=pdf_content.keywords if pdf_content else [],
+                cover_letter_body=embedded_cover_letter,
+                fonts_dir=str(_FONTS_DIR),
+                paper_size=paper_size,
+            )
 
         html_path = out_dir / "cv.html"
-        html_path.write_text(html, encoding="utf-8")
-
         pdf_path = out_dir / "cv.pdf"
-        await _html_to_pdf(str(html_path), str(pdf_path), paper_size=paper_size)
 
-        return {"pdf_path": str(pdf_path), "errors": []}
+        # Render, measure, trim, repeat. The tailoring node prunes for relevance and
+        # has no notion of page count, so without this every generated CV ran to
+        # three or four pages — see docs/design-notes.md.
+        pages, dropped = await _render_within_budget(
+            render_html, cv_for_render, html_path, pdf_path, paper_size, MAX_CV_PAGES
+        )
+
+        warnings: list[str] = []
+        if dropped:
+            warnings.append(
+                f"CV trimmed to fit {MAX_CV_PAGES} pages: " + "; ".join(dropped)
+            )
+        if pages is not None and pages > MAX_CV_PAGES:
+            warnings.append(
+                f"CV is {pages} pages after trimming everything droppable — "
+                f"budget is {MAX_CV_PAGES}. Shorten profile/cv.md or hand-render."
+            )
+
+        return {"pdf_path": str(pdf_path), "errors": [], "artifact_warnings": warnings}
 
     except Exception as exc:
         return {"pdf_path": None, "errors": [f"PDF generation failed: {exc}"]}
@@ -259,3 +293,45 @@ async def _html_to_pdf(html_path: str, pdf_path: str, *, paper_size: str = "lett
         await page.goto(Path(html_path).resolve().as_uri())
         await page.pdf(path=pdf_path, format=fmt, print_background=True)
         await browser.close()
+
+
+async def _render_within_budget(
+    render_html,
+    cv_md: str,
+    html_path: Path,
+    pdf_path: Path,
+    paper_size: str,
+    max_pages: int,
+) -> tuple[int | None, list[str]]:
+    """Render, and while the PDF exceeds `max_pages`, drop one block and re-render.
+
+    One browser is reused across attempts; a launch per attempt would dominate the
+    runtime. Returns the final page count (None if it could not be read) and the
+    list of things that were dropped, which the caller surfaces as warnings.
+    """
+    from playwright.async_api import async_playwright
+
+    fmt = "Letter" if paper_size.lower() == "letter" else "A4"
+    dropped: list[str] = []
+
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch()
+        page = await browser.new_page()
+        try:
+            for _ in range(MAX_TRIM_ATTEMPTS):
+                html_path.write_text(render_html(cv_md), encoding="utf-8")
+                await page.goto(html_path.resolve().as_uri())
+                await page.pdf(path=str(pdf_path), format=fmt, print_background=True)
+
+                pages = pdf_page_count(pdf_path.read_bytes())
+                if pages is None or pages <= max_pages:
+                    return pages, dropped
+
+                step = next_trim(cv_md)
+                if step is None:
+                    return pages, dropped
+                cv_md, what = step
+                dropped.append(what)
+            return pdf_page_count(pdf_path.read_bytes()), dropped
+        finally:
+            await browser.close()

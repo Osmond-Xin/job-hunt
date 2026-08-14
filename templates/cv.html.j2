@@ -148,12 +148,26 @@
     font-weight: 600;
     color: #1a1a2e;
     margin: 8px 0 1px;
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 12px;
+  }
+  .cv .role-date {
+    font-family: 'DM Sans', sans-serif;
+    font-size: 10.5px;
+    font-weight: 400;
+    color: #555;
+    white-space: nowrap;
+    flex-shrink: 0;
   }
   .cv h4 { font-size: 12px; font-weight: 600; color: #1a1a2e; margin: 6px 0 1px; }
   .cv p { margin: 0 0 5px; }
   .cv ul { padding-left: 18px; margin: 3px 0 6px; }
   .cv li { font-size: 11.5px; line-height: 1.5; color: #333; margin-bottom: 2px; }
   .cv strong { color: #1a1a2e; }
+  /* Emphasis carries the numbers and outcomes, not the employer name. */
+  .cv li strong { color: hsl(187, 74%, 32%); font-weight: 700; }
   .cv em { color: #555; }
   .cv hr { border: 0; border-top: 1px solid #e5e5e5; margin: 10px 0; }
   /* Raw-text fallback for legacy renders that still pass cv_raw without cv_html. */
