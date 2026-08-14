@@ -45,6 +45,13 @@ data/*.sqlite
 data/*.db
 data/*-state.json
 data/tracker-additions/
+# Timestamped backups written next to the file they copy. The patterns above
+# (data/*.md, data/*.tsv) do NOT catch these — the name ends in a timestamp,
+# not the original extension — so applications.md.bak.<ts> was landing in a
+# PUBLIC repo with the whole tracker in it.
+*.bak.*
+*.bak
+
 data/locks/
 memory/
 cache/
