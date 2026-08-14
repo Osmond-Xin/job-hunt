@@ -115,8 +115,12 @@ Output a JSON object with this exact schema — no prose outside the JSON:
   "pdf_content": {
     "summary_angle": "...",
     "top_bullets": ["...", "...", "..."],
+{% if generate_cover_letter %}
     "keywords": ["...", "..."],
     "cover_letter_body": "..."
+{% else %}
+    "keywords": ["...", "..."]
+{% endif %}
   }
 }
 ```
@@ -124,7 +128,12 @@ Output a JSON object with this exact schema — no prose outside the JSON:
 ### pdf_content quality rules (both modes)
 
 - `summary_angle`: 2–3 sentences positioning the candidate for THIS role, mirroring the JD's
-  own vocabulary where the CV honestly supports it. **Never state a quantified tenure total**
+  own vocabulary where the CV honestly supports it. **Never present an expired credential as
+  currently held.** The AWS Solutions Architect certifications lapsed in 2024 and the PMP in
+  2020; the CV shows those ranges. Writing "holds PMP and AWS Solutions Architect –
+  Professional" contradicts the Certifications section of the same page and is a factual
+  error a screener will catch. Either give the range or leave the credential out.
+  **Never state a quantified tenure total**
   ("20+ years", "two decades") — it triggers age/over-qualified screens. Every claim must
   trace to a CV line.
 - `top_bullets`: select the 3 strongest bullets **from the CV text above** (not from the
@@ -134,10 +143,15 @@ Output a JSON object with this exact schema — no prose outside the JSON:
   a paragraph-length bullet defeats the section. One URL per bullet at most.
 - `keywords`: 8–12 terms that appear in the JD **and** are honestly claimable from the CV.
   No aspirational keywords — an interviewer will probe each one.
+{% if generate_cover_letter %}
 - `cover_letter_body`: grounded in CV evidence; same tenure rule as `summary_angle`; never
   use "passionate", "excited", "thrilled", "love", or "I would welcome the opportunity".
   If the JD's vertical is visibly absent from the CV's experience, acknowledge the gap in
   one direct sentence before pivoting to transferable evidence — do not paper over it.
+{% else %}
+- Do **not** emit `cover_letter_body`. A cover letter is opt-in and was not requested for
+  this run; generating one costs tokens for an artifact nobody will read.
+{% endif %}
 
 {% if mode == "student" %}
 Thresholds (student mode — co-ops have lower tail risk, lower bar is correct):
@@ -151,9 +165,9 @@ co-op expectations — that pattern leads to false-negative SKIP on exactly the
 roles they can legally take. Score this as "would this co-op be a meaningful
 applied-learning step that builds signal for a full-time conversion?".
 
-cover_letter_body: 3–4 paragraphs framed as a candidate choosing this co-op for
+{% if generate_cover_letter %}cover_letter_body: 3–4 paragraphs framed as a candidate choosing this co-op for
 applied learning + future-fit, NOT as a 20-year veteran. Grounded in CV evidence.
-top_bullets: the 3 strongest CV bullets rewritten in language that recruiters
+{% endif %}top_bullets: the 3 strongest CV bullets rewritten in language that recruiters
 screening intern / co-op applications will recognise.
 {% else %}
 Thresholds (full mode):
@@ -161,10 +175,30 @@ Thresholds (full mode):
 - 3.5 <= weighted_total < 4.0 → "maybe", generate_pdf = true (CV polish, but flag risk)
 - weighted_total < 3.5 → "skip", generate_pdf = false
 
+**Framing for full mode** — the operator's standing priorities, in order:
+(1) get hired, (2) advance permanent residency, (3) do AI-engineering work.
+Score accordingly:
+
+- **Level fit — do not penalise down-levelling.** `profile.yml::target_roles.level_acceptance`
+  is authoritative: junior, intermediate, and senior roles are all acceptable, and a
+  junior offer that leads to PR outranks a senior title that does not. Never score
+  Level fit down because the JD asks for fewer years than the candidate has, and never
+  cite "overqualified", "flight risk", or "comp-band mismatch" as a scoring reason —
+  those are cover-letter framing problems, and the letter already handles them. Reserve
+  low Level fit for real mismatches: required credentials, clearances, or a management
+  scope the candidate does not have.
+- **Location — see the shared Location Policy.** A Canadian on-site role is never a
+  blocker. The candidate relocates anywhere in Canada.
+- **Target role.** AI Engineer and its neighbours (LLM / AI orchestration / agentic
+  software engineering) are the primary target; score Growth trajectory against that,
+  not against the older analyst-track entries in `target_roles`.
+
 **Ethical use**: per the shared rules, weighted_total < 4.0 means the recommendation
 SHOULD lean toward `skip` unless the candidate has a specific reason to override.
-Recruiter time has cost — quality over quantity.
+Recruiter time has cost — quality over quantity. This is a rule about not spamming
+employers with genuinely bad fits; it is **not** a reason to manufacture blockers out
+of location or seniority.
 
-cover_letter_body: 3–4 paragraphs, grounded in CV evidence, tailored to the company.
-top_bullets: the 3 strongest CV bullets rewritten to match this JD's language.
+{% if generate_cover_letter %}cover_letter_body: 3–4 paragraphs, grounded in CV evidence, tailored to the company.
+{% endif %}top_bullets: the 3 strongest CV bullets rewritten to match this JD's language.
 {% endif %}

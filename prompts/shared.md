@@ -120,9 +120,17 @@ applications.
 - Binary "can you be on-site?" form questions: follow `profile.yml::location` and
   `profile.yml::location_policy`.
 - In free-text fields: state timezone overlap and availability explicitly.
-- **In evaluations (scoring):** Remote dimension for hybrid outside the candidate's
-  country scores **3.0** (not 1.0). Only score 1.0 if JD says
-  "must be on-site 4–5 days/week, no exceptions."
+- **In evaluations (scoring):** the candidate relocates anywhere in Canada —
+  `profile.yml::location.open_to_relocation` is the authority, and it is
+  unconditional. Therefore:
+  - A Canadian on-site or hybrid role is **never** a location blocker, whatever
+    city it names and however far it is from the address on `cv.md`. That
+    address is where the candidate lives today, not a constraint. Do not deduct
+    for it, and never write "no relocation signal" — the signal is in
+    `profile.yml`, and it says yes.
+  - On-site in a priority immigration region is a **positive**, not a cost.
+  - Outside Canada: hybrid scores **3.0** (not 1.0). Score 1.0 only for a role
+    outside Canada that says "must be on-site 4–5 days/week, no exceptions."
 
 ---
 

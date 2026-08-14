@@ -91,12 +91,16 @@ async def score_and_recommend(state: JobHuntState, config: RunnableConfig) -> di
         article_digest=state.get("article_digest") or "",
         jd_text=state.get("jd_text", ""),
         immigration_context=immigration_context(jd_meta.location if jd_meta else ""),
+        # A cover letter is opt-in. When it was not requested, the prompt drops
+        # `cover_letter_body` entirely rather than paying to generate 3–4
+        # paragraphs no artifact will render.
+        generate_cover_letter=bool(state.get("generate_cover_letter")),
     )
     result, errors = await call_node_llm_or_fallback(
         state,
         node_name="score_and_recommend",
         prompt=prompt,
-        prompt_version="evaluate/score_and_recommend.md:v3",
+        prompt_version="evaluate/score_and_recommend.md:v4",
         fallback_content=(
             '{"weighted_total": 0.0, "recommendation": "skip", '
             '"recommendation_rationale": "Scoring unavailable because the LLM provider failed.", '

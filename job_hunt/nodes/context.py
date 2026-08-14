@@ -135,13 +135,15 @@ def _normalize_profile(raw: dict) -> dict:
             if isinstance(item, dict) and item.get("name")
         ]
 
+    # Place names only. ``open_to_relocation`` used to be appended here while it
+    # was a short phrase; it is now a prose stance and belongs in
+    # ``relocation_stance`` instead, so it no longer pollutes this list.
     target_locations = [
         item
         for item in [
             location.get("city"),
             location.get("province"),
             location.get("country"),
-            location.get("open_to_relocation"),
         ]
         if item
     ]
@@ -159,6 +161,8 @@ def _normalize_profile(raw: dict) -> dict:
         "min_salary": _resolve_min_salary(compensation, mode),
         "years_experience": 20,
         "open_to_remote": True,
+        "relocation_stance": (location.get("open_to_relocation") or "").strip(),
+        "level_acceptance": (target_roles.get("level_acceptance") or "").strip(),
         "preferred_archetypes": preferred_archetypes,
         "skills": narrative.get("superpowers", []),
         "exit_narrative": narrative.get("exit_story", "") or "",
