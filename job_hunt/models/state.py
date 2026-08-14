@@ -53,6 +53,10 @@ class JobHuntState(TypedDict, total=False):
     report_path: str | None
     pdf_path: str | None
     cover_letter_path: str | None
+    # BLOCK | REVISE | SEND | UNREVIEWED — set by redteam_review once the
+    # artifacts exist. UNREVIEWED means the reviewer could not be reached,
+    # which is not the same as passing.
+    redteam_verdict: str
 
     # --- evaluation toggles (set from CLI / profile) ---
     generate_cover_letter: bool

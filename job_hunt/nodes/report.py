@@ -41,6 +41,15 @@ async def write_report(state: JobHuntState, config: RunnableConfig) -> dict:
     # during a long batch, the report is what the operator still has when they
     # come back to decide whether to send this.
     artifact_warnings = state.get("artifact_warnings") or []
+    verdict = state.get("redteam_verdict") or ""
+    if verdict and verdict != "SEND":
+        banner = {
+            "BLOCK": "🛑 RED TEAM: BLOCK — do not send until the findings are answered",
+            "REVISE": "🟡 RED TEAM: REVISE — read the findings before sending",
+            "UNREVIEWED": "⚪ RED TEAM: UNREVIEWED — the reviewer could not be reached; "
+            "this is not a pass",
+        }.get(verdict, f"RED TEAM: {verdict}")
+        lines += [f"## {banner}", "", "See `redteam.md` in the run directory.", ""]
     if artifact_warnings:
         lines += ["## ⚠️ Artifacts needing review", ""]
         lines += [f"- {warning}" for warning in artifact_warnings]

@@ -23,7 +23,8 @@ Graph topology (sequential analysis after classify_archetype):
                                                      └─> generate_cv_html_pdf                  │
                                                           └──────────────┬───────────────────────┘
                                                                 generate_cover_letter  (no-op unless flag)
-                                                                         └─> write_report
+                                                                         └─> redteam_review  (mmx; no-op when no artifact)
+                                                                              └─> write_report
                                                                               └─> write_tracker_addition
                                                                                     └─> merge_or_update_tracker
                                                                                             └─> END
@@ -38,6 +39,7 @@ from langgraph.graph import END, START, StateGraph
 
 from job_hunt.models.state import JobHuntState
 from job_hunt.nodes.classify import classify_archetype
+from job_hunt.nodes.redteam import redteam_review
 from job_hunt.nodes.context import load_context
 from job_hunt.nodes.cover_letter import generate_cover_letter
 from job_hunt.nodes.eligibility_gate import eligibility_gate, mark_ineligible
@@ -106,6 +108,7 @@ def build_evaluate_job_graph():
     builder.add_node("generate_cv_html_pdf", generate_cv_html_pdf)
     builder.add_node("skip_pdf", skip_pdf)
     builder.add_node("generate_cover_letter", generate_cover_letter)
+    builder.add_node("redteam_review", redteam_review)
     builder.add_node("write_report", write_report)
     builder.add_node("write_tracker_addition", write_tracker_addition)
     builder.add_node("merge_or_update_tracker", merge_or_update_tracker)
@@ -133,7 +136,8 @@ def build_evaluate_job_graph():
     builder.add_edge("tailor_cv", "generate_cv_html_pdf")
     builder.add_edge("generate_cv_html_pdf", "generate_cover_letter")
     builder.add_edge("skip_pdf", "generate_cover_letter")
-    builder.add_edge("generate_cover_letter", "write_report")
+    builder.add_edge("generate_cover_letter", "redteam_review")
+    builder.add_edge("redteam_review", "write_report")
     builder.add_edge("write_report", "write_tracker_addition")
     builder.add_edge("write_tracker_addition", "merge_or_update_tracker")
     builder.add_edge("merge_or_update_tracker", END)
