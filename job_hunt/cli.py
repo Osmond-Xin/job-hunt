@@ -488,6 +488,107 @@ def shortlist(limit: int = typer.Option(20, help="Number of items to show.")) ->
         console.print("No shortlist items found. Run: .venv/bin/job-hunt search --save")
 
 
+@app.command("triage")
+def triage(
+    limit: int = typer.Option(10, help="How many candidates to surface."),
+    show_excluded: bool = typer.Option(False, "--show-excluded", help="Also print what was filtered out and why."),
+    llm_screen: bool = typer.Option(False, "--screen", help="Second pass: have MiniMax judge role shape on the cheap tier."),
+    pool: int = typer.Option(60, help="With --screen, how many ranked rows to send to the model."),
+) -> None:
+    """Rank the pipeline inbox down to a day's worth of candidates.
+
+    Discovery outgrew reading: the inbox is thousands of rows, so without a
+    ranking the real filter is "whatever is near the bottom of the file".
+    Scoring is deterministic — immigration value, then location, then role
+    shape, then freshness — so the same inbox always yields the same list.
+    """
+    from collections import Counter
+
+    from job_hunt.services.triage import excluded, parse_pipeline, rank, tracker_seen
+
+    pipeline = Path("data/pipeline.md")
+    if not pipeline.exists():
+        console.print("[yellow]No data/pipeline.md — run: .venv/bin/job-hunt scan --apply[/yellow]")
+        return
+
+    rows = parse_pipeline(pipeline.read_text(encoding="utf-8"))
+    tracker_path = Path("data/applications.md")
+    seen_urls, seen_pairs = (
+        tracker_seen(tracker_path.read_text(encoding="utf-8"))
+        if tracker_path.exists()
+        else (set(), set())
+    )
+    # With screening on, rank a wider pool and let the model do the cutting:
+    # its judgement of role shape is better than the regexes', and dropping a
+    # row before the model sees it wastes the pass.
+    best = rank(rows, limit=pool if llm_screen else limit, seen_urls=seen_urls, seen_pairs=seen_pairs)
+
+    screened: dict[int, object] = {}
+    if llm_screen and best:
+        from job_hunt.services.screen import screen as run_screen
+
+        console.print(f"[dim]screening {len(best)} rows through MiniMax…[/dim]")
+        verdicts, error = run_screen(
+            [(item.row.company, item.row.role, item.row.location) for item in best]
+        )
+        if error:
+            console.print(f"[yellow]screen unavailable ({error}) — showing the ranked list unscreened[/yellow]")
+        kept = [
+            (item, verdicts[index])
+            for index, item in enumerate(best, start=1)
+            if verdicts[index].keep
+        ]
+        dropped_by_model = len(best) - len(kept)
+        unscreened = sum(1 for _i, v in kept if not v.screened)
+        # Model fit first, then the deterministic priority score as tie-break.
+        kept.sort(key=lambda pair: (-pair[1].fit, -pair[0].score))
+        best = [item for item, _v in kept][:limit]
+        screened = {id(item): verdict for item, verdict in kept}
+        note = f"model dropped {dropped_by_model}"
+        if unscreened:
+            note += f", {unscreened} kept unscreened"
+        console.print(f"[dim]{note}[/dim]")
+
+    dropped = Counter(reason for row in rows if (reason := excluded(row)))
+    console.print(
+        f"[dim]{len(rows)} pending · {sum(dropped.values())} filtered out · "
+        f"showing top {len(best)}[/dim]\n"
+    )
+    columns = ["#", "Score", "Company", "Role", "Location", "Posted", "Why"]
+    if screened:
+        columns.insert(2, "Fit")
+    table = Table(*columns)
+    for index, item in enumerate(best, start=1):
+        cells = [
+            str(index),
+            f"{item.score:.1f}",
+            _short(item.row.company, 24),
+            _short(item.row.role, 34),
+            _short(item.row.location, 22),
+            item.row.posted or "—",
+            ", ".join(item.reasons) or "—",
+        ]
+        if screened:
+            verdict = screened.get(id(item))
+            cells.insert(2, f"{verdict.fit:.0f}" if verdict and verdict.screened else "?")
+            cells[-1] = _short(
+                (verdict.reason if verdict and verdict.screened else cells[-1]) or "—", 34
+            )
+        table.add_row(*cells)
+    console.print(table)
+    console.print()
+    for index, item in enumerate(best, start=1):
+        console.print(f"[bold]{index}.[/bold] {item.row.company} — {item.row.role}")
+        console.print(f"   [dim]{item.row.location or 'location not stated'}[/dim]")
+        console.print(f"   {item.row.url}")
+    if show_excluded and dropped:
+        console.print("\n[dim]Filtered out:[/dim]")
+        for reason, count in dropped.most_common():
+            console.print(f"  [dim]{count:>4}  {reason}[/dim]")
+    if best:
+        console.print("\nEvaluate one: .venv/bin/job-hunt evaluate '<url>'")
+
+
 @config_app.command("validate")
 def config_validate(path: Path = Path("config/settings.yml")) -> None:
     settings = load_settings(path)
@@ -2206,6 +2307,7 @@ def scan(
         apply=apply,
         web_search_provider=web_search_provider,
         discovery_channel=channel,
+        settings=settings,
     )
     console.print(f"Scanned companies: {result.scanned_companies}")
     console.print(f"Fetched jobs: {result.fetched_jobs}")

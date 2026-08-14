@@ -185,3 +185,125 @@ def test_factory_unknown_provider_is_disabled(monkeypatch: pytest.MonkeyPatch) -
     settings.web_search.provider = "tavily"  # bypass validation deliberately
     monkeypatch.setenv("BRAVE_API_KEY", "x")
     assert build_web_search_provider(settings) is None
+
+
+# ----- rate limiting / 429 handling (added 2026-08-06) -----
+#
+# Regression guard: a 336-query scan on Brave's Free plan (1 query/second)
+# produced 247 failures and 5 hits, because a 429 was swallowed by the
+# generic `status_code >= 400: return []` branch and reported as "no results".
+
+
+def _client_patch(monkeypatch: pytest.MonkeyPatch, handler) -> None:
+    transport = httpx.MockTransport(handler)
+    real_client = httpx.Client
+
+    def make_client(*args, **kwargs):
+        kwargs["transport"] = transport
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr("job_hunt.services.web_search.httpx.Client", make_client)
+
+
+def test_brave_provider_throttles_between_calls(monkeypatch: pytest.MonkeyPatch) -> None:
+    _client_patch(
+        monkeypatch,
+        lambda request: httpx.Response(200, json={"web": {"results": []}}, request=request),
+    )
+    slept: list[float] = []
+    clock = {"t": 0.0}
+
+    def fake_sleep(seconds: float) -> None:
+        slept.append(seconds)
+        clock["t"] += seconds
+
+    provider = BraveProvider(
+        api_key="sk-test",
+        rate_limit_qps=1.0,
+        sleep=fake_sleep,
+        monotonic=lambda: clock["t"],
+    )
+    provider.search("one")
+    provider.search("two")
+
+    # Second call had to wait out the remainder of the 1s window.
+    assert slept == [pytest.approx(1.0)]
+
+
+def test_brave_provider_retries_on_429_then_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = {"web": {"results": [{"title": "T", "url": "https://example.com/a"}]}}
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(429, json={"error": "rate limited"}, request=request)
+        return httpx.Response(200, json=payload, request=request)
+
+    _client_patch(monkeypatch, handler)
+    provider = BraveProvider(
+        api_key="sk-test", rate_limit_qps=0, sleep=lambda s: None, rate_limit_retries=2
+    )
+    hits = provider.search("q")
+
+    assert calls["n"] == 2
+    assert len(hits) == 1
+
+
+def test_brave_provider_honours_retry_after_header(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(
+                429, headers={"Retry-After": "3"}, json={}, request=request
+            )
+        return httpx.Response(200, json={"web": {"results": []}}, request=request)
+
+    _client_patch(monkeypatch, handler)
+    slept: list[float] = []
+    provider = BraveProvider(
+        api_key="sk-test", rate_limit_qps=0, sleep=slept.append, rate_limit_retries=2
+    )
+    provider.search("q")
+
+    assert slept == [pytest.approx(3.0)]
+
+
+def test_brave_provider_gives_up_after_retry_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(429, json={}, request=request)
+
+    _client_patch(monkeypatch, handler)
+    provider = BraveProvider(
+        api_key="sk-test", rate_limit_qps=0, sleep=lambda s: None, rate_limit_retries=2
+    )
+
+    assert provider.search("q") == []
+    # initial attempt + 2 retries
+    assert calls["n"] == 3
+
+
+def test_build_provider_passes_rate_limit_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("BRAVE_API_KEY", "sk-test")
+    settings = Settings(
+        web_search=WebSearchConfig(
+            provider="brave", cache_enabled=False, rate_limit_qps=50.0
+        )
+    )
+    provider = build_web_search_provider(settings)
+
+    assert isinstance(provider, BraveProvider)
+    assert provider._min_interval == pytest.approx(1 / 50)

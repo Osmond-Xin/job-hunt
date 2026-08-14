@@ -118,6 +118,55 @@ class WebSearchConfig(BaseModel):
     timeout_s: float = 10.0
     cache_enabled: bool = True
     cache_ttl_seconds: int = 86_400  # 24h
+    # Brave's Free plan allows 1 query/second; the paid Search plan allows 50.
+    # Exceeding it returns 429, which the provider used to swallow as "no
+    # results" — a 336-query scan produced 247 failures and 5 hits. Keep this
+    # at or below the plan's documented rate.
+    rate_limit_qps: float = 1.0
+    # Retries for a 429 specifically, honouring Retry-After when present.
+    rate_limit_retries: int = 2
+
+
+class AdzunaConfig(BaseModel):
+    """Adzuna job-aggregator API — a real REST search, not a web crawl.
+
+    Credentials live in the environment (same convention as
+    ``WebSearchConfig.api_key_env``); this config only names the variables.
+    Adzuna issues an Application ID *and* an Application Key — both required
+    on every request as ``app_id`` / ``app_key`` query parameters.
+    """
+
+    enabled: bool = False
+    app_id_env: str = "ADZUNA_APP_ID"
+    app_key_env: str = "ADZUNA_APP_KEY"
+    country: str = "ca"
+    # Adzuna caps results_per_page at 50.
+    results_per_page: int = 50
+    max_pages: int = 2
+    # Free tier is rate limited; keep requests spaced.
+    delay_s: float = 1.0
+    timeout_s: float = 20.0
+    # Drop postings older than this. Adzuna honours it server-side, unlike
+    # Brave's freshness filter, because it has real posting dates.
+    max_days_old: int = 30
+    # Adzuna tags every posting with a category. Used as a NEGATIVE screen,
+    # not an allowlist: measured across our target roles, it-jobs carries the
+    # bulk (165) but genuine matches also land in engineering-jobs (15),
+    # scientific-qa-jobs (4) and consultancy-jobs (3), so an allowlist would
+    # throw away real results. The `what` keyword already constrains topic.
+    category_exclude: list[str] = Field(
+        default_factory=lambda: [
+            "sales-jobs",
+            "pr-advertising-marketing-jobs",
+            "hospitality-catering-jobs",
+            "healthcare-nursing-jobs",
+            "trade-construction-jobs",
+            "logistics-warehouse-jobs",
+            "retail-jobs",
+            "teaching-jobs",
+            "social-work-jobs",
+        ]
+    )
 
 
 class Settings(BaseModel):
@@ -128,6 +177,7 @@ class Settings(BaseModel):
     activity: ActivityConfig = Field(default_factory=ActivityConfig)
     email_ingest: EmailIngestConfig = Field(default_factory=EmailIngestConfig)
     web_search: WebSearchConfig = Field(default_factory=WebSearchConfig)
+    adzuna: AdzunaConfig = Field(default_factory=AdzunaConfig)
 
 
 def _expand_env(value):

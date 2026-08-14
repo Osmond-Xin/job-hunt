@@ -18,6 +18,7 @@ import hashlib
 import json
 import os
 import tempfile
+import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -72,6 +73,10 @@ class BraveProvider:
         default_count: int = 10,
         default_freshness: str = "pw",
         timeout_s: float = 10.0,
+        rate_limit_qps: float = 1.0,
+        rate_limit_retries: int = 2,
+        sleep=time.sleep,
+        monotonic=time.monotonic,
     ) -> None:
         if not api_key:
             raise ValueError("BraveProvider requires a non-empty api_key")
@@ -79,6 +84,21 @@ class BraveProvider:
         self._default_count = max(1, min(default_count, 20))
         self._default_freshness = default_freshness
         self._timeout_s = timeout_s
+        self._min_interval = 1.0 / rate_limit_qps if rate_limit_qps > 0 else 0.0
+        self._retries = max(0, int(rate_limit_retries))
+        self._sleep = sleep
+        self._monotonic = monotonic
+        self._last_call: float | None = None
+
+    def _throttle(self) -> None:
+        """Space requests out so we stay under the plan's queries-per-second."""
+        if self._min_interval <= 0:
+            return
+        if self._last_call is not None:
+            wait = self._min_interval - (self._monotonic() - self._last_call)
+            if wait > 0:
+                self._sleep(wait)
+        self._last_call = self._monotonic()
 
     def search(
         self,
@@ -102,18 +122,43 @@ class BraveProvider:
             "Accept": "application/json",
             "User-Agent": "job-hunt/0.1",
         }
+        for attempt in range(self._retries + 1):
+            self._throttle()
+            try:
+                with httpx.Client(timeout=self._timeout_s) as client:
+                    response = client.get(_BRAVE_ENDPOINT, params=params, headers=headers)
+            except httpx.HTTPError:
+                return []
+            # 429 means we outran the plan's rate limit, not that the query has
+            # no results. Back off and retry rather than reporting an empty
+            # result set the caller would cache as a real answer.
+            if response.status_code == 429 and attempt < self._retries:
+                self._sleep(_retry_after_seconds(response, self._min_interval, attempt))
+                continue
+            if response.status_code >= 400:
+                return []
+            try:
+                payload = response.json()
+            except ValueError:
+                return []
+            return _parse_brave_response(payload)
+        return []
+
+
+def _retry_after_seconds(response, min_interval: float, attempt: int) -> float:
+    """How long to wait before retrying a 429.
+
+    Prefers the server's ``Retry-After``; otherwise backs off geometrically
+    from the configured inter-request interval (with a 1s floor, since the
+    Free plan's window is one second).
+    """
+    raw = (response.headers.get("Retry-After") or "").strip()
+    if raw:
         try:
-            with httpx.Client(timeout=self._timeout_s) as client:
-                response = client.get(_BRAVE_ENDPOINT, params=params, headers=headers)
-        except httpx.HTTPError:
-            return []
-        if response.status_code >= 400:
-            return []
-        try:
-            payload = response.json()
+            return max(0.0, float(raw))
         except ValueError:
-            return []
-        return _parse_brave_response(payload)
+            pass
+    return max(1.0, min_interval) * (attempt + 1)
 
 
 def _parse_brave_response(payload: dict) -> list[SearchHit]:
@@ -225,6 +270,8 @@ def build_web_search_provider(settings: Settings) -> WebSearchProvider | None:
             default_count=config.count,
             default_freshness=config.freshness,
             timeout_s=config.timeout_s,
+            rate_limit_qps=getattr(config, "rate_limit_qps", 1.0),
+            rate_limit_retries=getattr(config, "rate_limit_retries", 2),
         )
         if not getattr(config, "cache_enabled", True):
             return brave

@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import datetime as dt
 import json
+import os
 import re
 import time
 from pathlib import Path
@@ -14,7 +15,12 @@ import yaml
 from pydantic import BaseModel, Field
 
 from job_hunt.repositories.tracker_repo import TrackerRepository, normalize
+from job_hunt.services.adzuna import scan_adzuna
+from job_hunt.services.gov_boards import scan_gov_boards
+from job_hunt.services.regional_boards import scan_regional_boards
 from job_hunt.services.immigration import place_tokens as immigration_place_tokens
+from job_hunt.services.jobbank import scan_jobbank
+from job_hunt.services.workday_boards import scan_workday
 from job_hunt.services.profile_loader import current_mode, discovery_context
 
 
@@ -26,6 +32,14 @@ class ScannedJob(BaseModel):
     portal: str
     source: str
     status: str = "new"
+    # Public-sector competitions close on a hard date and stop accepting
+    # applications that day. The boards publish it; dropping it meant the
+    # pipeline could not tell a posting with two days left from a fresh one.
+    closes: str = ""
+    # Freshness is one of the four axes triage ranks on, and it reads the date
+    # off the pipeline line. Every board row carried a blank one, so the whole
+    # direct-board corpus scored as undated and tied at the top.
+    posted: str = ""
 
 
 class ScanResult(BaseModel):
@@ -49,6 +63,7 @@ def scan_portals(
     web_search_provider=None,
     mode: str | None = None,
     discovery_channel: str | None = None,
+    settings=None,
 ) -> ScanResult:
     """Run the multi-tier scan.
 
@@ -60,6 +75,18 @@ def scan_portals(
             both ``enabled: true`` in portals.yml and matches the active mode.
             Pass ``discovery_channel="<id>"`` to restrict tier 3 to one
             channel.
+    Tier 4: Job Bank direct search (``jobbank_direct``).
+    Tier 5: public-sector boards — GNWT, Nova Scotia, New Brunswick,
+        Manitoba (``gov_boards``), and regional tech-industry boards
+        (``regional_boards``). Highest signal per request in this search:
+        small local employers in the regions that carry immigration value,
+        largely absent from the national aggregators.
+    Tier 6: Workday CxS JSON boards (``workday_boards``).
+    Tier 7: Adzuna aggregator API (``settings.adzuna`` + env credentials).
+
+    Tiers 4-7 need no WebSearch provider and consume no search quota. They
+    return structured employer / location fields, so they are strictly better
+    per result than the tier-3 channels that cover the same boards.
     """
     if not config_path.exists():
         return ScanResult(errors=[f"{config_path} not found. Run `job-hunt init` or create tracked_companies."])
@@ -111,27 +138,16 @@ def scan_portals(
             continue
 
         result.fetched_jobs += len(jobs)
-        for job in jobs:
-            if not _title_matches(job.title, positives, negatives):
-                continue
-            result.matched_jobs += 1
-            if not include_non_canada and not _passes_canada_filter(job.location):
-                result.skipped_filtered += 1
-                job.status = "skipped_location"
-                if apply:
-                    _append_scan_history(job)
-                continue
-            if job.url in known_urls or (normalize(job.company), normalize(job.title)) in known_company_roles:
-                result.skipped_duplicates += 1
-                job.status = "skipped_duplicate"
-            else:
-                result.new_jobs += 1
-                job.status = "new"
-                result.jobs.append(job)
-                known_urls.add(job.url)
-                known_company_roles.add((normalize(job.company), normalize(job.title)))
-            if apply:
-                _append_scan_history(job)
+        _accept_jobs(
+            jobs,
+            result,
+            positives=positives,
+            negatives=negatives,
+            include_non_canada=include_non_canada,
+            known_urls=known_urls,
+            known_company_roles=known_company_roles,
+            apply=apply,
+        )
 
     # Tier 3: cross-employer discovery channels (LinkedIn, Indeed, Glassdoor,
     # WaterlooWorks, TalentEgg, Magnet, ...). Only runs when a provider is
@@ -146,37 +162,264 @@ def scan_portals(
                 mode=active_mode,
                 channel_id=discovery_channel,
             )
-            for job in channel_jobs:
-                if not _title_matches(job.title, positives, negatives):
-                    continue
-                result.fetched_jobs += 1
-                result.matched_jobs += 1
-                if not include_non_canada and not _passes_canada_filter(job.location):
-                    result.skipped_filtered += 1
-                    job.status = "skipped_location"
-                    if apply:
-                        _append_scan_history(job)
-                    continue
-                if (
-                    job.url in known_urls
-                    or (normalize(job.company), normalize(job.title)) in known_company_roles
-                ):
-                    result.skipped_duplicates += 1
-                    job.status = "skipped_duplicate"
-                else:
-                    result.new_jobs += 1
-                    job.status = "new"
-                    result.jobs.append(job)
-                    known_urls.add(job.url)
-                    known_company_roles.add(
-                        (normalize(job.company), normalize(job.title))
-                    )
-                if apply:
-                    _append_scan_history(job)
+            _accept_jobs(
+                channel_jobs,
+                result,
+                positives=positives,
+                negatives=negatives,
+                include_non_canada=include_non_canada,
+                known_urls=known_urls,
+                known_company_roles=known_company_roles,
+                apply=apply,
+                count_fetched=True,
+            )
+
+    # Tier 4: Job Bank direct fetch. No WebSearch provider and no quota — the
+    # board's own search is queried over NOC code x province. Runs whenever
+    # `jobbank_direct.enabled` is set, including when tier 3 is off.
+    # Tiers 4-7 are all direct, structured and quota-free. They are skipped
+    # under --company, which scopes the run to one tracked employer.
+    if not company:
+        extra_tiers = [
+            _jobbank_scanned_jobs(config.get("jobbank_direct")),
+            _gov_board_scanned_jobs(config.get("gov_boards"), result.errors),
+            _regional_board_scanned_jobs(config.get("regional_boards"), result.errors),
+            _workday_scanned_jobs(config.get("workday_boards")),
+            _adzuna_scanned_jobs(settings, discovery_context().get("roles", [])),
+        ]
+        # All four already establish the occupation before we see the title:
+        # Job Bank is queried by NOC code, Adzuna rows are filtered on their
+        # own `category` facet, and the gov / Workday boards are small curated
+        # employer boards. Requiring a positive title match on top of that
+        # discards ~half of them for naming variance alone.
+        for tier_jobs in extra_tiers:
+            _accept_jobs(
+                tier_jobs,
+                result,
+                positives=positives,
+                negatives=negatives,
+                include_non_canada=include_non_canada,
+                known_urls=known_urls,
+                known_company_roles=known_company_roles,
+                apply=apply,
+                count_fetched=True,
+                require_positive=False,
+            )
 
     if apply and result.jobs:
         _append_pipeline(result.jobs)
     return result
+
+
+def _accept_jobs(
+    jobs: list[ScannedJob],
+    result: ScanResult,
+    *,
+    positives: list[str],
+    negatives: list[str],
+    include_non_canada: bool,
+    known_urls: set[str],
+    known_company_roles: set[tuple[str, str]],
+    apply: bool,
+    count_fetched: bool = False,
+    require_positive: bool = True,
+) -> None:
+    """Run fetched jobs through title / location / dedup and record them.
+
+    Shared by all scan tiers. ``count_fetched`` exists because the per-company
+    tiers already add ``len(jobs)`` to ``fetched_jobs`` up front, while the
+    search-derived tiers count a job only once it clears the title filter.
+
+    ``require_positive=False`` is for sources that already carry an occupation
+    classification, where re-deriving the occupation from the title is both
+    redundant and lossy. Measured: Job Bank rows are fetched *by NOC code*, so
+    their occupation is established — yet the positive title list discarded 83
+    of 172 of them, including "devops engineer", "data architect",
+    "database analyst" and 25 rows titled "information technology (IT)
+    analyst". Negatives still apply, so off-target occupations are screened.
+    """
+    for job in jobs:
+        if not _title_matches(
+            job.title, positives, negatives, require_positive=require_positive
+        ):
+            continue
+        if count_fetched:
+            result.fetched_jobs += 1
+        result.matched_jobs += 1
+        if not include_non_canada and not _passes_canada_filter(job.location):
+            result.skipped_filtered += 1
+            job.status = "skipped_location"
+            if apply:
+                _append_scan_history(job)
+            continue
+        if (
+            job.url in known_urls
+            or (normalize(job.company), normalize(job.title)) in known_company_roles
+        ):
+            result.skipped_duplicates += 1
+            job.status = "skipped_duplicate"
+        else:
+            result.new_jobs += 1
+            job.status = "new"
+            result.jobs.append(job)
+            known_urls.add(job.url)
+            known_company_roles.add((normalize(job.company), normalize(job.title)))
+        if apply:
+            _append_scan_history(job)
+
+
+def _board_coverage_warnings(stats: dict[str, dict[str, Any]]) -> list[str]:
+    """Turn a board sweep's own numbers into operator-visible warnings.
+
+    These adapters have always measured whether they read a board to the end;
+    nothing ever read the measurement, so a board that returned a quarter of
+    its postings looked exactly like a board having a quiet week. Digital Nova
+    Scotia did that for a day: 30 of 120, no warning anywhere.
+    """
+    warnings: list[str] = []
+    for board_id, board in sorted(stats.items()):
+        collected = board.get("collected", 0)
+        advertised = board.get("advertised")
+        if board.get("errors"):
+            warnings.append(
+                f"{board_id}: {board['errors']} failed request(s) — "
+                f"{collected} postings may be an undercount, not a quiet board"
+            )
+        if board.get("truncated"):
+            short = f", board advertises {advertised}" if advertised else ""
+            warnings.append(
+                f"{board_id}: page budget ran out with rows still coming "
+                f"({collected} collected{short}) — raise max_pages"
+            )
+    return warnings
+
+
+def _regional_board_scanned_jobs(
+    config: dict[str, Any] | None, warnings: list[str] | None = None
+) -> list[ScannedJob]:
+    """Tier 5b: regional tech-industry boards. Free, structured, local."""
+    stats: dict[str, dict[str, Any]] = {}
+    try:
+        rows = scan_regional_boards(config, stats=stats)
+    except Exception as exc:
+        if warnings is not None:
+            warnings.append(f"regional boards: sweep failed ({exc})")
+        return []
+    if warnings is not None:
+        warnings.extend(_board_coverage_warnings(stats))
+    return [
+        ScannedJob(
+            url=row.get("url", ""),
+            title=row["title"],
+            company=row.get("company") or "Unknown (see posting)",
+            location=row.get("location", ""),
+            portal=row.get("board", "regional"),
+            source=row.get("board", "regional"),
+            posted=row.get("posted", ""),
+        )
+        for row in rows
+        if (row.get("title") or "").strip() and row.get("url")
+    ]
+
+
+def _gov_board_scanned_jobs(
+    gov_config: dict[str, Any] | None, warnings: list[str] | None = None
+) -> list[ScannedJob]:
+    """Tier 5: public-sector boards (GNWT, Nova Scotia). Free, structured."""
+    stats: dict[str, dict[str, Any]] = {}
+    try:
+        rows = scan_gov_boards(gov_config, stats=stats)
+    except Exception as exc:
+        if warnings is not None:
+            warnings.append(f"gov boards: sweep failed ({exc})")
+        return []
+    if warnings is not None:
+        warnings.extend(_board_coverage_warnings(stats))
+    return [
+        ScannedJob(
+            url=row.get("url", ""),
+            title=row["title"],
+            company=row.get("company") or "Unknown",
+            location=row.get("location", ""),
+            portal=row.get("board", "gov"),
+            source=row.get("board", "gov"),
+            closes=row.get("closes", ""),
+            posted=row.get("posted", ""),
+        )
+        for row in rows
+        if (row.get("title") or "").strip() and row.get("url")
+    ]
+
+
+def _workday_scanned_jobs(workday_config: dict[str, Any] | None) -> list[ScannedJob]:
+    """Tier 6: Workday CxS JSON boards. Free, structured."""
+    try:
+        rows = scan_workday(workday_config)
+    except Exception:
+        return []
+    return [
+        ScannedJob(
+            url=row.get("url", ""),
+            title=row["title"],
+            company=row.get("company") or "Unknown",
+            location=row.get("location", ""),
+            portal="workday",
+            source=f"workday {row.get('company', '')}",
+        )
+        for row in rows
+        if (row.get("title") or "").strip() and row.get("url")
+    ]
+
+
+def _adzuna_scanned_jobs(settings, roles: list[str]) -> list[ScannedJob]:
+    """Tier 7: Adzuna aggregator API. Credentials come from the environment."""
+    config = getattr(settings, "adzuna", None) if settings is not None else None
+    if config is None or not getattr(config, "enabled", False):
+        return []
+    app_id = os.getenv(getattr(config, "app_id_env", "ADZUNA_APP_ID"), "").strip()
+    app_key = os.getenv(getattr(config, "app_key_env", "ADZUNA_APP_KEY"), "").strip()
+    if not app_id or not app_key:
+        return []
+    try:
+        rows = scan_adzuna(config, roles, app_id=app_id, app_key=app_key)
+    except Exception:
+        return []
+    return [
+        ScannedJob(
+            url=row.get("url", ""),
+            title=row["title"],
+            company=row.get("company") or "Unknown",
+            location=row.get("location", ""),
+            portal="adzuna",
+            source=f"adzuna {row.get('query', '')}",
+        )
+        for row in rows
+        if (row.get("title") or "").strip() and row.get("url")
+    ]
+
+
+def _jobbank_scanned_jobs(jobbank_config: dict[str, Any] | None) -> list[ScannedJob]:
+    """Tier 4: Job Bank direct search rows mapped onto ``ScannedJob``."""
+    try:
+        rows = scan_jobbank(jobbank_config)
+    except Exception:
+        return []
+    jobs: list[ScannedJob] = []
+    for row in rows:
+        title = (row.get("title") or "").strip()
+        if not title:
+            continue
+        jobs.append(
+            ScannedJob(
+                url=row.get("url", ""),
+                title=title,
+                company=(row.get("company") or "Unknown").strip() or "Unknown",
+                location=row.get("location", ""),
+                portal="jobbank",
+                source=f"jobbank fn21={row.get('noc', '')}",
+            )
+        )
+    return jobs
 
 
 def scan_discovery_channels(
@@ -253,6 +496,8 @@ def scan_discovery_channels(
                     if not url or url in seen_urls:
                         continue
                     seen_urls.add(url)
+                    if not is_job_posting_url(url):
+                        continue
                     title_line = (
                         getattr(hit, "title", "") or getattr(hit, "description", "") or ""
                     )
@@ -274,6 +519,126 @@ def scan_discovery_channels(
                         )
                     )
     return out
+
+
+# ---------------------------------------------------------------------------
+# Job-posting URL filter for search-derived hits (added 2026-08-06).
+#
+# Measured on a full national scan: of 294 jobbank.gc.ca hits, only 10 were
+# real postings — 241 were /marketreport/ occupation-and-wage pages, 22 were
+# search-result pages, 17 were outlook reports. Indeed contributed category
+# pages ("$46K-$214K Compute & Storage Owner Jobs"), and 17 hits came from
+# uk./in. LinkedIn. A search engine cannot be asked for "only detail pages",
+# so the shape of the URL is the filter.
+#
+# Three-way decision, deliberately not a pure allowlist: tier-2 company
+# queries legitimately land on arbitrary employer career domains, and those
+# must keep flowing.
+#   1. Host is a known job board  -> require that board's posting-URL shape.
+#   2. Host is known non-job noise -> reject.
+#   3. Anything else (company career sites) -> allow.
+# ---------------------------------------------------------------------------
+
+# host suffix -> path fragments that mark an individual posting
+_JOB_BOARD_POSTING_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("jobbank.gc.ca", ("/jobsearch/jobposting/",)),
+    ("indeed.com", ("/viewjob", "/rc/clk", "/job/")),
+    ("linkedin.com", ("/jobs/view/",)),
+    ("glassdoor.com", ("/job-listing/", "/partner/jobListing")),
+    ("glassdoor.ca", ("/job-listing/", "/partner/jobListing")),
+    ("ziprecruiter.com", ("/jobs/", "/c/")),
+    ("wellfound.com", ("/jobs/", "/l/")),
+    ("dice.com", ("/job-detail/", "/jobs/detail/")),
+    ("talent.com", ("/view",)),
+    ("monster.ca", ("/job-openings/",)),
+    ("workopolis.com", ("/jobsearch/viewjob/", "/job/")),
+    ("simplyhired.ca", ("/job/",)),
+    ("theladders.com", ("/job/",)),
+)
+
+# Path fragments that mark a marketing / reference page on an otherwise
+# unknown host. Keeps company career domains flowing while dropping the
+# FAQ, product and blog pages that rank for role keywords.
+_NON_POSTING_PATH_FRAGMENTS: tuple[str, ...] = (
+    "/faq",
+    "/blog/",
+    "/pricing",
+    "/about-us",
+    "/product/",
+    "/products/",
+    "/glossary",
+    "/salary-guide",
+    "/news-release",
+    "-salary-",
+)
+
+# Observed in real scan output as non-job results. Reference sites, salary
+# aggregators, forums and stock-analysis pages that rank for role keywords.
+_NON_JOB_HOSTS: frozenset[str] = frozenset(
+    {
+        "wikipedia.org",
+        "levels.fyi",
+        "github.com",
+        "teamblind.com",
+        "simplywall.st",
+        "tipranks.com",
+        "salaryexpert.com",
+        "payscale.com",
+        "reddit.com",
+        "youtube.com",
+        "medium.com",
+        "coursera.org",
+        "udemy.com",
+        # Press-release wires, data brokers and software-review sites: they
+        # rank for company + role keywords but never carry a posting.
+        "globenewswire.com",
+        "prnewswire.com",
+        "businesswire.com",
+        "rocketreach.co",
+        "zoominfo.com",
+        "crunchbase.com",
+        "research.com",
+        "g2.com",
+        "capterra.com",
+    }
+)
+
+# LinkedIn country subdomains whose postings are not Canadian roles. The
+# bare domain and ca./www. are kept.
+_ALLOWED_LINKEDIN_HOSTS: frozenset[str] = frozenset(
+    {"linkedin.com", "www.linkedin.com", "ca.linkedin.com"}
+)
+
+
+def is_job_posting_url(url: str) -> bool:
+    """True when ``url`` looks like an individual job posting worth importing.
+
+    See the module comment above for the measurement that motivated this.
+    Unknown hosts are allowed — the goal is to strip reference pages off the
+    known boards, not to maintain a registry of every employer domain.
+    """
+    parsed = urlparse((url or "").strip())
+    host = (parsed.netloc or "").lower().split(":")[0]
+    if not host or parsed.scheme not in ("http", "https"):
+        return False
+    path = (parsed.path or "") + ("?" + parsed.query if parsed.query else "")
+
+    bare = host[4:] if host.startswith("www.") else host
+    if any(bare == n or bare.endswith("." + n) for n in _NON_JOB_HOSTS):
+        return False
+
+    for suffix, fragments in _JOB_BOARD_POSTING_PATTERNS:
+        if host == suffix or host.endswith("." + suffix):
+            if suffix == "linkedin.com" and host not in _ALLOWED_LINKEDIN_HOSTS:
+                return False
+            return any(frag in path for frag in fragments)
+
+    # Unknown host. A site root is never a posting, and neither are the
+    # marketing pages that rank for the same keywords.
+    if (parsed.path or "/").rstrip("/") == "":
+        return False
+    lowered = path.lower()
+    return not any(frag in lowered for frag in _NON_POSTING_PATH_FRAGMENTS)
 
 
 def _passes_canada_filter(location: str) -> bool:
@@ -325,6 +690,8 @@ def scan_via_websearch(
         if not url or url in seen_urls:
             continue
         seen_urls.add(url)
+        if not is_job_posting_url(url):
+            continue
         title_line = hit.title or hit.description or ""
         parsed_title, parsed_company = parse_search_result_title(title_line)
         # Prefer parsed title; fall back to whole title line. Reject empty.
@@ -519,10 +886,24 @@ def _company_matches_mode(item: dict[str, Any], mode: str) -> bool:
     return bool(tags & _FULL_TAGS)
 
 
-def _title_matches(title: str, positives: list[str], negatives: list[str]) -> bool:
+def _title_matches(
+    title: str,
+    positives: list[str],
+    negatives: list[str],
+    *,
+    require_positive: bool = True,
+) -> bool:
+    """Title gate.
+
+    ``require_positive=False`` switches to negative-only screening, for
+    sources that already establish the occupation by other means — see
+    ``_accept_jobs``. Negatives always apply.
+    """
     title_lower = title.lower()
     if any(item and item in title_lower for item in negatives):
         return False
+    if not require_positive:
+        return True
     return any(item and item in title_lower for item in positives)
 
 
@@ -668,7 +1049,12 @@ def _append_pipeline(jobs: list[ScannedJob]) -> None:
     lines = ["", f"### Direct ATS Scan — {dt.date.today().isoformat()}", ""]
     for job in jobs:
         location = f" | {job.location}" if job.location else ""
-        lines.append(f"- [ ] {job.url} | {job.company} | {job.title}{location} | source: {job.portal}")
+        closes = f" | closes: {job.closes}" if job.closes else ""
+        posted = f" | posted {job.posted}" if job.posted else ""
+        lines.append(
+            f"- [ ] {job.url} | {job.company} | {job.title}{location} "
+            f"| source: {job.portal}{posted}{closes}"
+        )
     with path.open("a", encoding="utf-8") as handle:
         handle.write("\n".join(lines) + "\n")
 
