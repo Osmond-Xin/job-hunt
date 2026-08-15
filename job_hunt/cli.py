@@ -494,6 +494,8 @@ def triage(
     show_excluded: bool = typer.Option(False, "--show-excluded", help="Also print what was filtered out and why."),
     llm_screen: bool = typer.Option(False, "--screen", help="Second pass: have MiniMax judge role shape on the cheap tier."),
     pool: int = typer.Option(60, help="With --screen, how many ranked rows to send to the model."),
+    verify: bool = typer.Option(False, "--verify", help="Fetch each candidate before showing it; drop dead, expired, internal-only and talent-pool postings, and mark them in the pipeline. Every text-based rejection is confirmed twice by an independent reader before it counts."),
+    verify_delay: float = typer.Option(1.0, help="Seconds between verification requests."),
 ) -> None:
     """Rank the pipeline inbox down to a day's worth of candidates.
 
@@ -521,7 +523,10 @@ def triage(
     # With screening on, rank a wider pool and let the model do the cutting:
     # its judgement of role shape is better than the regexes', and dropping a
     # row before the model sees it wastes the pass.
-    best = rank(rows, limit=pool if llm_screen else limit, seen_urls=seen_urls, seen_pairs=seen_pairs)
+    # Verification drops rows, so it needs spare candidates to backfill with —
+    # otherwise asking for 10 and losing 6 to dead links returns 4.
+    ranked_limit = pool if llm_screen else (max(limit * 4, 40) if verify else limit)
+    best = rank(rows, limit=ranked_limit, seen_urls=seen_urls, seen_pairs=seen_pairs)
 
     screened: dict[int, object] = {}
     if llm_screen and best:
@@ -542,17 +547,52 @@ def triage(
         unscreened = sum(1 for _i, v in kept if not v.screened)
         # Model fit first, then the deterministic priority score as tie-break.
         kept.sort(key=lambda pair: (-pair[1].fit, -pair[0].score))
-        best = [item for item, _v in kept][:limit]
+        best = [item for item, _v in kept] if verify else [item for item, _v in kept][:limit]
         screened = {id(item): verdict for item, verdict in kept}
         note = f"model dropped {dropped_by_model}"
         if unscreened:
             note += f", {unscreened} kept unscreened"
         console.print(f"[dim]{note}[/dim]")
 
+    verify_note = ""
+    if verify and best:
+        from job_hunt.services.link_check import annotate_pipeline, check_urls
+
+        # One batched call: `check_urls` shares a single client and only sleeps
+        # *between* URLs, so feeding it one URL at a time meant no keep-alive
+        # and no delay at all — the opposite of the intent.
+        head = best[: max(limit * 4, 40)]
+        console.print(f"[dim]verifying {len(head)} candidates…[/dim]")
+        verdicts = check_urls([item.row.url for item in head], delay_s=verify_delay)
+        rejected = Counter()
+        survivors: list[object] = []
+        for item in head:
+            verdict = verdicts.get(item.row.url)
+            if verdict is not None and verdict.rejects:
+                rejected[verdict.status] += 1
+                continue
+            survivors.append(item)
+        marked = annotate_pipeline(pipeline, verdicts)
+        # Survivors keep their rank order; the shortfall is reported below
+        # rather than silently handed back as a shorter list.
+        shortfall = limit - len(survivors)
+        best = survivors[:limit]
+        if rejected:
+            detail = ", ".join(f"{count} {status.lower()}" for status, count in rejected.most_common())
+            verify_note = f" · verification dropped {sum(rejected.values())} ({detail})"
+            if marked:
+                verify_note += f", {marked} marked in the pipeline"
+        else:
+            verify_note = " · verification found nothing dead"
+        # Say so when the inbox could not supply what was asked for, rather than
+        # returning a short list that looks like the ranking is broken.
+        if shortfall > 0:
+            verify_note += f" · asked for {limit}, only {len(best)} survived verification"
+
     dropped = Counter(reason for row in rows if (reason := excluded(row)))
     console.print(
         f"[dim]{len(rows)} pending · {sum(dropped.values())} filtered out · "
-        f"showing top {len(best)}[/dim]\n"
+        f"showing top {len(best)}{verify_note}[/dim]\n"
     )
     columns = ["#", "Score", "Company", "Role", "Location", "Posted", "Why"]
     if screened:
