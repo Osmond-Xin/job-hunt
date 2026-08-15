@@ -103,6 +103,11 @@ never a date, never a metric that is the point of the bullet it lives in.
   dates are fine; the candidate must not advertise totals. If the master CV's summary
   contains such a label, the rewrite must drop it.
 - Keep metrics exactly as written — never merge numbers across bullets, never round up.
+- **A claim's caveat is part of the claim.** Where the master CV qualifies a claim in
+  parentheses — a retired page, a synthetic corpus, a simulated deployment, an expired
+  credential — you may compress the wording but you may not drop the qualifier while
+  keeping the claim. Dropping it turns a true statement into a false one. If a bullet is
+  too long with its caveat, cut the whole bullet instead.
 - No corporate-speak ("synergies", "passionate about", "leverage", "incentivize").
 
 ### Emphasis
