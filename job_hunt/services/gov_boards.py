@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import datetime as dt
 import html
+import functools
 import re
 import time
 from typing import Any
@@ -50,6 +51,8 @@ import httpx
 GNWT_BASE = "https://www.gov.nt.ca"
 GNWT_SEARCH = f"{GNWT_BASE}/careers/en/search/job"
 NS_BASE = "https://jobs.novascotia.ca"
+NSHA_BASE = "https://jobs.nshealth.ca"
+WRHA_BASE = "https://careers.wrha.mb.ca"
 NS_SEARCH = f"{NS_BASE}/search/"
 NB_HOST = "https://emgi.fa.ca3.oraclecloud.com"
 NB_API = f"{NB_HOST}/hcmRestApi/resources/latest/recruitingCEJobRequisitions"
@@ -68,8 +71,14 @@ _GNWT_ROW_RE = re.compile(
     re.S,
 )
 _GNWT_TOTAL_RE = re.compile(r"Displaying\s+[\d,]+\s*-\s*[\d,]+\s+of\s+([\d,]+)")
+# SuccessFactors career sites. Two tenant-specific shapes have to be tolerated:
+# the path may carry a site segment before ``/job/`` (Nova Scotia Health serves
+# ``/nsha/job/...`` while the provincial board serves ``/job/...``), and the
+# anchor emits ``href`` and ``class`` in either order depending on the theme.
 _NS_ROW_RE = re.compile(
-    r'<a href="(?P<url>/job/[^"]+)"[^>]*class="jobTitle-link"[^>]*>(?P<title>.*?)</a>',
+    r'<a (?:href="(?P<url>/(?:[^"/]+/)?job/[^"]+)"[^>]*class="jobTitle-link"'
+    r'|class="jobTitle-link"[^>]*href="(?P<url2>/(?:[^"/]+/)?job/[^"]+)")[^>]*>'
+    r"(?P<title>.*?)</a>",
     re.S,
 )
 
@@ -132,12 +141,23 @@ def gnwt_total(page_html: str) -> int:
     return int(match.group(1).replace(",", "")) if match else 0
 
 
-def parse_ns_gov(page_html: str) -> list[dict[str, str]]:
-    """Extract job rows from a Nova Scotia public-service search page."""
+def parse_successfactors(
+    page_html: str,
+    *,
+    base: str = NS_BASE,
+    company: str = "Government of Nova Scotia",
+) -> list[dict[str, str]]:
+    """Extract job rows from any SuccessFactors career search page.
+
+    ``base`` and ``company`` are per-tenant: the same markup serves the Nova
+    Scotia public service, Nova Scotia Health and the Winnipeg Regional Health
+    Authority. Resolving links against a hardcoded base would emit URLs pointing
+    at the wrong employer's site, which reads as a live row and 404s on click.
+    """
     rows: list[dict[str, str]] = []
     seen: set[str] = set()
     for match in _NS_ROW_RE.finditer(page_html or ""):
-        url = urljoin(NS_BASE, match.group("url"))
+        url = urljoin(base, match.group("url") or match.group("url2"))
         if url in seen:
             continue
         title = _text(match.group("title"))
@@ -148,13 +168,18 @@ def parse_ns_gov(page_html: str) -> list[dict[str, str]]:
             {
                 "url": url,
                 "title": title,
-                "company": "Government of Nova Scotia",
+                "company": company,
                 "location": _ns_location(page_html, match.end()),
                 "salary": "",
                 "closes": "",
             }
         )
     return rows
+
+
+def parse_ns_gov(page_html: str) -> list[dict[str, str]]:
+    """Extract job rows from a Nova Scotia public-service search page."""
+    return parse_successfactors(page_html)
 
 
 def _ns_location(page_html: str, from_index: int) -> str:
@@ -285,6 +310,7 @@ def scan_gov_boards(
     client: httpx.Client | None = None,
     sleep=time.sleep,
     stats: dict[str, dict[str, Any]] | None = None,
+    title_screener=None,
 ) -> list[dict[str, str]]:
     """Fetch enabled public-sector boards. Returns de-duplicated rows.
 
@@ -297,6 +323,7 @@ def scan_gov_boards(
         return []
     boards = config.get("boards") or {}
     delay = float(config.get("delay_s", 1.5))
+    screen_boards: dict[str, list[dict[str, str]]] = {}
     timeout = float(config.get("timeout_s", 30.0))
 
     owns_client = client is None
@@ -321,6 +348,23 @@ def scan_gov_boards(
             """Run one board, either keyword-scoped or whole-board."""
             keywords = [str(k).strip() for k in (cfg.get("keywords") or []) if str(k).strip()]
             max_pages = int(cfg.get("max_pages", 3))
+            # `title_include` is the precision gate for whole-organisation
+            # employers. The source's own search matches the posting BODY, so on
+            # a health authority `q=data` returns Radiation Therapist and
+            # `q=engineer` returns 5th Class Power Engineer — measured, not
+            # assumed. Tiers 4-7 deliberately skip the positive title filter
+            # downstream, so a board this noisy has to gate its own titles or it
+            # floods the pipeline with clinical postings.
+            title_include = [
+                str(t).strip().lower() for t in (cfg.get("title_include") or []) if str(t).strip()
+            ]
+            # `title_screen` hands the board's titles to a model instead of a
+            # substring list. Measured 2026-08-15 on the real corpus: the
+            # substring gate kept 15 titles of which 9 were noise (seven boiler
+            # operators among them); the model kept 7, all of them relevant, and
+            # additionally recovered one the substring list had dropped.
+            wants_screen = bool(cfg.get("title_screen")) and title_screener is not None
+            dropped = 0
             # Manitoba selects by RSS category id rather than by keyword; the
             # ids stand in for query terms so the same loop drives every board.
             if spec.get("selector_key"):
@@ -347,6 +391,14 @@ def scan_gov_boards(
                         seen.add(row["url"])
                         row["board"] = board_id
                         row["matched_keyword"] = keyword or ""
+                        if wants_screen:
+                            screen_boards.setdefault(board_id, []).append(row)
+                            continue
+                        if title_include and not any(
+                            term in row["title"].lower() for term in title_include
+                        ):
+                            dropped += 1
+                            continue
                         out.append(row)
                     # A keyword query rarely fills more than one page.
                     if keyword and len(rows) < 25:
@@ -365,6 +417,10 @@ def scan_gov_boards(
                     "truncated": truncated,
                     "mode": "keyword" if keywords else "whole-board",
                     "errors": errors.get(board_id, 0),
+                    # Rows the title gate removed. Reported so a mis-tuned
+                    # `title_include` shows up as a number rather than as a
+                    # board that quietly looks empty.
+                    "title_filtered": dropped,
                 }
 
         # `keyword_param` searches the posting *body*, not just the title —
@@ -456,11 +512,53 @@ def scan_gov_boards(
             },
             "nb_gov": {"fetch": nb_fetch},
             "mb_gov": {"fetch": mb_fetch, "selector_key": "categories"},
+            # Health authorities on the same SuccessFactors platform as ns_gov.
+            # These boards are dominated by clinical postings — WRHA advertises
+            # roughly 800 clinical against 100 non-clinical — so they are only
+            # worth scanning with keywords set, never as a whole-board sweep.
+            "nsha": {
+                "fetch": html_board(
+                    f"{NSHA_BASE}/search/", "q", lambda page: {"startrow": page * 25},
+                    functools.partial(
+                        parse_successfactors, base=NSHA_BASE, company="Nova Scotia Health"
+                    ),
+                    key="nsha",
+                ),
+            },
+            "wrha": {
+                "fetch": html_board(
+                    f"{WRHA_BASE}/search/", "q", lambda page: {"startrow": page * 25},
+                    functools.partial(
+                        parse_successfactors,
+                        base=WRHA_BASE,
+                        company="Winnipeg Regional Health Authority",
+                    ),
+                    key="wrha",
+                ),
+            },
         }
         for board_id, spec in specs.items():
             cfg = boards.get(board_id) or {}
             if cfg.get("enabled", False):
                 collect(board_id, cfg, spec)
+
+        # One screening call per board, after collection, so the model sees the
+        # whole title list at once and the run costs one request per board.
+        for board_id, rows in screen_boards.items():
+            titles = [row["title"] for row in rows]
+            kept = title_screener(titles)
+            if kept is None:
+                # No answer: keep everything. A board that silently returns
+                # nothing is indistinguishable from a board with no openings.
+                out.extend(rows)
+                if stats is not None and board_id in stats:
+                    stats[board_id]["title_screen"] = "unavailable — kept all"
+                continue
+            survivors = [row for row in rows if row["title"] in kept]
+            out.extend(survivors)
+            if stats is not None and board_id in stats:
+                stats[board_id]["title_filtered"] = len(rows) - len(survivors)
+                stats[board_id]["title_screen"] = "model"
 
         return out
     finally:

@@ -468,3 +468,145 @@ def test_a_board_sweep_that_raises_is_reported_not_swallowed() -> None:
 
     assert jobs == []
     assert warnings and "parser blew up" in warnings[0]
+
+
+# --- SuccessFactors tenants beyond the Nova Scotia public service -----------
+#
+# Nova Scotia Health is the province's largest employer and had no coverage at
+# all: three applications were made there by hand in Aug 2026. It runs the same
+# SuccessFactors platform as jobs.novascotia.ca, but with two differences that
+# each silently produced zero rows before this was fixed — a site segment in
+# the path (``/nsha/job/...``) and the reversed anchor attribute order.
+
+NSHA_HTML = """
+<tr class="data-row">
+  <td class="colTitle">
+    <span class="jobTitle hidden-phone">
+      <a href="/nsha/job/Halifax-Systems-Analyst-Nova-B3K-4N1/605009217/"
+         class="jobTitle-link">Systems Analyst - Information Management</a>
+    </span>
+  </td>
+  <span class="jobLocation">Halifax, Nova Scotia, CA</span>
+</tr>
+<tr class="data-row">
+  <td class="colTitle">
+    <a class="jobTitle-link"
+       href="/nsha/job/Truro-Power-Engineer-Nova-B2N/605111111/">4th Class Power Engineer</a>
+    <span class="jobLocation">Truro, Nova Scotia, CA</span>
+  </td>
+</tr>
+"""
+
+
+def test_successfactors_parser_handles_site_segment_and_attribute_order() -> None:
+    from job_hunt.services.gov_boards import parse_successfactors
+
+    rows = parse_successfactors(
+        NSHA_HTML, base="https://jobs.nshealth.ca", company="Nova Scotia Health"
+    )
+
+    assert len(rows) == 2
+    assert rows[0]["title"] == "Systems Analyst - Information Management"
+    assert rows[0]["company"] == "Nova Scotia Health"
+    # The base must come from the tenant. Resolving against the hardcoded
+    # provincial base produced live-looking rows that 404 on click.
+    assert rows[0]["url"].startswith("https://jobs.nshealth.ca/nsha/job/")
+    # Second row proves class-before-href is parsed too.
+    assert rows[1]["title"] == "4th Class Power Engineer"
+
+
+def test_ns_gov_parser_still_resolves_against_the_provincial_base() -> None:
+    """The original entry point keeps its behaviour after generalisation."""
+    from job_hunt.services.gov_boards import parse_ns_gov
+
+    rows = parse_ns_gov(NS_HTML)
+    assert rows[0]["company"] == "Government of Nova Scotia"
+    assert rows[0]["url"].startswith("https://jobs.novascotia.ca/")
+
+
+def test_gov_board_title_include_gates_noisy_whole_organisation_boards() -> None:
+    """A health authority's body search returns clinical roles; titles gate them.
+
+    Measured on the real boards: NSHA ``q=data`` returns Radiation Therapist,
+    WRHA ``q=engineer`` returns "Engineer 5th Class". Tiers 4-7 skip the
+    positive title filter downstream, so the board has to gate its own titles.
+    """
+    from job_hunt.services.gov_boards import scan_gov_boards
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = NSHA_HTML if not request.url.params.get("startrow") else ""
+        return httpx.Response(200, text=body, request=request)
+
+    stats: dict[str, dict[str, object]] = {}
+    rows = scan_gov_boards(
+        {
+            "enabled": True,
+            "boards": {
+                "nsha": {
+                    "enabled": True,
+                    "max_pages": 2,
+                    "keywords": ["data"],
+                    "title_include": ["analyst"],
+                }
+            },
+        },
+        client=httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=True),
+        sleep=lambda s: None,
+        stats=stats,
+    )
+
+    assert [r["title"] for r in rows] == ["Systems Analyst - Information Management"]
+    # The dropped count is reported, so a mis-tuned list shows up as a number
+    # rather than as a board that quietly looks empty.
+    assert stats["nsha"]["title_filtered"] == 1
+    assert stats["nsha"]["collected"] == 2
+
+
+def test_title_screen_keeps_everything_when_the_model_is_unavailable() -> None:
+    """A board that silently returns nothing looks identical to one with no jobs.
+
+    Measured 2026-08-15: the model gate is not deterministic across runs, so it
+    is a recall aid, not an authority. When it cannot answer, every row goes
+    through and the downstream negative list and human do the filtering.
+    """
+    from job_hunt.services.gov_boards import scan_gov_boards
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = NSHA_HTML if not request.url.params.get("startrow") else ""
+        return httpx.Response(200, text=body, request=request)
+
+    rows = scan_gov_boards(
+        {
+            "enabled": True,
+            "boards": {"nsha": {"enabled": True, "max_pages": 2, "title_screen": True}},
+        },
+        client=httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=True),
+        sleep=lambda s: None,
+        title_screener=lambda titles: None,  # model unavailable
+    )
+
+    assert len(rows) == 2, "no answer must mean keep, never mean drop"
+
+
+def test_title_screen_drops_what_the_model_rejects() -> None:
+    from job_hunt.services.gov_boards import scan_gov_boards
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = NSHA_HTML if not request.url.params.get("startrow") else ""
+        return httpx.Response(200, text=body, request=request)
+
+    stats: dict[str, dict[str, object]] = {}
+    rows = scan_gov_boards(
+        {
+            "enabled": True,
+            "boards": {"nsha": {"enabled": True, "max_pages": 2, "title_screen": True}},
+        },
+        client=httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=True),
+        sleep=lambda s: None,
+        stats=stats,
+        title_screener=lambda titles: {"Systems Analyst - Information Management"},
+    )
+
+    assert [r["title"] for r in rows] == ["Systems Analyst - Information Management"]
+    assert stats["nsha"]["title_screen"] == "model"
+    assert stats["nsha"]["title_filtered"] == 1

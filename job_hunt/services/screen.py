@@ -143,7 +143,7 @@ def screen(
     return verdicts, error
 
 
-def _run_mmx(prompt: str, model: str, max_tokens: int, timeout: int) -> tuple[str, str]:
+def _run_mmx(prompt: str, model: str, max_tokens: int, timeout: int, system: str = SYSTEM) -> tuple[str, str]:
     if not shutil.which("mmx"):
         return "", "mmx not on PATH"
     # mmx reads `--messages-file -` non-blockingly and fails with EAGAIN against
@@ -154,7 +154,7 @@ def _run_mmx(prompt: str, model: str, max_tokens: int, timeout: int) -> tuple[st
     try:
         proc = subprocess.run(
             ["mmx", "text", "chat", "--messages-file", path, "--model", model,
-             "--system", SYSTEM, "--max-tokens", str(max_tokens),
+             "--system", system, "--max-tokens", str(max_tokens),
              "--temperature", "0.2", "--quiet"],
             capture_output=True, text=True, timeout=timeout,
         )
@@ -165,3 +165,59 @@ def _run_mmx(prompt: str, model: str, max_tokens: int, timeout: int) -> tuple[st
     if proc.returncode != 0:
         return "", (proc.stderr or proc.stdout or "").strip()[:200]
     return proc.stdout, ""
+
+
+TITLE_SYSTEM = """You filter job titles for one candidate. Output only the titles that
+survive, one per line, copied exactly as given. No numbering, no commentary, no grouping."""
+
+TITLE_BRIEF = """These are job titles posted by a whole-organisation employer — a health
+authority, university or municipality — where most postings are for occupations the
+candidate cannot do.
+
+THE CANDIDATE is an IT / data / software person: AI and LLM engineering, data analysis and
+pipelines, business systems analysis, systems integration, solution architecture, reporting
+and BI. He has NO clinical, trades, or facilities training of any kind.
+
+KEEP a title if the work is about systems, data, software, reporting, integration or
+digital transformation — including health informatics and decision support, which are
+about data rather than patient care. Borderline cases that are genuinely technical: keep
+them, a human makes the final call.
+
+DROP clinical and allied-health roles, trades and facilities (this includes stationary and
+power engineers, who operate boilers), food service, security, clerical and administrative
+support, and management posts outside technology.
+
+TITLES:
+"""
+
+
+def screen_titles(
+    titles: list[str],
+    *,
+    model: str = DEFAULT_MODEL,
+    max_tokens: int = DEFAULT_MAX_TOKENS,
+    timeout: int = 600,
+    runner=None,
+) -> set[str] | None:
+    """Return the subset of `titles` worth keeping, or None if unavailable.
+
+    Returning ``None`` rather than an empty set matters: the caller must be able
+    to tell "the model dropped everything" from "the model never answered", and
+    fall back to keeping rows in the second case. Dropping a posting is the
+    expensive mistake.
+    """
+    if not titles:
+        return set()
+    runner = runner or _run_mmx
+    prompt = TITLE_BRIEF + "\n".join(titles)
+    try:
+        text, error = runner(prompt, model, max_tokens, timeout, TITLE_SYSTEM)
+    except Exception:  # noqa: BLE001 - a screening failure must never be fatal
+        return None
+    if error or not (text or "").strip():
+        return None
+    allowed = {t.strip() for t in titles}
+    kept = {line.strip() for line in text.splitlines() if line.strip() in allowed}
+    # An answer that kept nothing is more likely a misfire than a board with no
+    # relevant postings at all; treat it as "no answer" and keep everything.
+    return kept or None

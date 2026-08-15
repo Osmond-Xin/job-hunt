@@ -327,8 +327,15 @@ def _gov_board_scanned_jobs(
 ) -> list[ScannedJob]:
     """Tier 5: public-sector boards (GNWT, Nova Scotia). Free, structured."""
     stats: dict[str, dict[str, Any]] = {}
+    # Whole-organisation employers (health authorities) post overwhelmingly
+    # clinical roles, and a substring whitelist could not tell "Systems Analyst"
+    # from "Engineer 5th Class" without also dropping "Clinical Systems
+    # Consultant". A model reads the titles instead; boards opt in with
+    # `title_screen: true` and a failure keeps every row.
+    from job_hunt.services.screen import screen_titles
+
     try:
-        rows = scan_gov_boards(gov_config, stats=stats)
+        rows = scan_gov_boards(gov_config, stats=stats, title_screener=screen_titles)
     except Exception as exc:
         if warnings is not None:
             warnings.append(f"gov boards: sweep failed ({exc})")
