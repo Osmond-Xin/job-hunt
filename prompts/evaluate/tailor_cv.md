@@ -53,7 +53,7 @@ Rewrite the master CV into a tailored resume body for THIS role.
   Within each role, reorder bullets so the most JD-relevant comes first; you may drop a
   bullet that is clearly irrelevant to this role. Never alter employers, titles, dates,
   metrics, or scope.
-- **Projects**: prune to the 2–3 projects most relevant to this JD, ordered by relevance.
+- **Projects**: prune to the **2** projects most relevant to this JD, ordered by relevance.
   A project that directly covers a JD must-have or nice-to-have belongs first — keep its
   GitHub URL. Drop the rest entirely; a recruiter reads pruned-and-relevant as senior,
   exhaustive-and-padded as junior.
@@ -72,22 +72,39 @@ Rewrite the master CV into a tailored resume body for THIS role.
 
 ### Length budget — the resume must fit TWO pages
 
-The template adds a summary banner, a highlights list, and a competency row above
-whatever you return, so your body has roughly a page and a half to live in. Stay inside
-this budget; a third page reads as an inability to select, and everything past page two
-is read by nobody.
+The template prints a summary banner, a highlights list, and a competency row **above**
+whatever you return — roughly **20 rendered lines, a third of page one, before your first
+word**. What you write has about one and a quarter pages left, not two.
 
-- **Total body: 700–850 words.** Count before you answer. Over 900 words will not fit.
-- **Projects: at most 2**, at most **4 bullets** each, at most ~35 words per bullet.
+This budget is not advisory. When the body overflows, a deterministic trimmer drops whole
+blocks to force the fit, and it drops them by position, not by value — on 2026-08-15 it
+threw away the AWS case study, the Iqidao architecture-ownership bullet and the freelance
+delivery bullet, which were the strongest employment evidence in the document. **Anything
+you write past the budget is not "extra"; it evicts something better.**
+
+- **Total body: 600–750 words.** Count them before you answer and cut to fit. Over 800
+  words the trimmer starts deleting employment evidence.
+- **Projects: exactly 2**, at most **3 bullets** each, at most ~30 words per bullet.
   Long build-log bullets from the master CV must be compressed to their result, not copied.
 - **Experience: every dated role stays**, but bullets are capped — at most **3** for the
   two most recent or most relevant roles, **1–2** for the rest.
 - **Early Career**: keep as the single one-line list; drop it entirely if you are over
   budget after everything else.
-- **Skills**: at most 4 groups.
+- **Skills**: at most 4 groups, one line each.
 
 If the budget forces a choice, drop the least JD-relevant evidence — never a dated role,
-never a date, never a metric that is the point of the bullet it lives in.
+never a date, never a metric that is the point of the bullet it lives in. **Drop whole
+bullets, not words inside them**: trimming adjectives almost never removes a rendered
+line, and it costs you the specificity that made the bullet worth reading.
+
+Before you output, check your own draft against this list:
+
+1. Exactly 2 projects, none with more than 3 bullets?
+2. No role with more than 3 bullets, and only the top two roles at 3?
+3. Body word count between 600 and 750?
+4. At most 4 skills groups?
+
+If any answer is no, cut before answering — not after.
 
 ### Hard rules
 
@@ -99,9 +116,12 @@ never a date, never a metric that is the point of the bullet it lives in.
   consider the candidate for. Report what was done; leave the targeting to the
   cover letter.
 - **Never self-label a quantified tenure total** ("X+ years of experience", "two decades",
-  "veteran of N years") — it triggers age/over-qualified screens. Role-scoped facts with
-  dates are fine; the candidate must not advertise totals. If the master CV's summary
-  contains such a label, the rewrite must drop it.
+  "veteran of N years", "**a decade of** anything", "~12 years of people-leadership
+  scope") — it triggers age/over-qualified screens. This covers spelled-out and
+  approximate durations, not just digits, and it covers scoped totals ("a decade of
+  people leadership") as much as career totals. Role-scoped facts with dates are fine —
+  the reader does the arithmetic; the candidate must not advertise the total. If the
+  master CV's summary contains such a label, the rewrite must drop it.
 - Keep metrics exactly as written — never merge numbers across bullets, never round up.
 - **A claim's caveat is part of the claim.** Where the master CV qualifies a claim in
   parentheses — a retired page, a synthetic corpus, a simulated deployment, an expired

@@ -134,8 +134,17 @@ Output a JSON object with this exact schema — no prose outside the JSON:
   Professional" contradicts the Certifications section of the same page and is a factual
   error a screener will catch. Either give the range or leave the credential out.
   **Never state a quantified tenure total**
-  ("20+ years", "two decades") — it triggers age/over-qualified screens. Every claim must
-  trace to a CV line.
+  ("20+ years", "two decades", "a decade of X") — it triggers age/over-qualified screens.
+  This covers spelled-out and scoped totals, not just digits. Every claim must trace to a
+  CV line.
+  **Never state an immigration or PR motive.** No "AIP pathway", no "PNP", no "chose this
+  province for the immigration route", no work-permit strategy of any kind — not in
+  `summary_angle`, not in `cover_letter_body`, not anywhere the employer reads. It tells a
+  hiring manager the job is a means to a visa, which is the single most effective way to
+  lose a public-sector or regional employer. **Work authorization is a fact and belongs on
+  the page** ("valid work permit, no sponsorship required, available immediately");
+  **motive is not.** This has been generated twice — a CGI draft and an Acadia draft both
+  put the AIP pathway in the banner (2026-08-15).
 - `top_bullets`: select the 3 strongest bullets **from the CV text above** (not from the
   summaries) and rewrite their surface language to the JD's vocabulary. Keep every number,
   metric, employer, and scope exactly as the CV states it — never merge metrics across
@@ -146,8 +155,12 @@ Output a JSON object with this exact schema — no prose outside the JSON:
 {% if generate_cover_letter %}
 - `cover_letter_body`: grounded in CV evidence; same tenure rule as `summary_angle`; never
   use "passionate", "excited", "thrilled", "love", or "I would welcome the opportunity".
-  If the JD's vertical is visibly absent from the CV's experience, acknowledge the gap in
-  one direct sentence before pivoting to transferable evidence — do not paper over it.
+  If the JD's vertical or named toolchain is visibly absent from the CV, **name the gap in
+  one direct sentence — and put that sentence in the closing paragraph, next to the ramp
+  plan, never in the opening one.** Lead with the strongest concrete evidence; a reader who
+  meets the gap before meeting the work has no reason to keep reading, and a gap stated
+  beside a concrete first-60-days plan reads as self-awareness rather than as a concession.
+  Do not paper it over either — an unnamed gap surfaces in the first screening call.
 {% else %}
 - Do **not** emit `cover_letter_body`. A cover letter is opt-in and was not requested for
   this run; generating one costs tokens for an artifact nobody will read.
