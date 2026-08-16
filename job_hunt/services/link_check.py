@@ -256,6 +256,10 @@ def check_url(url: str, client: httpx.Client) -> tuple[Verdict, str]:
     """
     host = (urlparse(url).hostname or "").lower()
     if any(host == blocked or host.endswith("." + blocked) for blocked in _NO_FETCH_HOSTS):
+        # Deliberately still not fetched, not even a HEAD: the operator's
+        # account was restricted once for high-volume access. The cost of that
+        # is that these rows are unverified, so the caller must say so rather
+        # than fold them into "nothing dead" — see the triage summary line.
         return Verdict(url, SKIPPED, "host is not fetched by policy"), ""
     try:
         response = client.get(url)

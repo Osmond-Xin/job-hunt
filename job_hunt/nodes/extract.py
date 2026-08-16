@@ -26,13 +26,23 @@ _ACTIVE_SIGNALS = [
     "what you'll do", "about the role", "about this role",
 ]
 
-# Signals that a posting has closed.
+# Signals that a posting has closed. Boards phrase this differently enough that
+# a near-miss costs a full evaluation against a job nobody can apply to — the
+# SuccessFactors wording ("no further applications can be accepted") matched
+# none of the original five.
 _CLOSED_SIGNALS = [
     "this job is no longer available",
     "this position has been filled",
     "this posting has expired",
     "no longer accepting applications",
     "position has been closed",
+    "posting is now closed",
+    "no further applications can be accepted",
+    "applications are now closed",
+    "this job posting is closed",
+    "this opportunity is no longer available",
+    "the job you are looking for is no longer",
+    "expired_jd_redirect",
 ]
 
 
@@ -95,8 +105,17 @@ async def verify_active(state: JobHuntState, config: RunnableConfig) -> dict:
         if signal in jd_text:
             return {"jd_active": True, "errors": []}
 
-    # Heuristic: if substantial text present, assume active.
-    return {"jd_active": len(jd_text) >= _MIN_JD_CHARS, "errors": []}
+    # No JD structure anywhere in the page. Length alone does not mean a posting:
+    # a closed SuccessFactors job still serves 2,500 characters of site chrome,
+    # and scoring that produces a full report inferred from the title alone.
+    return {
+        "jd_active": False,
+        "errors": [
+            "No job-description structure found in the extracted text "
+            f"({len(jd_text)} chars of boilerplate?); treating as inactive rather "
+            "than scoring a posting that may be closed or failed to extract."
+        ],
+    }
 
 
 async def mark_unavailable(state: JobHuntState, config: RunnableConfig) -> dict:

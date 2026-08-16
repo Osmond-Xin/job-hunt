@@ -556,7 +556,7 @@ def triage(
 
     verify_note = ""
     if verify and best:
-        from job_hunt.services.link_check import annotate_pipeline, check_urls
+        from job_hunt.services.link_check import SKIPPED, annotate_pipeline, check_urls
 
         # One batched call: `check_urls` shares a single client and only sleeps
         # *between* URLs, so feeding it one URL at a time meant no keep-alive
@@ -584,6 +584,16 @@ def triage(
                 verify_note += f", {marked} marked in the pipeline"
         else:
             verify_note = " · verification found nothing dead"
+        # "Nothing dead" must not stand in for "nothing checked": hosts the
+        # checker declines to fetch come back SKIPPED, and reporting them as
+        # clean is how a dead posting reached the shortlist (2026-08-15).
+        unchecked = sum(
+            1
+            for item in head
+            if (v := verdicts.get(item.row.url)) is not None and v.status == SKIPPED
+        )
+        if unchecked:
+            verify_note += f" · {unchecked} not checked (host not fetched by policy)"
         # Say so when the inbox could not supply what was asked for, rather than
         # returning a short list that looks like the ranking is broken.
         if shortfall > 0:
