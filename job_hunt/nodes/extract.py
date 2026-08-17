@@ -73,10 +73,11 @@ async def extract_jd(state: JobHuntState, config: RunnableConfig) -> dict:
     jd_text = _clean_text(raw)
     jd_meta = _extract_meta(jd_text, state)
     if source_type == "url" and "extracted" in locals():
+        row_company, row_role = _identity_from_pipeline(url)
         jd_meta = jd_meta.model_copy(
             update={
-                "title": jd_meta.title or extracted.title,
-                "company": jd_meta.company or extracted.company,
+                "title": _strip_board_suffix(jd_meta.title or extracted.title) or row_role,
+                "company": jd_meta.company or extracted.company or row_company,
                 "location": jd_meta.location or extracted.location,
                 "url": extracted.url,
                 "ats": extracted.ats,
@@ -190,6 +191,40 @@ def _guess_title_company_location(jd_text: str) -> tuple[str, str, str]:
                 company = company or parts[1].strip()
 
     return title, company, location
+
+
+_BOARD_SUFFIX_RE = re.compile(r"\s*[-|–]\s*(?:www\.)?[\w.-]+\.(?:ca|com|org|net)\s*$")
+
+
+def _strip_board_suffix(title: str) -> str:
+    """Drop the aggregator's brand from a page title.
+
+    Adzuna titles its pages "AI Solutions Engineer - adzuna.ca", and that went
+    into the tracker's Role column verbatim on four rows before this was fixed.
+    It also breaks every dedupe: the same posting reached from the employer's
+    own board is "AI Solutions Engineer", and nothing matches the two.
+    """
+    return _BOARD_SUFFIX_RE.sub("", title or "").strip()
+
+
+def _identity_from_pipeline(url: str) -> tuple[str, str]:
+    """(company, role) discovery recorded for this URL, or ("", "").
+
+    Aggregator pages name the employer in body copy the page never labels, so
+    the extractor comes back with an empty company and the tracker row is
+    written blank — unsearchable, and invisible to every company+role check.
+    Discovery already knew: its API answer carried the employer, and the
+    pipeline row still has it.
+    """
+    try:
+        from job_hunt.services import pipeline_inbox
+
+        for entry in pipeline_inbox.parse():
+            if entry.url == url:
+                return entry.company.strip(), entry.role.strip()
+    except Exception:  # noqa: BLE001 — a missing inbox is not an extraction failure
+        pass
+    return "", ""
 
 
 def _looks_like_url(value: str) -> bool:
