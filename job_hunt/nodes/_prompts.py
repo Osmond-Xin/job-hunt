@@ -57,4 +57,15 @@ def render(template_path: str, **kwargs: object) -> str:
         key: strip_fence_markers(value) if key in _UNTRUSTED_KEYS else value
         for key, value in kwargs.items()
     }
+    # A node that hands us `jd_meta=None` — which is what every node does when
+    # extraction failed and no metadata was ever written to the state — used to
+    # blow up inside the template on `{{ jd_meta.company }}`, because
+    # StrictUndefined turns the attribute access into an UndefinedError. That
+    # surfaced as a crashed run several nodes deep, after the money was spent,
+    # instead of as the extraction failure it actually was. Templates read
+    # metadata as optional, so give them an empty object to read.
+    if "jd_meta" in safe and safe["jd_meta"] is None:
+        from job_hunt.models.job import JobMeta
+
+        safe["jd_meta"] = JobMeta()
     return _env().get_template(template_path).render(**safe)
