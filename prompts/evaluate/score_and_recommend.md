@@ -183,10 +183,28 @@ applied learning + future-fit, NOT as a 20-year veteran. Grounded in CV evidence
 {% endif %}top_bullets: the 3 strongest CV bullets rewritten in language that recruiters
 screening intern / co-op applications will recognise.
 {% else %}
-Thresholds (full mode):
-- weighted_total >= 4.0 → "apply", generate_pdf = true
-- 3.5 <= weighted_total < 4.0 → "maybe", generate_pdf = true (CV polish, but flag risk)
-- weighted_total < 3.5 → "skip", generate_pdf = false
+Thresholds (full mode — lowered 2026-08-16, see the volume note below):
+- weighted_total >= 3.5 → "apply", generate_pdf = true
+- 3.0 <= weighted_total < 3.5 → "maybe", generate_pdf = true (apply anyway if the
+  candidate can credibly meet the posting's stated minimum; name the gaps in the letter)
+- weighted_total < 3.0 → "skip", generate_pdf = false
+
+**Volume note (2026-08-16, operator's instruction, authoritative).** Roughly forty
+applications since April have produced zero interviews with a human. The operator's
+reading is that the bar was set too high and the funnel too narrow, and he has decided
+to widen it: *"降低我的要求 … 只要能够够得上申请的标准, 就去申请 … 现在核心问题是量太少,
+回复的比例太低."* Mid-level engineering roles are now the centre of the target, not the
+fallback. Apply this as follows:
+- A role the candidate is **eligible to apply for** — he meets the posting's stated
+  minimum education and the hard credentials — clears the bar even when the match is
+  partial. Partial matches are the normal case at this stage, not a reason to skip.
+- Reserve `skip` for genuine blockers: a credential, licence, clearance, or membership
+  he does not hold; a technology stack named in the *job title* that he has never used;
+  a hard requirement he cannot satisfy (travel he cannot make, a location outside
+  Canada); or a role function on the exclusion list.
+- Do **not** skip because the candidate would be one of many applicants, because the
+  domain is unfamiliar, or because a stack listed among many requirements is missing.
+  Those are cover-letter problems, and the letter names them honestly.
 
 **Framing for full mode** — the operator's standing priorities, in order:
 (1) get hired, (2) advance permanent residency, (3) do AI-engineering work.
@@ -206,11 +224,14 @@ Score accordingly:
   software engineering) are the primary target; score Growth trajectory against that,
   not against the older analyst-track entries in `target_roles`.
 
-**Ethical use**: per the shared rules, weighted_total < 4.0 means the recommendation
+**Ethical use**: per the shared rules, weighted_total < 3.0 means the recommendation
 SHOULD lean toward `skip` unless the candidate has a specific reason to override.
-Recruiter time has cost — quality over quantity. This is a rule about not spamming
-employers with genuinely bad fits; it is **not** a reason to manufacture blockers out
-of location or seniority.
+Recruiter time has cost. This is a rule about not spamming employers with genuinely
+bad fits — an application the candidate is not eligible to make wastes a screener's
+time and costs the candidate standing with that employer. It is **not** a reason to
+manufacture blockers out of location, seniority, an unfamiliar domain, or a missing
+item on a long requirements list, and since 2026-08-16 the threshold it guards is
+3.0, not 4.0.
 
 {% if generate_cover_letter %}cover_letter_body: 3–4 paragraphs, grounded in CV evidence, tailored to the company.
 {% endif %}top_bullets: the 3 strongest CV bullets rewritten to match this JD's language.

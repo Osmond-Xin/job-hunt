@@ -13,7 +13,13 @@ from job_hunt.nodes._llm import call_node_llm_or_fallback
 from job_hunt.nodes._prompts import render
 
 _STORY_BANK_PATH = Path("interview-prep/story-bank.md")
-_DRAFT_ANSWERS_SCORE_THRESHOLD = 4.5
+# Aligned with the "apply" band in prompts/evaluate/score_and_recommend.md.
+# It sat at 4.5 while that band was 4.0; when the band dropped to 3.5 on
+# 2026-08-16 the gate stopped firing at all — the whole day's best score was
+# 4.35 — so the node was spending nothing and producing nothing. Every role
+# the scorer says to apply to now gets its form answers drafted, which is the
+# point at which they are actually used.
+_DRAFT_ANSWERS_SCORE_THRESHOLD = 3.5
 
 # The story bank is read-modify-written whole. The critical section below is
 # synchronous end to end, so today asyncio cannot interleave two `evaluate-batch`
@@ -75,7 +81,7 @@ async def interview_prep(state: JobHuntState, config: RunnableConfig) -> dict:
 
 
 async def draft_application_answers(state: JobHuntState, config: RunnableConfig) -> dict:
-    """Generate Section G draft answers only when score >= 4.5."""
+    """Generate Section G draft answers only for roles the scorer says to apply to."""
     scores = state.get("scores")
     if not scores or scores.weighted_total < _DRAFT_ANSWERS_SCORE_THRESHOLD:
         return {"errors": []}

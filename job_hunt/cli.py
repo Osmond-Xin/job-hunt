@@ -2488,7 +2488,7 @@ def apply_assist(
         "--low-score-override",
         help=(
             "Override the ethical low-score gate. By default, applying to a tracker "
-            "row with weighted_total < 4.0 aborts. Set this flag if you have a "
+            "row with weighted_total < 3.0 aborts. Set this flag if you have a "
             "specific reason to apply anyway (e.g. learning experience, network signal)."
         ),
     ),
@@ -7704,7 +7704,10 @@ def _apply_profile_values() -> dict[str, object]:
     return values
 
 
-_LOW_SCORE_GATE_THRESHOLD = 4.0
+# Tracks the Ethical Use threshold in `prompts/shared.md`, lowered 4.0 → 3.0 on
+# 2026-08-16. Leaving it at 4.0 would have aborted the apply flow for every role
+# the scorer now recommends in the 3.0–4.0 band — Whitby at 3.73 among them.
+_LOW_SCORE_GATE_THRESHOLD = 3.0
 
 # Bumped when apply-review.json fields are renamed, removed, or change semantics.
 # Additive fields do NOT require a bump. Downstream tooling (`jq`, dashboards)
@@ -7713,10 +7716,11 @@ APPLY_REVIEW_SCHEMA_VERSION = 1
 
 
 def _enforce_low_score_gate(report_context: dict | None, *, override: bool) -> None:
-    """Abort the apply flow if the matched tracker row has weighted_total < 4.0.
+    """Abort the apply flow if the matched tracker row scores below the threshold.
 
     Per `prompts/shared.md` Ethical Use rules, applying to a low-score role costs
-    recruiter attention. The gate fires only when (a) we have a tracker match
+    recruiter attention. "Low" now means a blocker the candidate cannot satisfy,
+    not an imperfect match. The gate fires only when (a) we have a tracker match
     with a parseable score and (b) that score is below the threshold. When no
     score is available (manual cases, fresh tracker rows, "N/A" / "DUP"), the
     gate stays silent rather than blocking legitimate manual workflows.

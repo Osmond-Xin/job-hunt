@@ -47,12 +47,25 @@ WHAT HE IS LOOKING FOR, in priority order
 
 1. Roles whose immigration value is high: a permanent, full-time position in an Atlantic
    province, a territory, Saskatchewan or Manitoba, or in the public sector anywhere.
-2. Applied-AI engineering — AI/LLM/RAG/agents, forward-deployed and solutions engineering,
+2. **Ordinary intermediate-level engineering and developer work.** Software developer,
+   full-stack, backend, Python developer, application developer, programmer analyst,
+   systems analyst, data engineer, data analyst, integration or automation developer.
+   This is the centre of the target, not a fallback — a plain "Software Developer" post
+   at a mid-size employer is exactly as wanted as an AI-titled one.
+3. Applied-AI engineering — AI/LLM/RAG/agents, forward-deployed and solutions engineering,
    AI integration and automation.
-3. Roles whose real content is one person owning the whole thing: first technical hire,
+4. Roles whose real content is one person owning the whole thing: first technical hire,
    digital-transformation and systems-analyst posts at small organisations, generalist
    engineering where the job is to make AI land inside a business.
-4. Junior, intermediate and senior are all acceptable. Down-levelling is fine.
+5. Junior, intermediate and senior are all acceptable. Down-levelling is fine.
+
+VOLUME MANDATE (2026-08-16). Roughly forty applications have produced zero interviews.
+The operator has decided the funnel is too narrow and has lowered his own bar: he wants
+more applications, to a wider range of ordinary engineering roles. Bias hard toward KEEP.
+A title you are unsure about is a KEEP. A title that is merely unexciting is a KEEP. Only
+the DROP list below justifies dropping a row — nothing else does, and in particular do
+NOT drop a row for being generic, for lacking AI content, or for being in a boring
+industry or an unremarkable city.
 
 DROP these outright
 - Staffing agencies and outsourcing intermediaries recruiting on behalf of an unnamed client.

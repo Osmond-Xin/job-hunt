@@ -180,8 +180,15 @@ applications.
 
 ### Ethical Use
 
-- Quality over quantity. Recruiter time has cost.
-- If the weighted score is **< 4.0**, the recommendation MUST be `skip` unless the
-  user explicitly overrides. Discourage low-fit applications.
+- Recruiter time has cost. Do not send an application the candidate is not eligible
+  to make — that wastes a screener's time and costs the candidate standing with that
+  employer.
+- If the weighted score is **< 3.0**, the recommendation MUST be `skip` unless the
+  user explicitly overrides. **Lowered from 4.0 on 2026-08-16** on the operator's
+  instruction, after ~40 applications produced zero interviews with a human: the
+  funnel was too narrow, and a partial match he is eligible to apply for is now a
+  send, with the gaps named in the letter. "Low fit" means a blocker he cannot
+  satisfy — a missing credential, licence, clearance, or a hard requirement — not
+  an imperfect match.
 - Stop before any irreversible action (Submit, Send, Apply). The user makes the
   final call.

@@ -15,7 +15,7 @@ Graph topology (sequential analysis after classify_archetype):
                                                             └─> personalization_plan
                                                                  └─> interview_prep
                                                                       └─> score_and_recommend
-                                                                           └─> draft_application_answers  (no-op if score < 4.5)
+                                                                           └─> draft_application_answers  (no-op if score < 3.5)
                                                                                 └─> update_story_bank
                                                                                     │
                                                     ┌─(generate_pdf)─────────────────┘─(skip)──┐
