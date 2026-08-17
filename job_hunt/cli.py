@@ -1886,9 +1886,18 @@ def _batch_preflight(budget_enforced: bool = False) -> None:
 def _partition_already_evaluated(targets: list[str]) -> tuple[list[str], list[tuple[str, object]]]:
     """Split targets into (to run, already in the tracker).
 
-    Matching is by the company/role inferred from the URL, so it only catches
-    what `loop` can already infer — a miss costs a duplicate evaluation, never
-    a wrong skip.
+    Identity comes from the page itself — the company and title the posting
+    states — and nothing else. This used to call `_infer_loop_target`, which
+    falls back to fuzzy-matching the whole JD text against every tracker row
+    when a page names no company. That is right for `loop`, where the operator
+    has already decided which application he is resuming, and wrong here: on
+    2026-08-17 an aggregator page for SIGA's Applications Systems Analyst
+    matched Cohere's "Software Engineer, Search Applications" at 1.0 and the
+    job was silently dropped from the batch as already evaluated.
+
+    A miss now costs a duplicate evaluation, which is the direction to fail in
+    — and the pipeline row this target came from is ticked off after a run, so
+    a job the tracker cannot recognise still stops coming back.
     """
     tracker = TrackerRepository(Path("data/applications.md"))
     runnable: list[str] = []
@@ -1896,9 +1905,11 @@ def _partition_already_evaluated(targets: list[str]) -> tuple[list[str], list[tu
     for target in targets:
         entry = None
         try:
-            inferred = _infer_loop_target(url=target, description="")
-            if inferred.get("company") and inferred.get("role"):
-                entry, score = tracker.find_match(company=inferred["company"], role=inferred["role"])
+            metadata = _extract_loop_url_metadata(target)
+            company = (metadata.get("company") or "").strip()
+            role = _strip_aggregator_suffix(metadata.get("title") or "")
+            if company and role:
+                entry, score = tracker.find_match(company=company, role=role)
                 if score < 0.85:
                     entry = None
         except Exception:
@@ -1908,6 +1919,16 @@ def _partition_already_evaluated(targets: list[str]) -> tuple[list[str], list[tu
         else:
             runnable.append(target)
     return runnable, skipped
+
+
+def _strip_aggregator_suffix(title: str) -> str:
+    """Drop the board's own name from a page title.
+
+    Aggregators append their brand: "AI Solutions Engineer - adzuna.ca". Left
+    on, the role never matches the tracker's "AI Solutions Engineer" and the
+    same posting gets paid for twice.
+    """
+    return re.sub(r"\s*[-|–]\s*(?:www\.)?[\w.-]+\.(?:ca|com|org|net)\s*$", "", title).strip()
 
 
 def _ledger_path() -> Path:

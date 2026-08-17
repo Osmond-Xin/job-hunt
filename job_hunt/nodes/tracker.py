@@ -45,6 +45,7 @@ async def _write_tracker_addition(state: JobHuntState) -> dict:
 
     existing, match_score = repo.find_match(company=company, role=role)
     if existing and match_score >= _MATCH_THRESHOLD:
+        _mark_pipeline_processed(state, existing)
         return {"tracker_entry": existing, "errors": []}
 
     repo.ensure_exists()
@@ -68,7 +69,37 @@ async def _write_tracker_addition(state: JobHuntState) -> dict:
         notes=state.get("recommendation", ""),
     )
     repo.append_entry(entry)
+    _mark_pipeline_processed(state, entry)
     return {"tracker_entry": entry, "errors": []}
+
+
+def _mark_pipeline_processed(state: JobHuntState, entry: TrackerEntry) -> None:
+    """Check this job's row off in pipeline.md, by URL.
+
+    Only `job-hunt pipeline run` used to do this, and nobody runs that — the
+    real paths are `evaluate` and `evaluate-batch`, which left every row
+    pending forever. 3,365 of them had accumulated, so triage kept re-ranking
+    and re-screening jobs that were evaluated weeks ago, and an already-scored
+    posting could come back to the top of the shortlist and be paid for twice.
+
+    The tracker's own company+role dedupe cannot cover this: discovery records
+    whatever name its source used ("Cscgeneration 2" from one board, "CSC
+    Generation" from another), and no fuzzy key survives that. The URL does.
+
+    Best-effort by design: a URL that is not pending — a hand-typed target, a
+    JD file, a row already ticked off — simply finds nothing. This runs inside
+    the node's write lock, so a batch's concurrent jobs cannot interleave the
+    read-modify-write of the file.
+    """
+    url = (state.get("url") or "").strip()
+    if not url:
+        return
+    try:
+        from job_hunt.services import pipeline_inbox
+
+        pipeline_inbox.mark_evaluated(url, tracker_id=entry.number, score=entry.score)
+    except Exception:  # noqa: BLE001 — bookkeeping must never sink a paid run
+        pass
 
 
 async def merge_or_update_tracker(state: JobHuntState, config: RunnableConfig) -> dict:
