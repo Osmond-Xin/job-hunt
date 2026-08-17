@@ -2224,6 +2224,86 @@ def search_test(
     console.print(f"\n{len(hits)} result(s) for: {query!r}")
 
 
+@app.command("proxy-check")
+def proxy_check(
+    url: str = typer.Option(
+        "https://ca.linkedin.com/jobs/view/4414954379",
+        help="Proxy-only URL to test the egress path against.",
+    ),
+) -> None:
+    """Check the scrape proxy: is one configured, does it work, and what IP does it show.
+
+    The proxy exists for hosts this project refuses to fetch from the operator's
+    own address (linkedin.com). This command answers the three questions in
+    order, so a failure says which step broke instead of just "no".
+    """
+    import asyncio
+
+    from job_hunt.services.web_extract import (
+        ProxyRequiredError,
+        _is_proxy_only_host,
+        scrape_proxy,
+    )
+
+    proxy = scrape_proxy()
+    if not proxy:
+        console.print("[yellow]No scrape proxy configured.[/yellow]")
+        console.print(
+            "Set [bold]network.scrape_proxy[/bold] in profile.yml (or the "
+            "JOB_HUNT_SCRAPE_PROXY env var) to a SOCKS5/HTTP endpoint such as "
+            "socks5://127.0.0.1:1080.\n"
+            "A Shadowsocks subscription URL will NOT work here — run a local "
+            "client to turn it into a port first."
+        )
+        raise typer.Exit(1)
+
+    console.print(f"proxy: [bold]{proxy}[/bold]")
+    if proxy.startswith("socks"):
+        try:
+            import socksio  # noqa: F401
+        except ImportError:
+            console.print(
+                "[yellow]httpx cannot use a socks5:// proxy without the 'socksio' "
+                "package — install it with: uv add socksio[/yellow]\n"
+                "curl and Playwright can still use it, so extraction may work "
+                "while other paths fail."
+            )
+
+    # 1. Does the proxy carry ordinary traffic at all, and out of which IP?
+    try:
+        import httpx
+
+        seen = httpx.get("https://api.ipify.org", proxy=proxy, timeout=30).text.strip()
+        console.print(f"egress IP through proxy: [bold]{seen}[/bold]")
+    except Exception as exc:
+        console.print(f"[red]proxy did not carry a test request: {type(exc).__name__}: {exc}[/red]")
+        raise typer.Exit(1) from exc
+
+    # 2. Does the guarded host actually come back with content through it?
+    if not _is_proxy_only_host(url):
+        console.print(f"[dim]{url} is not a proxy-only host; fetching it directly.[/dim]")
+    from job_hunt.services.web_extract import extract_url_text
+
+    try:
+        result = asyncio.run(extract_url_text(url, min_chars=200))
+    except ProxyRequiredError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+    except Exception as exc:
+        console.print(f"[red]fetch failed through the proxy: {type(exc).__name__}: {exc}[/red]")
+        raise typer.Exit(1) from exc
+
+    console.print(
+        f"fetched [bold]{len(result.text)}[/bold] chars via {result.adapter}; "
+        f"title: {result.title[:80] or '(none)'}"
+    )
+    if len(result.text) < 1000:
+        console.print(
+            "[yellow]That is short enough to be a login wall or a boilerplate page "
+            "rather than a job description — read it before trusting it.[/yellow]"
+        )
+
+
 @app.command("search-usage")
 def search_usage(
     month: str | None = typer.Option(

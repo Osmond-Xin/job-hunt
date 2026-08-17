@@ -26,6 +26,8 @@ async def extract_url_text(url: str, *, min_chars: int = 200) -> WebExtractResul
     if url.startswith("local:"):
         return _extract_local_file(url)
 
+    _guard_proxy_only_host(url)
+
     ats_result = await _try_ats_api(url)
     if ats_result and len(ats_result.text) >= min_chars:
         return ats_result
@@ -154,14 +156,30 @@ async def _try_ats_api(url: str) -> WebExtractResult | None:
 
 
 async def _http_extract(url: str) -> WebExtractResult:
-    async with _client() as client:
-        response = await client.get(url)
-        response.raise_for_status()
-    html = response.text
+    proxy = scrape_proxy() if _is_proxy_only_host(url) else ""
+    try:
+        async with _client(proxy=proxy) as client:
+            response = await client.get(url)
+            response.raise_for_status()
+        html = response.text
+        final_url = str(response.url)
+    except httpx.HTTPStatusError as exc:
+        # Some hosts fingerprint the TLS handshake rather than the User-Agent,
+        # and httpx's ClientHello is not a browser's. Measured 2026-08-16 on
+        # digitalnovascotia.com: httpx gets 403 with no headers, with a Chrome
+        # UA, and with a full Chrome header set alike, while plain `curl` gets
+        # 200 on the same URL over the same HTTP version. That cost a whole
+        # batch of Halifax postings, so fall back to curl before giving up.
+        if exc.response.status_code not in _TLS_BLOCK_CODES:
+            raise
+        html = _curl_get(url, proxy=proxy)
+        if not html:
+            raise
+        final_url = url
     title = extract_html_title(html)
     body = extract_html_body(html)
     return WebExtractResult(
-        url=str(response.url),
+        url=final_url,
         text=clean_web_text("\n\n".join(part for part in [title, body] if part)),
         adapter="http_extract",
         title=title,
@@ -174,9 +192,12 @@ async def _try_playwright_extract(url: str) -> WebExtractResult | None:
     except Exception:
         return None
 
+    proxy = scrape_proxy() if _is_proxy_only_host(url) else ""
     try:
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
+            browser = await p.chromium.launch(
+                headless=True, **({"proxy": {"server": proxy}} if proxy else {})
+            )
             page = await browser.new_page()
             await page.goto(url, wait_until="domcontentloaded", timeout=30000)
             await page.wait_for_timeout(5000)
@@ -197,17 +218,116 @@ async def _try_playwright_extract(url: str) -> WebExtractResult | None:
     )
 
 
-def _client() -> httpx.AsyncClient:
-    return httpx.AsyncClient(
-        follow_redirects=True,
-        timeout=30,
-        headers={
+# Status codes worth a second attempt through curl. A 404 is an answer; a 403
+# or a 429 from a bot-protection edge is not.
+_TLS_BLOCK_CODES = frozenset({403, 429})
+
+# Hosts this module must never fetch from the operator's own address.
+#
+# LinkedIn bans the *account* whose network it associates with scraping, not
+# just the request, and the operator's account is the one his applications and
+# outreach run through — losing it costs far more than any single JD is worth.
+# `link_check` has refused to fetch linkedin.com since it was written; this
+# module did not, so `evaluate <a linkedin URL>` still reached out directly.
+# Closed 2026-08-16 on the operator's instruction.
+#
+# Note this is about *fetching a posting page*. Discovery's `site:linkedin.com`
+# queries are answered out of the search provider's index and never touch
+# LinkedIn, so they are unaffected.
+_PROXY_ONLY_HOSTS = ("linkedin.com",)
+_PROXY_ENV_VAR = "JOB_HUNT_SCRAPE_PROXY"
+
+
+def scrape_proxy() -> str:
+    """The configured egress proxy for hosts that must not see our own IP.
+
+    Environment first so a one-off run can override, then `network.scrape_proxy`
+    in profile.yml. Must be a proxy endpoint httpx/curl/Playwright can speak:
+    `socks5://host:port` or `http://host:port`. A Shadowsocks subscription URL
+    is not one — a local client has to terminate it and expose a port.
+    """
+    import os
+
+    from_env = (os.environ.get(_PROXY_ENV_VAR) or "").strip()
+    return from_env or _proxy_from_profile()
+
+
+def _proxy_from_profile() -> str:
+    """`network.scrape_proxy` from profile.yml, or "" if absent/unreadable.
+
+    Split out so a test can isolate the guard from whatever the operator
+    happens to have configured locally.
+    """
+    try:
+        import yaml
+
+        raw = yaml.safe_load(Path("profile/profile.yml").read_text(encoding="utf-8")) or {}
+        network = raw.get("network") if isinstance(raw, dict) else None
+        if isinstance(network, dict):
+            return str(network.get("scrape_proxy") or "").strip()
+    except Exception:
+        pass
+    return ""
+
+
+def _is_proxy_only_host(url: str) -> bool:
+    host = (urlparse(url or "").netloc or "").lower().split(":")[0]
+    bare = host[4:] if host.startswith("www.") else host
+    return any(bare == h or bare.endswith("." + h) for h in _PROXY_ONLY_HOSTS)
+
+
+def _guard_proxy_only_host(url: str) -> None:
+    """Refuse to fetch a proxy-only host directly. Raises, so callers stop early."""
+    if _is_proxy_only_host(url) and not scrape_proxy():
+        raise ProxyRequiredError(
+            f"Refusing to fetch {urlparse(url).netloc} directly: scraping it from this "
+            f"address risks the operator's own account. Set {_PROXY_ENV_VAR} to an egress "
+            "proxy to allow it, or find the employer's own posting URL instead — most "
+            "employers' ATS (Greenhouse / Lever / Workday / BambooHR) serve the same JD."
+        )
+
+
+class ProxyRequiredError(RuntimeError):
+    """Raised when a host may only be fetched through a configured proxy."""
+
+
+def _curl_get(url: str, *, timeout: int = 30, proxy: str = "") -> str:
+    """Fetch `url` with the system curl. Returns "" if curl is missing or fails."""
+    import shutil
+    import subprocess
+
+    curl = shutil.which("curl")
+    if not curl:
+        return ""
+    args = [curl, "-sSL", "--compressed", "--max-time", str(timeout)]
+    if proxy:
+        args += ["--proxy", proxy]
+    try:
+        done = subprocess.run(
+            [*args, url],
+            capture_output=True,
+            text=True,
+            timeout=timeout + 5,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return ""
+    return done.stdout if done.returncode == 0 else ""
+
+
+def _client(*, proxy: str = "") -> httpx.AsyncClient:
+    kwargs: dict[str, object] = {
+        "follow_redirects": True,
+        "timeout": 30,
+        "headers": {
             "User-Agent": (
                 "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125 Safari/537.36"
             )
         },
-    )
+    }
+    if proxy:
+        kwargs["proxy"] = proxy
+    return httpx.AsyncClient(**kwargs)  # type: ignore[arg-type]
 
 
 def _is_workday_url(url: str) -> bool:

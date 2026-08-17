@@ -248,6 +248,37 @@ def classify(
     return Verdict(url, LIVE, "", http_status)
 
 
+# Statuses that may be a bot wall rather than the site's real answer.
+_TLS_BLOCK_CODES = frozenset({403, 429})
+_CURL_TRAILER = "\n__curl_status__ "
+
+
+def _curl_probe(url: str, *, timeout: int = 25) -> tuple[int, str, str]:
+    """(status, final_url, body) via the system curl; (0, "", "") if unavailable."""
+    curl = shutil.which("curl")
+    if not curl:
+        return 0, "", ""
+    try:
+        done = subprocess.run(
+            [
+                curl, "-sSL", "--compressed", "--max-time", str(timeout),
+                "-w", f"{_CURL_TRAILER}%{{http_code}} %{{url_effective}}", url,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=timeout + 5,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return 0, "", ""
+    if done.returncode != 0:
+        return 0, "", ""
+    body, _, trailer = done.stdout.rpartition(_CURL_TRAILER)
+    parts = trailer.split()
+    if not parts or not parts[0].isdigit():
+        return 0, "", ""
+    return int(parts[0]), (parts[1] if len(parts) > 1 else ""), body
+
+
 def check_url(url: str, client: httpx.Client) -> tuple[Verdict, str]:
     """Fetch one posting and classify it. Returns (verdict, page body).
 
@@ -265,12 +296,26 @@ def check_url(url: str, client: httpx.Client) -> tuple[Verdict, str]:
         response = client.get(url)
     except httpx.HTTPError as exc:
         return Verdict(url, BLOCKED, f"request failed: {type(exc).__name__}", 0), ""
+
+    status, final_url, body = response.status_code, str(response.url), response.text
+    if status in _TLS_BLOCK_CODES:
+        # A 403 here is usually not the site saying no — it is an edge
+        # fingerprinting httpx's TLS handshake, which no header set can
+        # disguise. Measured 2026-08-16 on digitalnovascotia.com: httpx gets
+        # 403 for every posting while curl gets the real status. That made the
+        # whole host unverifiable, and BLOCKED counts as "not proven dead", so
+        # a genuinely 404 posting rode to the top of triage and was evaluated
+        # at full price. Ask curl before believing the wall.
+        curl_status, curl_final, curl_body = _curl_probe(url)
+        if curl_status:
+            status, final_url, body = curl_status, curl_final or url, curl_body
+
     return classify(
         url,
-        http_status=response.status_code,
-        final_url=str(response.url),
-        body=response.text,
-    ), response.text
+        http_status=status,
+        final_url=final_url,
+        body=body,
+    ), body
 
 
 def check_urls(
