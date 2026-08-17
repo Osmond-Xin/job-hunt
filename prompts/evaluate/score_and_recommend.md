@@ -150,6 +150,13 @@ Output a JSON object with this exact schema — no prose outside the JSON:
   metric, employer, and scope exactly as the CV states it — never merge metrics across
   bullets, never round up. **Max 40 words per bullet** — a recruiter scans highlights;
   a paragraph-length bullet defeats the section. One URL per bullet at most.
+  **A claim's caveat is part of the claim.** Where the CV qualifies a claim in parentheses
+  — a retired page, a synthetic corpus, a simulated deployment, an expired credential —
+  carry the qualifier across, compressed if you must ("page since retired"), but never
+  dropped. The word limit is not a licence to drop it: pick a different bullet instead.
+  This section is rendered above the experience it summarises, so a highlight that states
+  the claim bare contradicts the caveated bullet further down the same page — the exact
+  BLOCK the red team returned on 2026-08-17.
 - `keywords`: 8–12 terms that appear in the JD **and** are honestly claimable from the CV.
   No aspirational keywords — an interviewer will probe each one.
 {% if generate_cover_letter %}
