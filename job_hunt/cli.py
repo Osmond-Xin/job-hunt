@@ -488,6 +488,32 @@ def shortlist(limit: int = typer.Option(20, help="Number of items to show.")) ->
         console.print("No shortlist items found. Run: .venv/bin/job-hunt search --save")
 
 
+# How many shortlist slots are reserved for immigration value.
+#
+# With --screen the model's fit rating is the primary sort key, so a
+# territorial-government post it rates 3 can never outrank anything it rates 4.
+# Immigration is the operator's second standing priority and the entire reason
+# the northern and Atlantic channels exist, and on 2026-08-16 that ordering
+# buried every GNWT row beneath a Nova Scotia full-stack post.
+#
+# The lane is deliberately small and deliberately not a re-ranking. The same day
+# proved the other direction: the row with the highest deterministic score of the
+# batch (8.5, an ATIPP privacy analyst) evaluated at 1.18 once a model read the
+# actual JD. The heuristic knows where a job is, not what it is. So this buys a
+# bounded number of looks per batch — which is exactly what learning that cost.
+_IMMIGRATION_LANE_SLOTS = 2
+
+
+def _immigration_lane(pool: list, shortlisted: list) -> list:
+    """Highest deterministic-score rows that the fit ranking pushed off the list."""
+    if not pool:
+        return []
+    already = {id(item) for item in shortlisted}
+    overflow = [item for item in pool if id(item) not in already]
+    overflow.sort(key=lambda item: -item.score)
+    return overflow[:_IMMIGRATION_LANE_SLOTS]
+
+
 @app.command("triage")
 def triage(
     limit: int = typer.Option(10, help="How many candidates to surface."),
@@ -529,6 +555,11 @@ def triage(
     best = rank(rows, limit=ranked_limit, seen_urls=seen_urls, seen_pairs=seen_pairs)
 
     screened: dict[int, object] = {}
+    # Rows the fit ranking pushed out that the lane may draw from (see
+    # _IMMIGRATION_LANE_SLOTS). Empty unless the model screened the pool —
+    # without a fit key the list is already in deterministic-score order and
+    # there is nothing for the lane to rescue.
+    lane_pool: list = []
     if llm_screen and best:
         from job_hunt.services.screen import screen as run_screen
 
@@ -547,7 +578,8 @@ def triage(
         unscreened = sum(1 for _i, v in kept if not v.screened)
         # Model fit first, then the deterministic priority score as tie-break.
         kept.sort(key=lambda pair: (-pair[1].fit, -pair[0].score))
-        best = [item for item, _v in kept] if verify else [item for item, _v in kept][:limit]
+        lane_pool = [item for item, _v in kept]
+        best = list(lane_pool) if verify else lane_pool[:limit]
         screened = {id(item): verdict for item, verdict in kept}
         note = f"model dropped {dropped_by_model}"
         if unscreened:
@@ -577,6 +609,10 @@ def triage(
         # rather than silently handed back as a shorter list.
         shortfall = limit - len(survivors)
         best = survivors[:limit]
+        # The lane must never resurrect a posting verification just killed, and
+        # rows past `head` were never checked at all.
+        if lane_pool:
+            lane_pool = list(survivors)
         if rejected:
             detail = ", ".join(f"{count} {status.lower()}" for status, count in rejected.most_common())
             verify_note = f" · verification dropped {sum(rejected.values())} ({detail})"
@@ -599,6 +635,9 @@ def triage(
         if shortfall > 0:
             verify_note += f" · asked for {limit}, only {len(best)} survived verification"
 
+    lane = _immigration_lane(lane_pool, best)
+    shown = [*best, *lane]
+
     dropped = Counter(reason for row in rows if (reason := excluded(row)))
     console.print(
         f"[dim]{len(rows)} pending · {sum(dropped.values())} filtered out · "
@@ -608,7 +647,8 @@ def triage(
     if screened:
         columns.insert(2, "Fit")
     table = Table(*columns)
-    for index, item in enumerate(best, start=1):
+    for index, item in enumerate(shown, start=1):
+        in_lane = index > len(best)
         cells = [
             str(index),
             f"{item.score:.1f}",
@@ -624,11 +664,21 @@ def triage(
             cells[-1] = _short(
                 (verdict.reason if verdict and verdict.screened else cells[-1]) or "—", 34
             )
+        if in_lane:
+            cells[0] = f"L{index - len(best)}"
+            cells[-1] = _short(f"[lane] {cells[-1]}", 34)
         table.add_row(*cells)
     console.print(table)
+    if lane:
+        console.print(
+            f"[dim]L1–L{len(lane)} are the immigration lane: the highest deterministic-score "
+            "rows the model's fit ranking pushed out. They are an exploration budget, not a "
+            "recommendation — the heuristic has been wrong by 7 points.[/dim]"
+        )
     console.print()
-    for index, item in enumerate(best, start=1):
-        console.print(f"[bold]{index}.[/bold] {item.row.company} — {item.row.role}")
+    for index, item in enumerate(shown, start=1):
+        label = str(index) if index <= len(best) else f"L{index - len(best)}"
+        console.print(f"[bold]{label}.[/bold] {item.row.company} — {item.row.role}")
         console.print(f"   [dim]{item.row.location or 'location not stated'}[/dim]")
         console.print(f"   {item.row.url}")
     if show_excluded and dropped:
