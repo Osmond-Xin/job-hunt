@@ -35,7 +35,21 @@ def test_punctuation_and_case_collapse_to_single_hyphens() -> None:
 
 def test_missing_jd_meta_still_produces_a_usable_name() -> None:
     stem = run_stem({"run_id": "abcdef0123456789"})
-    assert stem.endswith("-unknown-unknown-abcdef01")
+    assert stem.endswith("-unknown-employer-unknown-role-abcdef01")
+
+
+def test_an_employer_the_page_did_not_name_says_so_in_the_path() -> None:
+    """The employer segment is what the operator navigates by.
+
+    Aggregator pages name no company, and an empty slug collapsed the segment
+    to nothing: three 2026-08-17 runs landed in
+    "output/2026-08-17--ai-solutions-engineer-adzuna-c-…", which names the job
+    board and not the employer.
+    """
+    stem = run_stem({"run_id": "abcdef0123456789", "jd_meta": JobMeta(title="AI Solutions Engineer")})
+
+    assert "--" not in stem
+    assert "-unknown-employer-ai-solutions-engineer-" in stem
 
 
 def test_same_job_twice_in_one_day_does_not_collide() -> None:
