@@ -30,6 +30,8 @@ from dataclasses import dataclass
 from datetime import date, datetime
 
 _ROW_RE = re.compile(r"^- \[ \] (?P<rest>.+)$")
+# Any row the file has already settled: `[x]` handled, `[!]` dead or closed.
+_RESOLVED_ROW_RE = re.compile(r"^- \[[x!]\] (?P<rest>.+)$", re.I)
 _POSTED_RE = re.compile(r"posted (\d{4}-\d{2}-\d{2})")
 
 # Conversion measured at zero in the 2026-07 application review.
@@ -129,11 +131,26 @@ class Ranked:
 
 
 def parse_pipeline(text: str) -> list[PipelineRow]:
-    """Unchecked ``- [ ]`` rows, newest first as the file stores them."""
+    """Unchecked ``- [ ]`` rows, newest first as the file stores them.
+
+    A URL the file has already settled stays settled. Discovery appends by URL
+    but writes whatever company name its source used, so the same posting comes
+    back under a new name and no dedupe key matches: two Nova Scotia geomatics
+    postings verified closed in April were re-added twenty times as "NS Public
+    Service" instead of "NS Geomatics Centre" and climbed back into the
+    shortlist months after they closed.
+    """
+    resolved = {
+        match.group("rest").split("|")[0].strip()
+        for line in text.splitlines()
+        if (match := _RESOLVED_ROW_RE.match(line.strip()))
+    }
     rows: list[PipelineRow] = []
     for line in text.splitlines():
         match = _ROW_RE.match(line.strip())
         if not match:
+            continue
+        if match.group("rest").split("|")[0].strip() in resolved:
             continue
         parts = [part.strip() for part in match.group("rest").split("|")]
         if not parts or not parts[0].startswith("http"):

@@ -47,6 +47,23 @@ def test_parses_only_unchecked_rows():
     assert rows[0].source == "mb_gov"
 
 
+def test_a_url_already_settled_does_not_come_back_under_a_new_company_name():
+    """The real case: two NS geomatics postings closed in April.
+
+    Discovery re-added them from a websearch source that called the employer
+    "NS Public Service" rather than "NS Geomatics Centre", so neither the URL
+    nor the company+role dedupe matched, and they rode back into the shortlist
+    twenty rows deep and four months late.
+    """
+    text = PIPELINE + (
+        "- [!] https://example.invalid/6 | NS Geomatics Centre | Systems Analyst"
+        " | Amherst, NS | closed — verified 2026-04-13\n"
+        "- [ ] https://example.invalid/6 | NS Public Service | Systems Analyst Job Details"
+        " | source: websearch\n"
+    )
+    assert "https://example.invalid/6" not in {row.url for row in parse_pipeline(text)}
+
+
 def test_immigration_value_outranks_a_better_role_match():
     rows = parse_pipeline(PIPELINE)
     manitoba = next(r for r in rows if r.company == "Government of Manitoba")
