@@ -276,6 +276,27 @@ def test_verify_flags_row_with_extra_column(tmp_path: Path) -> None:
     assert "10 columns" in errs and "expected 9" in errs
 
 
+def test_verify_accepts_an_escaped_pipe_inside_a_cell(tmp_path: Path) -> None:
+    """`_cell` writes a scraped `|` as `\\|`; that is one cell, not two.
+
+    Real rows: WRHA and Nova Scotia postings whose page titles end in
+    "Job Details | <employer>". The writer escaped them correctly and the
+    parser read them correctly, but verify counted 10 columns and reported
+    four healthy rows as corrupt.
+    """
+    apps = tmp_path / "applications.md"
+    _write_apps(
+        apps,
+        [
+            "| 1 | 2026-04-01 |  | Digital Systems Analyst Job Details \\| WRHA "
+            "| 2.5/5 | Evaluated | ❌ | reports/0001.md | skip |",
+        ],
+    )
+    result = tracker_ops.verify_pipeline(applications_md=apps)
+    assert result.errors == []
+    assert result.entries == 1
+
+
 def test_verify_clean_table_with_empty_notes_does_not_false_positive(
     tmp_path: Path,
 ) -> None:

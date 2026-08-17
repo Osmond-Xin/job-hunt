@@ -675,6 +675,12 @@ def _check_tracker_row_columns(line: str) -> str | None:
     duplicates a `|` is silent until merge time — this hard check surfaces
     the corruption at `tracker verify`.
 
+    Split on *unescaped* pipes only, matching ``parse_tracker_line``. A scraped
+    title like ``Digital Systems Analyst Job Details | WRHA`` is written by
+    ``_cell`` as ``\\|`` and is one cell, not two; counting it as two reported
+    four healthy rows as corrupt for weeks and taught the operator to ignore
+    the error line.
+
     Non-row lines (header, separator, blank, free-text) return None so prose
     around the table doesn't trigger false positives.
     """
@@ -684,7 +690,7 @@ def _check_tracker_row_columns(line: str) -> str | None:
     if "---" in stripped:
         return None
     inner = stripped.strip("|")
-    cells = [cell.strip() for cell in inner.split("|")]
+    cells = [cell.strip() for cell in re.split(r"(?<!\\)\|", inner)]
     if cells and cells[0].lower() == "#":
         # Header row.
         return None
