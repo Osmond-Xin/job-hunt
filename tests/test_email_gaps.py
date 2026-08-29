@@ -114,3 +114,22 @@ def test_noise_categories_and_old_mail_are_ignored(tmp_path):
 def test_repeat_acknowledgements_collapse_to_one_row(tmp_path):
     rows = [summary(message_id="m1"), summary(message_id="m2")]
     assert len(run(tmp_path, rows, [])) == 1
+
+
+def test_a_decorated_ats_title_matches_the_plain_tracker_role(tmp_path):
+    # The receipt says "… (ET - Canada/US)"; the tracker stores the plain title.
+    gaps = run(
+        tmp_path,
+        [summary(company="Cohere", role="Forward Deployed Engineer, Agentic Platform (ET - Canada/US)")],
+        [entry(1, "Cohere", "Forward Deployed Engineer, Agentic Platform")],
+    )
+    assert gaps == []
+
+
+def test_a_different_role_at_the_same_company_is_still_a_gap(tmp_path):
+    gaps = run(
+        tmp_path,
+        [summary(company="Cohere", role="Staff Machine Learning Engineer")],
+        [entry(1, "Cohere", "Forward Deployed Engineer, Agentic Platform")],
+    )
+    assert [gap.company for gap in gaps] == ["Cohere"]

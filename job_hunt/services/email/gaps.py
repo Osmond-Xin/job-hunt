@@ -112,6 +112,22 @@ def _company_only_match(tracker: TrackerRepository, company: str) -> TrackerEntr
     return None
 
 
+def _decorated_role_match(
+    tracker: TrackerRepository, company: str, role: str
+) -> TrackerEntry | None:
+    wanted_company = normalize(company)
+    wanted_role = normalize(role)
+    for entry in tracker.parse():
+        if normalize(entry.company) != wanted_company:
+            continue
+        entry_role = normalize(entry.role)
+        if not entry_role:
+            continue
+        if entry_role in wanted_role or wanted_role in entry_role:
+            return entry
+    return None
+
+
 def find_gaps(
     *,
     since: str,
@@ -127,6 +143,13 @@ def find_gaps(
         role = row.get("role") or ""
         entry, score = tracker.find_match(company=company, role=role)
         matched = entry is not None and score >= _MATCH_THRESHOLD
+        if not matched and role:
+            # An ATS receipt decorates the title the tracker stores plainly:
+            # "…, Agentic Platform (ET - Canada/US)" vs "…, Agentic Platform".
+            # find_match requires 0.85 role similarity once the company is an
+            # exact hit, so the decorated title scores nothing at all.
+            entry = _decorated_role_match(tracker, company, role)
+            matched = entry is not None
         if not matched and not role:
             # An acknowledgement often names only the company. find_match scores
             # role at 0.0 then, so even an exact company lands under the
