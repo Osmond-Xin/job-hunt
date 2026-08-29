@@ -1311,6 +1311,7 @@ def email_poll(
     if not live:
         console.print("Dry-run only. Pass --live to call Gmail API.")
         return
+    _warn_malformed_events(EmailEventRepository())
     result = poll_gmail(settings, max_results=max_results, include_unknown=include_unknown)
     ActivityLogger(settings.activity).emit(
         ActivityEvent(
@@ -1380,9 +1381,87 @@ def email_summarize(
         console.print(f"[yellow]Retry errors by re-running the same command (resumable).[/yellow]")
 
 
+def _warn_malformed_events(repo: EmailEventRepository) -> None:
+    """Say out loud that rows were skipped, so a silent gap can't build up."""
+    malformed = repo.malformed()
+    if malformed:
+        console.print(
+            f"[yellow]warning: {len(malformed)} unreadable row(s) in {repo.path} were skipped. "
+            f"Run `job-hunt email verify` to see them.[/yellow]"
+        )
+
+
+@email_app.command("verify")
+def email_verify() -> None:
+    """Check data/email-events.jsonl is readable end to end.
+
+    One row outside the schema used to raise a pydantic error out of every
+    command that touches the event log (poll, events, reconcile, review).
+    The reader now skips such rows; this command is how you find them.
+    """
+    repo = EmailEventRepository()
+    events = repo.list(limit=100000)
+    malformed = repo.malformed()
+    console.print(f"Readable events: {len(events)}")
+    if not malformed:
+        console.print("Event log verification passed.")
+        return
+    console.print(f"[red]Unreadable rows: {len(malformed)}[/red]")
+    for bad in malformed:
+        console.print(f"[red]  line {bad.line_number}:[/red] {bad.reason}")
+        console.print(f"    {bad.raw[:200]}")
+    console.print(
+        "\nFix each line by hand, then re-run. Valid values are listed in "
+        "job_hunt/models/events.py (source, event_type)."
+    )
+    raise typer.Exit(1)
+
+
+@email_app.command("gaps")
+def email_gaps(since: str = typer.Option("2026-08-01", help="Only look at mail on or after this date (YYYY-MM-DD).")) -> None:
+    """Applications the mailbox knows about that the tracker does not.
+
+    Reads the LLM summaries written by `email summarize` and compares them with
+    data/applications.md. Read-only on purpose: an email body is untrusted
+    input, so recording is the operator's call. Run `email summarize --live`
+    first so the summaries are current.
+    """
+    from job_hunt.services.email.gaps import find_gaps
+
+    gaps = find_gaps(since=since)
+    if not gaps:
+        console.print(f"No tracker gaps found in mail since {since}.")
+        return
+
+    untracked = [gap for gap in gaps if gap.kind == "untracked"]
+    stale = [gap for gap in gaps if gap.kind == "stale_status"]
+
+    if untracked:
+        console.print(f"\n[yellow]{len(untracked)} application(s) with mail but no tracker row:[/yellow]")
+        table = Table("Date", "Category", "Company", "Role")
+        for gap in untracked:
+            table.add_row(gap.date, gap.category, _short(gap.company, 30), _short(gap.role, 46))
+        console.print(table)
+        console.print("Record one with: job-hunt apply '<url>' --company '...' --role '...' --no-browser --confirmed")
+
+    if stale:
+        console.print(f"\n[yellow]{len(stale)} tracker row(s) whose mail says the application is closed:[/yellow]")
+        table = Table("Date", "Row", "Status", "Company", "Role")
+        for gap in stale:
+            table.add_row(
+                gap.date,
+                f"#{gap.entry.number}",
+                gap.entry.status,
+                _short(gap.company, 26),
+                _short(gap.role, 40),
+            )
+        console.print(table)
+
+
 @email_app.command("events")
 def email_events(limit: int = 20, needs_review: bool = False) -> None:
     repo = EmailEventRepository()
+    _warn_malformed_events(repo)
     events = repo.list(limit=limit, needs_review=needs_review)
     table = Table("Time", "Type", "Company", "Role", "Confidence", "Review", "Subject")
     for event in events:

@@ -18,6 +18,54 @@ The application submit button is never clicked by automation.
 
 For a complete executable runbook that another agent can follow end to end, read `docs/full-loop-execution.md`.
 
+## Inbound Mail: Two Tracks, and How They Fail
+
+Step 7 above has two separate readers of the same mailbox. Know which one you
+are using — they do not share data.
+
+| | `email poll` → `data/email-events.jsonl` | `email summarize` → `data/email-summaries.jsonl` |
+|---|---|---|
+| classifier | regex rules | MiniMax |
+| accuracy | noisy; company often `?` | good |
+| feeds | `email reconcile`, `review-candidates`, `approve-event` | nothing automatic |
+
+`summarize` output is deliberately **not** wired to auto-update the tracker: an
+email body is untrusted input (`docs/design-notes.md`, P1). Use
+`email gaps` to read it — a report of applications the mailbox has
+acknowledged that have no tracker row, plus rows still marked `Applied` whose
+mail says they are closed. It mutates nothing; you record what it finds.
+
+```bash
+.venv/bin/job-hunt email summarize --since 21d --concurrency 3 --live  # keep concurrency <= 3
+.venv/bin/job-hunt email gaps --since 2026-08-01
+.venv/bin/job-hunt email verify     # is the event log readable at all?
+```
+
+**The failure that cost 19 days (2026-08-10 → 2026-08-29).** A hand-written row
+in `email-events.jsonl` used `source: "email"` and
+`event_type: "application_acknowledged"` — neither is in the schema
+(`job_hunt/models/events.py`). The reader validated every row eagerly, so that
+one line raised a raw pydantic traceback out of *every* inbound command: `poll`,
+`events`, `reconcile`, `review-candidates`, `approve-event`, `ignore-event`.
+The whole inbound half of the system was dead and nothing said so. Meanwhile
+`summarize` kept working, because it does not touch the event log — so the
+mailbox looked fine while ~30 applications and ~19 rejections went unrecorded.
+
+The reader now skips unreadable rows instead of dying, warns when it did, and
+`email verify` prints the offending line numbers. **Do not hand-edit
+`email-events.jsonl`.** If you must, run `email verify` afterwards.
+
+## Recording Work Done Outside the Pipeline
+
+If the user submitted an application by hand, do not append to
+`data/applications.md` yourself — that skips the event log, the activity log and
+the Slack notification, and it is how rows drift out of sync:
+
+```bash
+.venv/bin/job-hunt apply '<application-url>' --company '<company>' --role '<role>' \
+    --pdf '<resume.pdf>' --no-browser --confirmed
+```
+
 ## Important Commands
 
 ```bash
