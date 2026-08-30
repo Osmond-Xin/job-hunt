@@ -961,6 +961,14 @@ def _location_matches_canada(location: str) -> bool:
         "yellowknife",
         "nunavut",
         "iqaluit",
+        # Continental postings. Canada is in North America, and the
+        # forward-deployed lane advertises itself this way more often than not
+        # ("Remote NORAM", "Remote - North America"). Discovery exists for
+        # recall; a US-only role that slips through is caught when the JD is
+        # fetched and scored, whereas one dropped here is never seen again.
+        "north america",
+        "noram",
+        "americas",
     ]
     allowed_tokens += immigration_place_tokens()
     blocked_tokens = [
@@ -985,7 +993,31 @@ def _location_matches_canada(location: str) -> bool:
     blocked = any(
         re.search(rf"\b{re.escape(token)}\b", value) for token in blocked_tokens
     )
-    return any(token in value for token in allowed_tokens) and not blocked
+    if not any(token in value for token in allowed_tokens):
+        return False
+    # A posting that names Canada is open to Canada, whatever else it names.
+    # "Remote US/Canada", "Remote, North America" and "New York or Remote
+    # (Canada)" were all being dropped because a blocked token appeared beside
+    # the Canadian one — and that is how most forward-deployed roles are
+    # advertised. Only an explicit Canadian signal overrides the block; a bare
+    # "remote" still does not.
+    if _names_canada_explicitly(value):
+        return True
+    return not blocked
+
+
+_EXPLICIT_CANADA_RE = re.compile(
+    r"\b(canada|canadian|ontario|quebec|qu[eé]bec|alberta|manitoba|saskatchewan|yukon|nunavut|"
+    r"british columbia|nova scotia|new brunswick|newfoundland|prince edward island|"
+    r"northwest territories|toronto|montr[eé]al|vancouver|ottawa|calgary|edmonton|winnipeg|"
+    r"halifax|saskatoon|regina|yellowknife|whitehorse|iqaluit|fredericton|moncton|charlottetown|"
+    r"waterloo|kitchener)\b"
+)
+
+
+def _names_canada_explicitly(value: str) -> bool:
+    """True when the location names Canada or a Canadian place, not just 'remote'."""
+    return bool(_EXPLICIT_CANADA_RE.search(value))
 
 
 def _compact_location(location: str) -> str:
