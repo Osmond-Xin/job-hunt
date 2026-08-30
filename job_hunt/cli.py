@@ -1093,6 +1093,51 @@ def outreach_draft(
     console.print(f"\n[green]Recorded draft[/green] outreach event {event.id}; wrote {message_path}")
 
 
+@outreach_app.command("log")
+def outreach_log(
+    contact_id: str = typer.Argument(..., help="Contact id or unique prefix."),
+    role: str = typer.Option(..., help="Role the message was about."),
+    company: str = typer.Option("", help="Override company; defaults to contact company."),
+    application_id: int | None = typer.Option(None, help="Tracker row number, if relevant."),
+    channel: str = typer.Option("email", help="email / linkedin / other."),
+    follow_up_at: str = typer.Option("", help="Follow-up date YYYY-MM-DD."),
+    notes: str = typer.Option("", help="What was sent, in your own words."),
+) -> None:
+    """Record a message you already sent, without drafting one.
+
+    `outreach draft` is the only other way to create an outreach event, and it
+    calls the LLM to write a message first — no use when the reply has already
+    gone out. Replies are sent from a mailbox this system never reads, so
+    nothing observes them; this is how they get on the record.
+    """
+    from job_hunt.services.outreach import OutreachEvent, add_event, get_contact
+
+    if channel not in {"email", "linkedin", "other"}:
+        console.print("[red]Channel must be email, linkedin, or other.[/red]")
+        raise typer.Exit(1)
+
+    contact = get_contact(contact_id)
+    if contact is None:
+        console.print(f"[red]Contact not found:[/red] {contact_id}")
+        raise typer.Exit(1)
+
+    event = add_event(
+        OutreachEvent(
+            contact_id=contact.id,
+            application_id=application_id,
+            company=company or contact.company,
+            role=role,
+            channel=channel,  # type: ignore[arg-type]
+            status="sent",
+            follow_up_at=follow_up_at,
+            notes=notes,
+        )
+    )
+    console.print(f"[green]Logged sent[/green] outreach event {event.id}: {event.company} — {event.role}")
+    if follow_up_at:
+        console.print(f"Follow-up due {follow_up_at}; see `job-hunt outreach due`.")
+
+
 @outreach_app.command("mark-sent")
 def outreach_mark_sent(
     event_id: str = typer.Argument(..., help="Outreach event id or unique prefix."),

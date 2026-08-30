@@ -55,6 +55,27 @@ The reader now skips unreadable rows instead of dying, warns when it did, and
 `email verify` prints the offending line numbers. **Do not hand-edit
 `email-events.jsonl`.** If you must, run `email verify` afterwards.
 
+## Outbound Mail Is Invisible To This System
+
+The polled mailbox is a Gmail account with **zero sent messages** — the user
+replies to employers from a different mailbox. So no recruiter reply the user
+sends will ever appear in `email poll`, `email summarize` or `email gaps`, and
+an application can sit at `Applied` in the tracker while a conversation is
+already several messages deep. Nothing detects this; you have to be told.
+
+When the user says they replied to someone, record it:
+
+```bash
+.venv/bin/job-hunt contacts add --company '<employer>' --name '<person>' \
+    --email '<addr>' --relationship recruiter --source email
+.venv/bin/job-hunt outreach log <contact-id> --role '<role>' --application-id <row> \
+    --channel email --follow-up-at YYYY-MM-DD --notes 'what was sent'
+.venv/bin/job-hunt outreach due    # what needs chasing
+```
+
+`outreach draft` also creates an event, but it calls the LLM to write a message
+first — no use for a reply that has already gone out. Prefer `outreach log`.
+
 ## Recording Work Done Outside the Pipeline
 
 If the user submitted an application by hand, do not append to
