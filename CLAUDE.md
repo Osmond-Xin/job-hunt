@@ -50,6 +50,38 @@ If a run's warnings show many dropped blocks, the length budget in
 `prompts/evaluate/tailor_cv.md` stopped working — fix that rather than leaning on the
 trimmer.
 
+## 3. Record what was sent
+
+**An application that is not in `data/applications.md` did not happen** — not for
+follow-up, not for interview prep, not for "did I already apply here?". Building the
+materials and sending them are two steps; writing the row is a third, and nothing in
+the pipeline forces it. On 2026-08-19/20 thirty-five applications were built, sent, and
+never recorded; the rejections that followed were invisible too, and an interview
+invitation from GNWT sat unnoticed for eleven days.
+
+Recording goes through the CLI, never by editing the markdown:
+
+```bash
+.venv/bin/job-hunt apply '<url>' --company '...' --role '...' \
+    --pdf '<pdf under output/>' --no-browser --confirmed
+```
+
+`--pdf` is not optional: it stamps the tracker row number into the `output/`
+directory, which is the only exact link between materials and row. Then write the real
+detail into the row's notes — the red-team verdict, the submission date, any stated
+timeline, and what must not be contradicted at interview.
+
+**Close every session that produced or sent anything with:**
+
+```bash
+.venv/bin/job-hunt checkup      # materials with no row, mail with no row, follow-ups due
+.venv/bin/job-hunt tracker verify
+```
+
+This applies to any agent working in this repo, not only this one. The full mechanics,
+including the two inbound mail tracks and why outbound mail is invisible, are in
+`AGENTS.md`.
+
 ## Contact details
 
 `jonzy.xin@outlook.com` is the only address for applications the user submits himself.

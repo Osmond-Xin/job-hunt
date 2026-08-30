@@ -706,6 +706,11 @@ def _check_tracker_row_columns(line: str) -> str | None:
     )
 
 
+def _looks_like_data_row(line: str) -> bool:
+    """A table line starting with a row number, i.e. not a header or a rule."""
+    return bool(re.match(r"^\|\s*\d+\s*\|", line.strip()))
+
+
 def verify_pipeline(
     applications_md: Path | None = None,
     additions_dir: Path | None = None,
@@ -723,8 +728,10 @@ def verify_pipeline(
     lines = apps_path.read_text(encoding="utf-8").splitlines()
     seen_company_role: dict[tuple[str, str], list[int]] = {}
     by_status: dict[str, int] = {}
+    seen_numbers: dict[int, int] = {}
+    unreadable: list[int] = []
 
-    for raw_line in lines:
+    for line_number, raw_line in enumerate(lines, start=1):
         line = raw_line.rstrip()
         column_error = _check_tracker_row_columns(line)
         if column_error:
@@ -734,8 +741,13 @@ def verify_pipeline(
 
         entry = parse_tracker_line(line)
         if entry is None:
+            # A row the parser cannot read is a row that does not exist as far
+            # as every other command is concerned; it must not pass silently.
+            if _looks_like_data_row(line):
+                unreadable.append(line_number)
             continue
         result.entries += 1
+        seen_numbers[entry.number] = seen_numbers.get(entry.number, 0) + 1
         canonical = states.normalize(entry.status)
         if canonical is None or canonical != entry.status:
             result.errors.append(f"#{entry.number}: non-canonical status {entry.status!r}")
@@ -758,6 +770,15 @@ def verify_pipeline(
                 report_path = reports_dir / rel if not Path(rel).is_absolute() else Path(rel)
                 if not report_path.exists():
                     result.errors.append(f"#{entry.number}: report not found: {rel}")
+
+    for number, count in sorted(seen_numbers.items()):
+        if count > 1:
+            result.errors.append(f"#{number}: row number used {count} times")
+    for line_number in unreadable:
+        result.errors.append(
+            f"line {line_number}: looks like a tracker row but does not parse — "
+            "invisible to every command that reads the tracker"
+        )
 
     for nums in seen_company_role.values():
         if len(nums) > 1:

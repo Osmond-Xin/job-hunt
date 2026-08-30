@@ -1480,6 +1480,22 @@ def email_gaps(since: str = typer.Option("2026-08-01", help="Only look at mail o
 
     untracked = [gap for gap in gaps if gap.kind == "untracked"]
     stale = [gap for gap in gaps if gap.kind == "stale_status"]
+    advances = [gap for gap in gaps if gap.kind == "advance"]
+
+    if advances:
+        console.print(f"\n[bold]{len(advances)} row(s) the mail says moved forward:[/bold]")
+        table = Table("Date", "Row", "Status", "Company", "Role", "Subject")
+        for gap in advances:
+            table.add_row(
+                gap.date,
+                f"#{gap.entry.number}",
+                gap.entry.status,
+                _short(gap.company, 22),
+                _short(gap.role, 30),
+                _short(gap.subject, 34),
+            )
+        console.print(table)
+        console.print("An interview invitation is the one signal worth acting on today.")
 
     if untracked:
         console.print(f"\n[yellow]{len(untracked)} application(s) with mail but no tracker row:[/yellow]")
@@ -2601,6 +2617,43 @@ def compare_offers(
         console.print(f"\n[green]Wrote[/green] {output}")
 
 
+@app.command("checkup")
+def checkup(
+    days: int = typer.Option(30, help="How far back to look for unrecorded work."),
+    strict: bool = typer.Option(False, "--strict", help="Exit non-zero when anything needs attention."),
+) -> None:
+    """Run before you finish: what got done but never recorded?
+
+    Building a résumé and submitting it are two steps; writing the tracker row
+    is a third, and nothing forces it. This looks for the evidence that a third
+    step was skipped — materials on disk with no row, acknowledgements with no
+    row, rows whose mail says they are closed, follow-ups coming due.
+    """
+    from job_hunt.services.checkup import run_checkup
+
+    checks = run_checkup(days=days)
+    problems = [check for check in checks if not check.ok]
+
+    for check in checks:
+        mark = "[green]OK  [/green]" if check.ok else "[yellow]LOOK[/yellow]"
+        console.print(f"{mark} {check.name}: {check.detail}")
+        for item in check.items[:20]:
+            console.print(f"       {item}")
+        if len(check.items) > 20:
+            console.print(f"       … and {len(check.items) - 20} more")
+
+    if not problems:
+        console.print("\n[green]Nothing outstanding.[/green]")
+        return
+
+    console.print("")
+    for check in problems:
+        if check.fix:
+            console.print(f"[dim]{check.name} →[/dim] {check.fix}")
+    if strict:
+        raise typer.Exit(1)
+
+
 @app.command("scan")
 def scan(
     company: str | None = typer.Option(None, help="Only scan matching company name."),
@@ -2825,6 +2878,9 @@ def apply_assist(
         )
     )
     console.print(f"[green]Recorded Applied[/green] tracker row #{updated.number}: {updated.company} / {updated.role}")
+    marker = _link_artifacts_to_row(pdf, updated, url)
+    if marker:
+        console.print(f"[dim]Linked {marker.parent.name} to row #{updated.number}.[/dim]")
 
 
 @app.command("agent-apply")
@@ -8265,6 +8321,38 @@ def _tracker_entry_by_id(tracker: TrackerRepository, tracker_id: int | None):
             return entry
     console.print(f"[red]Tracker row #{tracker_id} not found.[/red]")
     raise typer.Exit(1)
+
+
+def _link_artifacts_to_row(pdf: Path | None, entry, url: str) -> Path | None:
+    """Stamp the tracker row number into the directory the PDF came from.
+
+    Materials and tracker rows had nothing joining them, so an agent could
+    build a résumé, the user could send it, and no later check could tell the
+    directory had never been recorded. The marker makes that join exact for
+    everything recorded from here on; `job-hunt checkup` reads it.
+    """
+    if pdf is None or entry is None:
+        return None
+    directory = pdf.resolve().parent
+    if Path("output").resolve() not in directory.parents:
+        return None
+    marker = directory / ".tracker-row"
+    marker.write_text(
+        json.dumps(
+            {
+                "tracker_row": entry.number,
+                "company": entry.company,
+                "role": entry.role,
+                "status": entry.status,
+                "url": url,
+                "recorded_at": datetime.now().isoformat(timespec="seconds"),
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return marker
 
 
 def _record_manual_submission(

@@ -182,9 +182,18 @@ class TrackerRepository:
         return best, best_score
 
 
+_SEPARATOR_ROW = re.compile(r"^\|[\s:|-]+\|?$")
+
+
 def parse_tracker_line(line: str) -> TrackerEntry | None:
     line = line.strip()
-    if not line.startswith("|") or "---" in line or line.lower().startswith("| #"):
+    if not line.startswith("|") or line.lower().startswith("| #"):
+        return None
+    # Only a line that is *entirely* pipes, dashes, colons and spaces is the
+    # markdown separator. Testing for "---" anywhere silently dropped every row
+    # whose notes happened to contain a triple dash — six of them, including a
+    # row that had reached Interview, which then read as Evaluated everywhere.
+    if _SEPARATOR_ROW.match(line):
         return None
     # Split on unescaped pipes only, then unescape, so a cell containing an
     # escaped "\|" (written by _cell) round-trips as a single column.

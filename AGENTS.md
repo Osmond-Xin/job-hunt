@@ -18,6 +18,40 @@ The application submit button is never clicked by automation.
 
 For a complete executable runbook that another agent can follow end to end, read `docs/full-loop-execution.md`.
 
+## Before You Finish: `job-hunt checkup`
+
+**Run this at the end of every session that produced or sent anything.**
+
+```bash
+.venv/bin/job-hunt checkup            # --strict to exit non-zero when work is outstanding
+```
+
+Building a résumé and submitting it are two steps; writing the tracker row is a
+third, and nothing forces it. `checkup` looks for the evidence that the third
+step was skipped:
+
+- **artifacts without a tracker row** — a directory under `output/` holding a
+  rendered PDF that no tracker row accounts for. This is the check that would
+  have caught the 2026-08-19/20 batch, where thirty-five applications were
+  built, sent, and never recorded.
+- **event log readable** — see the inbound-mail section below.
+- **mailbox agrees with the tracker** — acknowledgements with no row, rows whose
+  mail says they are closed, and rows an interview invitation has moved past.
+- **outreach follow-ups** — what is due to be chased.
+
+Every check is read-only and prints the command that fixes what it found.
+
+`apply --confirmed --pdf <file under output/>` writes a `.tracker-row` marker
+into that directory recording the row number. Once a directory has a marker the
+check is exact rather than a guess at the employer's name, so **always pass
+`--pdf` when recording** — a slug like `ccl-…` shares no word with "Connor,
+Clark & Lunn Financial Group" and will otherwise be reported as unrecorded.
+
+When a check reports something you have confirmed is not a real gap — a brand
+name, a hiring platform, a parent company — add the pair to
+`config/company-aliases.yml` rather than ignoring the output. A check nobody
+trusts is a check nobody runs.
+
 ## Inbound Mail: Two Tracks, and How They Fail
 
 Step 7 above has two separate readers of the same mailbox. Know which one you
@@ -87,6 +121,14 @@ the Slack notification, and it is how rows drift out of sync:
     --pdf '<resume.pdf>' --no-browser --confirmed
 ```
 
+Pass `--pdf` even when the form took the file by hand: it is what links the
+`output/` directory to the row, and `job-hunt checkup` relies on that link.
+Then write the real detail into the row's notes — verdicts, dates, stated
+timelines, what must not be contradicted at interview. The command can only
+write a generic note; the row is only as useful as what you add to it.
+
+Finish with `job-hunt checkup` and `job-hunt tracker verify`.
+
 ## Important Commands
 
 ```bash
@@ -117,6 +159,10 @@ the Slack notification, and it is how rows drift out of sync:
 # Step 4: after user confirms submit, record the application
 .venv/bin/job-hunt apply '<application-url>' --company '<company>' --role '<role>' --pdf '<resume.pdf>' --no-browser --confirmed
 
+# Step 5: before you finish — what got done but never recorded?
+.venv/bin/job-hunt checkup
+.venv/bin/job-hunt tracker verify
+
 .venv/bin/job-hunt activity slack-test
 .venv/bin/job-hunt activity list --since 1d
 .venv/bin/pytest
@@ -136,8 +182,14 @@ Use `.venv/bin/job-hunt ...` instead of assuming `job-hunt` is on PATH.
 7. User clicks Submit Application in browser
 8. User tells agent "submitted"
 9. Run apply-capture-page → captures thank-you/current page
-10. Run apply --no-browser --confirmed → records tracker, activity log, Slack
+10. Run apply --no-browser --confirmed --pdf <pdf> → records tracker, activity log, Slack
+11. Write the real detail into the row's notes (verdicts, dates, gaps named)
+12. Run job-hunt checkup → confirms nothing was left unrecorded
 ```
+
+Steps 10-12 are the ones that get skipped, and nothing else notices. When the
+materials were hand-built with no browser session at all, step 10 is still how
+they get recorded — there is no separate path for hand-built work.
 
 Never click the Submit button yourself. Never record before user confirms.
 

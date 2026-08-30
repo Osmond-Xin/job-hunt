@@ -1,0 +1,22 @@
+# Employer names that mean the same thing on either side of the mailbox check.
+#
+# The left-hand name is what arrives in mail — an ATS receipt, a brand, a
+# hiring platform. The right-hand name is what data/applications.md calls the
+# same employer. `job-hunt email gaps` and `job-hunt checkup` fold the two
+# together so a name mismatch does not read as a missing application.
+#
+# Add a line whenever you resolve a false positive. A check nobody trusts is
+# a check nobody runs.
+aliases:
+  # Brand vs parent
+  Seon: Safe Fleet
+  BCG: Boston Consulting Group
+  BCG Platinion: Boston Consulting Group
+  Clariti Cloud Inc.: Clariti
+
+  # Hiring platform vs the actual employer behind the posting
+  Flexhire: Awear
+
+  # Public-sector employers whose mail is signed by the territory or ministry
+  # rather than by the authority that posted the competition
+  Government of the Northwest Territories: NWT Health and Social Services Authority

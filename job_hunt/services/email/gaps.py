@@ -27,10 +27,15 @@ from job_hunt.repositories.tracker_repo import (
 )
 from job_hunt.services.email.summarize import SUMMARY_PATH
 
+ALIAS_PATH = Path("config/company-aliases.yml")
+
 # Categories that mean "this application exists".
 _APPLIED_CATEGORIES = {"application_ack", "interview_invite", "offer", "rejection"}
 # Categories that mean the tracker status is stale if it still says Applied.
 _CLOSED_CATEGORIES = {"rejection"}
+# Mail that says the application moved forward, not that one is missing.
+_ADVANCE_CATEGORIES = {"interview_invite", "offer"}
+_ADVANCED_STATUSES = {"Interview", "Offer", "Responded"}
 # Statuses that already record an outcome, so a rejection mail is not news.
 _SETTLED_STATUSES = {"Rejected", "Discarded", "SKIP", "Withdrawn", "Offer"}
 
@@ -39,13 +44,24 @@ _MATCH_THRESHOLD = 0.70
 
 @dataclass
 class Gap:
-    kind: str  # "untracked" | "stale_status"
+    kind: str  # "untracked" | "stale_status" | "advance"
     date: str
     company: str
     role: str
     category: str
     subject: str
     entry: TrackerEntry | None = None
+
+
+def load_aliases(path: Path = ALIAS_PATH) -> dict[str, str]:
+    """Mail-side employer name -> the name the tracker uses."""
+    if not path.exists():
+        return {}
+    import yaml
+
+    raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    pairs = (raw.get("aliases") or {}).items()
+    return {normalize(str(k)): str(v) for k, v in pairs}
 
 
 def _load_summaries(path: Path, since: str) -> list[dict]:
@@ -136,10 +152,11 @@ def find_gaps(
 ) -> list[Gap]:
     """Applications the mailbox knows about that the tracker does not."""
     tracker = tracker or TrackerRepository(Path("data/applications.md"))
+    aliases = load_aliases()
     gaps: list[Gap] = []
     seen_untracked: set[str] = set()
     for row in _load_summaries(summary_path, since):
-        company = row["company"]
+        company = aliases.get(normalize(row["company"]), row["company"])
         role = row.get("role") or ""
         entry, score = tracker.find_match(company=company, role=role)
         matched = entry is not None and score >= _MATCH_THRESHOLD
@@ -156,6 +173,26 @@ def find_gaps(
             # threshold; fall back to an exact company name instead.
             entry = _company_only_match(tracker, company)
             matched = entry is not None
+        if not matched and row.get("category") in _ADVANCE_CATEGORIES:
+            # An interview invitation from an employer already in the tracker is
+            # not a missing application — it is a status the row has not caught
+            # up with. Reporting it as "untracked" is how a real advance from
+            # GNWT sat unnoticed for eleven days among forty-six false alarms.
+            entry = _company_only_match(tracker, company)
+            if entry is not None:
+                if entry.status not in _ADVANCED_STATUSES | _SETTLED_STATUSES:
+                    gaps.append(
+                        Gap(
+                            kind="advance",
+                            date=(row.get("date") or "")[:10],
+                            company=company,
+                            role=role,
+                            category=row.get("category") or "",
+                            subject=(row.get("subject") or "")[:80],
+                            entry=entry,
+                        )
+                    )
+                continue
         if not matched:
             # One row per company/role, not one per acknowledgement email.
             key = (company + "|" + role).lower()
