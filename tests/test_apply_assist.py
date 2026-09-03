@@ -663,8 +663,8 @@ def test_infer_loop_target_uses_url_metadata_without_description(tmp_path, monke
     pdf.write_text("pdf", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
     # _infer_loop_target (cli.apply) calls this as a bare name resolved from
-    # its own module's import of cli._shared, so the patch has to land on
-    # cli.apply's copy, not job_hunt.cli's re-export.
+    # its own module's import of services.web_extract, so the patch has to
+    # land on cli.apply's copy, not job_hunt.cli's re-export.
     monkeypatch.setattr(
         "job_hunt.cli.apply._extract_loop_url_metadata",
         lambda url: {"company": "Cohere", "title": "Senior Software Engineer, Security Agents", "text": ""},

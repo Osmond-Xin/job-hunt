@@ -45,11 +45,9 @@ from ._render import (
     console,
     _short,
 )
-from ._shared import (
-    _resolve_source_type,
-    _extract_loop_url_metadata,
-    _apply_profile_values,
-)
+from job_hunt.services.source_type import _resolve_source_type
+from job_hunt.services.web_extract import _extract_loop_url_metadata
+from job_hunt.services.profile_loader import _apply_profile_values
 from .setup import (
     ONBOARDING_NEXT_STEPS,
     default_gcloud_adc_path,

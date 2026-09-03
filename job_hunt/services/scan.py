@@ -15,7 +15,8 @@ import yaml
 from pydantic import BaseModel, Field
 
 from job_hunt.models.posting import JobPosting, from_row
-from job_hunt.repositories.tracker_repo import TrackerRepository, normalize
+from job_hunt.models.tracker import normalize
+from job_hunt.repositories.tracker_repo import TrackerRepository
 from job_hunt.services.adzuna import scan_adzuna_source
 from job_hunt.services.gov_boards import scan_gov_boards
 from job_hunt.services.regional_boards import scan_regional_boards

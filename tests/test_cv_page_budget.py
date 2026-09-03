@@ -16,9 +16,10 @@ from job_hunt.models.job import ArchetypeResult
 from job_hunt.nodes import _quality as quality_module
 from job_hunt.nodes import artifact_paths as artifact_paths_module
 from job_hunt.nodes import cover_letter as cover_letter_module
-from job_hunt.nodes._cv_fit import next_trim, pdf_page_count
+from job_hunt.nodes._cv_fit import next_trim
 from job_hunt.nodes.cover_letter import generate_cover_letter
 from job_hunt.services.llm.base import ChatResult
+from job_hunt.services.pdf import pdf_page_count
 
 CV = """## Experience
 

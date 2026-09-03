@@ -13,10 +13,10 @@ from __future__ import annotations
 import asyncio
 import uuid
 from dataclasses import dataclass, field
+from typing import Any, Callable
 
-from job_hunt.cli._shared import _resolve_source_type
-from job_hunt.graphs.evaluate_job import build_evaluate_job_graph
-from job_hunt.nodes._llm import LLM_FAILURE_MARKER
+from job_hunt.services.llm.call import LLM_FAILURE_MARKER
+from job_hunt.services.source_type import _resolve_source_type
 from job_hunt.services.usage_ledger import _ledger_line_count, _ledger_spend_since
 
 
@@ -50,11 +50,16 @@ def run_batch(
     concurrency: int,
     max_cost: float,
     generate_cover_letter: bool,
+    graph_builder: Callable[[], Any],
 ) -> BatchOutcome:
     """Evaluate `targets` concurrently, stopping early once `max_cost` is hit.
 
     Each job runs the same graph as `evaluate`, so jobs that clear the score
     gate still get their CV and cover letter written on the premium tier.
+    `graph_builder` is injected (rather than imported here) because `graphs/`
+    sits above `services/` in the package's layer order — a service module
+    building its own graph would import upward. `cli/evaluation.py` passes
+    `build_evaluate_job_graph`.
     """
     ledger_start = _ledger_line_count()
     budget_stop = asyncio.Event() if max_cost > 0 else None
@@ -63,7 +68,7 @@ def run_batch(
     unmeasurable = asyncio.Event()
 
     async def run_all() -> list[JobOutcome]:
-        graph = build_evaluate_job_graph()
+        graph = graph_builder()
         semaphore = asyncio.Semaphore(max(1, concurrency))
 
         async def run_one(target: str) -> JobOutcome:

@@ -9,8 +9,7 @@ from pathlib import Path
 from langchain_core.runnables import RunnableConfig
 
 from job_hunt.models.state import JobHuntState
-from job_hunt.nodes._cv_fit import pdf_page_count
-from job_hunt.nodes._prompts import render
+from job_hunt.services.prompts import render
 from job_hunt.nodes._quality import generate_with_audit
 from job_hunt.nodes.artifact_paths import artifact_filename, run_output_dir
 from job_hunt.nodes.pdf import (
@@ -19,6 +18,7 @@ from job_hunt.nodes.pdf import (
     artifact_template_env,
     detect_paper_size,
 )
+from job_hunt.services.pdf import pdf_page_count
 
 _TEMPLATES_DIR = Path("templates")
 _FONTS_DIR = (_TEMPLATES_DIR / "fonts").resolve()

@@ -6,8 +6,8 @@ from langchain_core.runnables import RunnableConfig
 
 from job_hunt.models.evaluation import DimensionScore, EvaluationScores, PdfContent
 from job_hunt.models.state import JobHuntState
-from job_hunt.nodes._llm import call_node_llm_or_fallback
-from job_hunt.nodes._prompts import render
+from job_hunt.services.llm.call import call_node_llm_or_fallback
+from job_hunt.services.prompts import render
 from job_hunt.services.immigration import immigration_context
 from job_hunt.services.llm.content import extract_json_object
 

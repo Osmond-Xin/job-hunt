@@ -404,6 +404,7 @@ def test_find_match_rejects_generic_token_company_collision(tmp_path: Path) -> N
     tracker row to Applied on a real submission.
     """
     from job_hunt.repositories.tracker_repo import TrackerRepository
+    from job_hunt.services.employer_match import EmployerMatcher
 
     apps = tmp_path / "applications.md"
     _write_apps(apps, [
@@ -411,7 +412,7 @@ def test_find_match_rejects_generic_token_company_collision(tmp_path: Path) -> N
         "| 3.6/5 | Evaluated | ✅ | — | note |",
     ])
     tracker = TrackerRepository(apps)
-    entry, score = tracker.find_match(
+    entry, score = EmployerMatcher(tracker.parse()).raw_match(
         company="CoLab Software", role="Forward Deployed Engineer"
     )
     assert entry is None or score < 0.70
@@ -419,6 +420,7 @@ def test_find_match_rejects_generic_token_company_collision(tmp_path: Path) -> N
 
 def test_find_match_still_matches_suffix_variants(tmp_path: Path) -> None:
     from job_hunt.repositories.tracker_repo import TrackerRepository
+    from job_hunt.services.employer_match import EmployerMatcher
 
     apps = tmp_path / "applications.md"
     _write_apps(apps, [
@@ -426,6 +428,6 @@ def test_find_match_still_matches_suffix_variants(tmp_path: Path) -> None:
         "| 3.3/5 | Evaluated | ✅ | — | note |",
     ])
     tracker = TrackerRepository(apps)
-    entry, score = tracker.find_match(company="Mariner", role="AI Engineer - Healthcare")
+    entry, score = EmployerMatcher(tracker.parse()).raw_match(company="Mariner", role="AI Engineer - Healthcare")
     assert entry is not None
     assert score >= 0.70

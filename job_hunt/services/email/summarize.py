@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from job_hunt.config.models import Settings
-from job_hunt.nodes._prompts import render
+from job_hunt.services.prompts import render
 from job_hunt.services.email.gmail_client import GmailClient
 from job_hunt.services.email.message_parser import clean_email_text
 from job_hunt.services.llm.base import ChatMessage

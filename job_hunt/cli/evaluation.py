@@ -10,7 +10,7 @@ import typer
 from rich.table import Table
 from job_hunt.config.models import Settings, load_settings
 from job_hunt.graphs.evaluate_job import build_evaluate_job_graph
-from job_hunt.nodes._llm import LLM_FAILURE_MARKER
+from job_hunt.services.llm.call import LLM_FAILURE_MARKER
 from job_hunt.services.batch import run_batch
 from job_hunt.services.llm.local_command import wants_json as provider_wants_json
 from job_hunt.services.usage_ledger import (
@@ -21,9 +21,12 @@ from job_hunt.services.usage_ledger import (
 )
 from job_hunt.repositories.tracker_repo import TrackerRepository
 from job_hunt.services import cv_sync_check
+from job_hunt.services.employer_match import EmployerMatcher
 
 from ._render import _short, console
-from ._shared import _apply_profile_values, _extract_loop_url_metadata, _resolve_source_type
+from job_hunt.services.profile_loader import _apply_profile_values
+from job_hunt.services.web_extract import _extract_loop_url_metadata
+from job_hunt.services.source_type import _resolve_source_type
 from . import app
 
 
@@ -170,6 +173,7 @@ def evaluate_batch(
         concurrency=concurrency,
         max_cost=max_cost,
         generate_cover_letter=generate_cover_letter_flag,
+        graph_builder=build_evaluate_job_graph,
     )
     rows = outcome.jobs
 
@@ -315,7 +319,7 @@ def _partition_already_evaluated(targets: list[str]) -> tuple[list[str], list[tu
             company = (metadata.get("company") or "").strip()
             role = _strip_aggregator_suffix(metadata.get("title") or "")
             if company and role:
-                entry, score = tracker.find_match(company=company, role=role)
+                entry, score = EmployerMatcher(tracker.parse()).raw_match(company=company, role=role)
                 if score < 0.85:
                     entry = None
         except Exception:

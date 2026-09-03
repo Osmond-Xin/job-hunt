@@ -17,6 +17,7 @@ from job_hunt.models.events import ApplicationEvent
 from job_hunt.repositories.tracker_repo import TrackerRepository
 from job_hunt.repositories.email_event_repo import EmailEventRepository
 from job_hunt.services.activity import ActivityEvent, ActivityLogger, read_activity
+from job_hunt.services.employer_match import EmployerMatcher
 from job_hunt.services.profile_loader import (
     workday_education_entries as _load_workday_education_entries,
     workday_experience_entries as _load_workday_experience_entries,
@@ -43,7 +44,9 @@ from job_hunt.services.workday.review_gate import (
 )
 
 from ._render import _short, console
-from ._shared import _apply_profile_values, _extract_loop_url_metadata, _resolve_source_type
+from job_hunt.services.profile_loader import _apply_profile_values
+from job_hunt.services.web_extract import _extract_loop_url_metadata
+from job_hunt.services.source_type import _resolve_source_type
 from .outreach import _gate_outward_artifact
 from . import app
 
@@ -767,7 +770,7 @@ def _infer_loop_target(*, url: str, description: str) -> dict:
     entry = None
     score = 0.0
     if company:
-        entry, score = tracker.find_match(company=company, role=role)
+        entry, score = EmployerMatcher(tracker.parse()).raw_match(company=company, role=role)
     if (not entry or score < 0.70) and inferred_text:
         entry, score = _best_tracker_text_match(tracker.parse(), inferred_text)
     if entry and score >= 0.55:
@@ -4775,7 +4778,7 @@ def _load_apply_report_context(
     entry = tracker_entry
     score = 1.0 if entry else 0.0
     if entry is None:
-        entry, score = tracker.find_match(company=company, role=role)
+        entry, score = EmployerMatcher(tracker.parse()).raw_match(company=company, role=role)
     if not entry or score < 0.70:
         return None
 

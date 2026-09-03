@@ -354,7 +354,7 @@ def _run_one_shot_prompt(
     **template_kwargs,
 ) -> str:
     """Render `template` and call the cheap LLM tier. Returns the response text."""
-    from job_hunt.nodes._prompts import render
+    from job_hunt.services.prompts import render
 
     prompt = render(template, **template_kwargs)
     settings = load_settings()

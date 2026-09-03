@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import re
 from html import unescape
 from pathlib import Path
@@ -495,3 +496,18 @@ def clean_web_text(value: str) -> str:
     text = re.sub(r"\n[ \t]+", "\n", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
+
+
+def _extract_loop_url_metadata(url: str) -> dict[str, str]:
+    try:
+        result = asyncio.run(extract_url_text(url, min_chars=50))
+    except Exception:
+        return {}
+    return {
+        "title": result.title.strip(),
+        "company": result.company.strip(),
+        "location": result.location.strip(),
+        "ats": result.ats.strip(),
+        "adapter": result.adapter,
+        "text": result.text.strip(),
+    }

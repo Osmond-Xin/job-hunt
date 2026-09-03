@@ -5,7 +5,8 @@ from collections import Counter
 from pathlib import Path
 
 from filelock import FileLock, Timeout
-from pydantic import BaseModel
+
+from job_hunt.models.tracker import TrackerEntry
 
 _LOCK_TIMEOUT = 30
 
@@ -15,18 +16,6 @@ TRACKER_HEADER = """# Applications Tracker
 | # | Date | Company | Role | Score | Status | PDF | Report | Notes |
 |---|------|---------|------|-------|--------|-----|--------|-------|
 """
-
-
-class TrackerEntry(BaseModel):
-    number: int
-    date: str
-    company: str
-    role: str
-    score: str
-    status: str
-    pdf: str
-    report: str
-    notes: str = ""
 
 
 class TrackerRepository:
@@ -142,23 +131,6 @@ class TrackerRepository:
             raise RuntimeError(f"Could not acquire tracker lock within {_LOCK_TIMEOUT}s") from None
         return replaced
 
-    def find_match(self, *, company: str | None, role: str | None) -> tuple[TrackerEntry | None, float]:
-        """Best (entry, score) by company/role similarity, no threshold applied.
-
-        Thin wrapper around ``EmployerMatcher.raw_match`` — the scoring
-        algorithm (weights, distinctive-token gate) lives there now, since it
-        is the shared core for both the strict `mutate` gate and the loose
-        `report` gate used across the tracker-matching call sites. Deferred
-        import to avoid a circular import (employer_match imports TrackerEntry
-        and normalize from this module).
-        """
-        from job_hunt.services.employer_match import EmployerMatcher
-
-        if not company:
-            return None, 0.0
-        matcher = EmployerMatcher(self.parse())
-        return matcher.raw_match(company=company, role=role)
-
 
 _SEPARATOR_ROW = re.compile(r"^\|[\s:|-]+\|?$")
 
@@ -194,10 +166,6 @@ def parse_tracker_line(line: str) -> TrackerEntry | None:
         report=parts[7],
         notes=parts[8] if len(parts) > 8 else "",
     )
-
-
-def normalize(value: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "", value.lower())
 
 
 def _cell(value: object) -> str:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from job_hunt.nodes._prompts import render
+from job_hunt.services.prompts import render
 from job_hunt.nodes.apply_screen_assist import load_form_text
 
 

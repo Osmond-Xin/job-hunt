@@ -40,7 +40,7 @@ from typing import AbstractSet, Literal, Mapping, Sequence
 
 from rapidfuzz import fuzz
 
-from job_hunt.repositories.tracker_repo import TrackerEntry, normalize
+from job_hunt.models.tracker import TrackerEntry, normalize
 
 Basis = Literal["exact", "alias", "company_role", "company_only", "decorated_role", "tokens"]
 
@@ -236,9 +236,11 @@ class EmployerMatcher:
     def raw_match(self, *, company: str | None, role: str | None) -> tuple[TrackerEntry | None, float]:
         """find_match's exact algorithm, no threshold applied.
 
-        This is what ``TrackerRepository.find_match`` delegates to, so every
-        caller that still wants a raw (entry, score) pair keeps working
-        unchanged.
+        ``TrackerRepository.find_match`` used to delegate to this (a
+        repository reaching into the service layer to do it); that method is
+        gone now and every former caller that wants a raw (entry, score) pair
+        constructs ``EmployerMatcher(tracker.parse())`` and calls this
+        directly.
         """
         if not company:
             return None, 0.0
