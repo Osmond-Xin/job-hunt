@@ -36,10 +36,19 @@ def main() -> int:
     ap.add_argument("--model", default=DEFAULT_MODEL)
     ap.add_argument("--max-tokens", type=int, default=DEFAULT_MAX_TOKENS)
     ap.add_argument("--out", type=Path, help="Also write the review to this file")
+    ap.add_argument(
+        "--origin",
+        choices=["hand-written", "pipeline"],
+        default="hand-written",
+        help="How the artifact was produced. Two ground-truth rules (the contact-line "
+        "separator and the BANNED item-6 banner carve-out) apply only to hand-written "
+        "work; pass `pipeline` when reviewing a file out of an evaluate run.",
+    )
     args = ap.parse_args()
 
     jd_text = Path(args.jd).read_text(encoding="utf-8") if args.jd else ""
     result = run_review(
+        origin=args.origin,
         artifacts=[Path(p) for p in args.artifact],
         jd_text=jd_text,
         company=args.company,

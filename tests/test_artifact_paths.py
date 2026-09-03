@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime
+from types import SimpleNamespace
 
 from job_hunt.models.job import JobMeta
 from job_hunt.nodes.artifact_paths import run_output_dir, run_stem
@@ -56,3 +57,43 @@ def test_same_job_twice_in_one_day_does_not_collide() -> None:
     a = _state()
     b = dict(_state(), run_id="ffffffffffffffffffffffffffffffff")
     assert run_stem(a) != run_stem(b)
+
+
+def test_artifacts_are_named_for_the_employer_not_just_cv_pdf():
+    """A file-upload dialog shows the filename, not the directory.
+
+    Every pipeline run wrote a bare `cv.pdf`, so a folder of applications was 69
+    identical entries and the operator could not tell which employer he was
+    attaching (reported 2026-09-01).
+    """
+    from job_hunt.nodes.artifact_paths import artifact_filename
+
+    state = {
+        "profile": SimpleNamespace(full_name="Yi Xin"),
+        "jd_meta": SimpleNamespace(company="CGS Immersive", title="Senior Full-Stack AI Product Engineer"),
+    }
+    assert artifact_filename(state, kind="Resume") == "Yi_Xin_Resume_CGS_Immersive.pdf"
+    assert artifact_filename(state, kind="Cover_Letter") == "Yi_Xin_Cover_Letter_CGS_Immersive.pdf"
+    assert artifact_filename(state, kind="Resume", suffix="") == "Yi_Xin_Resume_CGS_Immersive"
+
+
+def test_a_missing_employer_says_so_rather_than_producing_a_bare_name():
+    from job_hunt.nodes.artifact_paths import artifact_filename
+
+    state = {"profile": SimpleNamespace(full_name="Yi Xin"), "jd_meta": SimpleNamespace(company="", title="")}
+    assert artifact_filename(state, kind="Resume") == "Yi_Xin_Resume_Unknown_Employer.pdf"
+    # No profile and no metadata at all still yields a usable, non-empty name.
+    assert artifact_filename({}, kind="Resume") == "Candidate_Resume_Unknown_Employer.pdf"
+
+
+def test_punctuation_in_an_employer_name_cannot_break_the_filename():
+    from job_hunt.nodes.artifact_paths import artifact_filename
+
+    state = {
+        "profile": SimpleNamespace(full_name="Yi Xin"),
+        "jd_meta": SimpleNamespace(company="Connor, Clark & Lunn Financial Group / Inc.", title="x"),
+    }
+    name = artifact_filename(state, kind="Resume")
+    assert name == "Yi_Xin_Resume_Connor_Clark_Lunn_Financial_Group_Inc.pdf"
+    for bad in "/\\:*?\"<>|,&.":
+        assert bad not in name.replace(".pdf", "")

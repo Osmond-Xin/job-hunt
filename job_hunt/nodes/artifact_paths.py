@@ -37,5 +37,33 @@ def run_stem(state: JobHuntState) -> str:
     return f"{date}-{company}-{role}-{run_id[:8]}"
 
 
+def _name_part(text: str, *, limit: int = 40) -> str:
+    """`CGS Immersive, Inc.` -> `CGS_Immersive_Inc`. ASCII, underscores, no run-ons."""
+    cleaned = re.sub(r"[^A-Za-z0-9]+", " ", text or "").strip()
+    return "_".join(cleaned.split())[:limit].strip("_")
+
+
+def artifact_filename(state: JobHuntState, *, kind: str, suffix: str = ".pdf") -> str:
+    """`Yi_Xin_Resume_CGS_Immersive.pdf` — readable in an upload dialog.
+
+    Every pipeline run wrote a bare ``cv.pdf`` / ``cover-letter.pdf`` into its
+    own directory. The directory names the employer, but a file-upload dialog
+    shows the filename alone, so attaching the right résumé meant remembering
+    which of 69 identical ``cv.pdf`` entries was which. Only hand-rendered
+    artifacts (``scripts/render_cv.py --pdf-name``) ever carried the employer,
+    which is why the gap surfaced gradually: the pipeline's share of output grew
+    until almost nothing was named.
+
+    The employer, not the role, is the distinguishing part — roles arrive from
+    aggregators mangled (one 2026-09-01 posting's "title" was the JD's opening
+    sentence) and would make the name worse, not better.
+    """
+    profile = state.get("profile")
+    jd_meta = state.get("jd_meta")
+    candidate = _name_part(getattr(profile, "full_name", "") or "", limit=30) or "Candidate"
+    company = _name_part(getattr(jd_meta, "company", "") or "") or "Unknown_Employer"
+    return f"{candidate}_{kind}_{company}{suffix}"
+
+
 def run_output_dir(state: JobHuntState) -> Path:
     return _OUTPUT_DIR / run_stem(state)

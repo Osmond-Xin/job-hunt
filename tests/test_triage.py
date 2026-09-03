@@ -1,8 +1,9 @@
 """Pipeline triage: turning an unreadable inbox into a day's shortlist.
 
 The ordering encodes standing decisions, so these tests are mostly about those
-decisions holding — immigration value outranking role fit, Toronto ranked last
-rather than dropped, and already-applied work never resurfacing.
+decisions holding — role fit outranking immigration value, region breaking ties
+rather than deciding them, Toronto ranked last rather than dropped, and
+already-applied work never resurfacing.
 """
 
 from __future__ import annotations
@@ -10,6 +11,7 @@ from __future__ import annotations
 from datetime import date
 
 from job_hunt.services.triage import (
+    PipelineRow,
     already_applied,
     excluded,
     parse_pipeline,
@@ -64,14 +66,40 @@ def test_a_url_already_settled_does_not_come_back_under_a_new_company_name():
     assert "https://example.invalid/6" not in {row.url for row in parse_pipeline(text)}
 
 
-def test_immigration_value_outranks_a_better_role_match():
+def test_region_breaks_ties_but_does_not_outrank_role_fit():
+    """Reversed 2026-08-31 on the operator's ruling.
+
+    This test used to assert the opposite: a Manitoba public-sector row beat a
+    Toronto "Senior AI Engineer". Under those weights a Brandon equipment
+    operator scored 7.5 against 4.0 for Mistral's Applied AI forward-deployed
+    role, 130 of the top 300 rows were government postings, and three weeks of
+    matching work was never seen. Region is now the tie-break, not the score.
+    """
     rows = parse_pipeline(PIPELINE)
     manitoba = next(r for r in rows if r.company == "Government of Manitoba")
     toronto = next(r for r in rows if r.company == "BigCo")
     today = date(2026, 8, 12)
-    # Toronto's row is the stronger title ("Senior AI Engineer"); the Manitoba
-    # public-sector row still wins, which is the whole point of the ordering.
-    assert score(manitoba, today=today)[0] > score(toronto, today=today)[0]
+    # The Manitoba row is a Data Engineer — on-target AND in a nomination
+    # region, so it may still lead. What must not survive is the SIZE of the
+    # lead: region used to buy 3.5 points over a strong AI title, enough to bury
+    # matching work under hundreds of government postings. Within one point, the
+    # two compete on their merits and both reach the operator.
+    gap = score(manitoba, today=today)[0] - score(toronto, today=today)[0]
+    assert gap <= 1.0, f"region still dominates role fit by {gap}"
+
+
+def test_a_role_matching_no_target_vocabulary_sinks_below_a_matching_one():
+    """An equipment operator in a PNP province must not outrank an AI role."""
+    operator = PipelineRow(
+        url="https://example.invalid/op", company="Government of Manitoba",
+        role="Equipment Operator", location="Brandon MB",
+        posted="2026-08-11", source="mb_gov",
+    )
+    toronto = next(r for r in parse_pipeline(PIPELINE) if r.company == "BigCo")
+    today = date(2026, 8, 12)
+    points, reasons = score(operator, today=today)
+    assert "off-target role" in reasons
+    assert points < score(toronto, today=today)[0]
 
 
 def test_toronto_is_ranked_last_not_excluded():

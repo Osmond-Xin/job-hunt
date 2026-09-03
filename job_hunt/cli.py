@@ -469,6 +469,10 @@ def search_jobs(
         limit_companies=limit_companies,
         include_non_canada=include_non_canada,
         apply=save,
+        # `scan` is a Typer command, so an omitted argument keeps its OptionInfo
+        # default rather than None, and tier-3 discovery then compares a channel
+        # id against it. Every `search` run died there.
+        channel=None,
     )
     console.print("\nNext: .venv/bin/job-hunt shortlist")
 

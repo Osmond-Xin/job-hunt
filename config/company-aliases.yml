@@ -20,3 +20,8 @@ aliases:
   # Public-sector employers whose mail is signed by the territory or ministry
   # rather than by the authority that posted the competition
   Government of the Northwest Territories: NWT Health and Social Services Authority
+  # Manitoba's SuccessFactors mail signs itself "Manitoba Government"; the
+  # tracker names the department too ("Government of Manitoba — Health, Seniors
+  # and Long Term Care"), and fuzzy matching alone scored under the threshold,
+  # so rows #725 and #728 were reported missing on 2026-09-01.
+  Manitoba Government: Government of Manitoba

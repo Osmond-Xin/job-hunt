@@ -22,6 +22,7 @@ from job_hunt.services.immigration import place_tokens as immigration_place_toke
 from job_hunt.services.jobbank import scan_jobbank
 from job_hunt.services.workday_boards import scan_workday
 from job_hunt.services.profile_loader import current_mode, discovery_context
+from job_hunt.services.web_extract import _bamboohr_slug
 
 
 class ScannedJob(BaseModel):
@@ -728,7 +729,13 @@ def _supports_direct_fetch(company: dict[str, Any]) -> bool:
         return True
     url = company.get("careers_url", "")
     host = urlparse(url).netloc
-    return host in {"jobs.lever.co", "jobs.ashbyhq.com", "job-boards.greenhouse.io", "boards.greenhouse.io"}
+    if host in {"jobs.lever.co", "jobs.ashbyhq.com", "job-boards.greenhouse.io", "boards.greenhouse.io"}:
+        return True
+    # BambooHR gives every employer its own subdomain, so this one is a suffix
+    # test rather than a fixed host. Added 2026-09-01: Vendasta and Hiveway —
+    # the only two employers that have produced a real human interview — both
+    # post here, and neither was reachable by any tier of the scan.
+    return _bamboohr_slug(host) != ""
 
 
 def _fetch_company_jobs(company: dict[str, Any]) -> list[ScannedJob]:
@@ -746,6 +753,8 @@ def _fetch_company_jobs(company: dict[str, Any]) -> list[ScannedJob]:
         return _parse_lever(raw, company)
     if "ashbyhq.com" in host:
         return _parse_ashby(raw, company)
+    if _bamboohr_slug(host):
+        return _parse_bamboohr(raw, company, host)
     return []
 
 
@@ -758,6 +767,10 @@ def _infer_api_url(careers_url: str) -> str:
         return f"https://api.lever.co/v0/postings/{slug}?mode=json"
     if parsed.netloc == "jobs.ashbyhq.com" and slug:
         return f"https://api.ashbyhq.com/posting-api/job-board/{slug}"
+    if _bamboohr_slug(parsed.netloc):
+        # The board and its JSON live on the same host: /careers is the page a
+        # human reads, /careers/list is the feed behind it.
+        return f"https://{parsed.netloc}/careers/list"
     return ""
 
 
@@ -812,6 +825,45 @@ def _parse_ashby(raw: dict[str, Any], company: dict[str, Any]) -> list[ScannedJo
             )
         )
     return [job for job in parsed if job.url and job.title]
+
+
+def _parse_bamboohr(raw: dict[str, Any], company: dict[str, Any], host: str) -> list[ScannedJob]:
+    """Parse `https://<slug>.bamboohr.com/careers/list`.
+
+    The feed carries no posting URL — only an id — so the link is rebuilt as
+    `/careers/<id>`, which is the page a human applies through (verified
+    against the two applications already on file: vendasta 811, hiveway 32).
+
+    Location arrives as `{city, state}` with the province spelled out
+    ("Saskatoon, Saskatchewan"), which is the form `_passes_canada_filter`
+    already understands — so the Chennai and Boca Raton rows on Vendasta's own
+    board are dropped downstream without special handling here.
+    """
+    parsed: list[ScannedJob] = []
+    for item in raw.get("result") or []:
+        job_id = str(item.get("id") or "").strip()
+        title = (item.get("jobOpeningName") or "").strip()
+        if not job_id or not title:
+            continue
+        location = item.get("location")
+        if not isinstance(location, dict):
+            location = {}
+        # `atsLocation` is the newer field and is all-null on every board
+        # measured so far; read it only when `location` has nothing.
+        ats = item.get("atsLocation") if isinstance(item.get("atsLocation"), dict) else {}
+        city = location.get("city") or ats.get("city") or ""
+        region = location.get("state") or ats.get("province") or ats.get("state") or ""
+        parsed.append(
+            ScannedJob(
+                url=f"https://{host}/careers/{job_id}",
+                title=title,
+                company=company.get("name") or "",
+                location=", ".join(part for part in (city, region) if part),
+                portal="bamboohr",
+                source=company.get("name") or "",
+            )
+        )
+    return parsed
 
 
 # Student-mode augmentation appended to every `scan_query` when the active

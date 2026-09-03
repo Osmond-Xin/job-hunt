@@ -152,6 +152,33 @@ async def _try_ats_api(url: str) -> WebExtractResult | None:
                         ats="ashby",
                     )
 
+    bamboo = _bamboohr_detail_api_url(url)
+    if bamboo:
+        async with _client() as client:
+            response = await client.get(bamboo)
+            if response.status_code < 400:
+                job = ((response.json() or {}).get("result") or {}).get("jobOpening") or {}
+                location = job.get("location")
+                if not isinstance(location, dict):
+                    location = {}
+                where = ", ".join(
+                    part for part in (location.get("city"), location.get("state")) if part
+                )
+                if job.get("jobOpeningName"):
+                    return WebExtractResult(
+                        url=url,
+                        text=clean_web_text(
+                            "\n\n".join(
+                                [job.get("jobOpeningName") or "", where, job.get("description") or ""]
+                            )
+                        ),
+                        adapter="ats_api",
+                        title=job.get("jobOpeningName") or "",
+                        company=_bamboohr_company(url),
+                        location=where,
+                        ats="bamboohr",
+                    )
+
     return None
 
 
@@ -395,6 +422,43 @@ def _ashby_board_api_url(url: str) -> str:
     if len(parts) >= 2:
         return f"https://api.ashbyhq.com/posting-api/job-board/{parts[0]}"
     return ""
+
+
+def _bamboohr_slug(host: str) -> str:
+    """The employer subdomain of a BambooHR board, or "" for any other host.
+
+    `vendasta.bamboohr.com` -> `vendasta`. The bare apex and `www` are the
+    product's own marketing site, not an employer board. Lives here rather than
+    in the scanner because extraction is the lower-level module of the two.
+    """
+    host = (host or "").lower()
+    if not host.endswith(".bamboohr.com"):
+        return ""
+    slug = host[: -len(".bamboohr.com")]
+    return "" if slug in {"", "www"} else slug
+
+
+def _bamboohr_detail_api_url(url: str) -> str:
+    """`…/careers/829` -> `…/careers/829/detail`.
+
+    The human page is a JavaScript shell — its <title> is the literal string
+    "BambooHR" and its body carries no posting text — so without this the JD
+    reaches the scorer empty and the job comes back 0.0/SKIP, indistinguishable
+    from a genuinely bad posting. The detail feed is the same JSON the page
+    fetches for itself.
+    """
+    parsed = urlparse(url)
+    if not _bamboohr_slug(parsed.netloc):
+        return ""
+    parts = [part for part in parsed.path.split("/") if part]
+    if len(parts) >= 2 and parts[0] == "careers" and parts[1].isdigit():
+        return f"https://{parsed.netloc}/careers/{parts[1]}/detail"
+    return ""
+
+
+def _bamboohr_company(url: str) -> str:
+    slug = _bamboohr_slug(urlparse(url).netloc)
+    return re.sub(r"[-_]+", " ", slug).title() if slug else ""
 
 
 def _find_ashby_job(raw: dict, url: str) -> dict | None:

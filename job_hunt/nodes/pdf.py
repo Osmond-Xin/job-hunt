@@ -11,7 +11,7 @@ from job_hunt.models.state import JobHuntState
 from job_hunt.nodes._cv_fit import next_trim, pdf_page_count
 from job_hunt.nodes._prompts import render
 from job_hunt.nodes._quality import generate_with_audit
-from job_hunt.nodes.artifact_paths import run_output_dir
+from job_hunt.nodes.artifact_paths import artifact_filename, run_output_dir
 
 _TEMPLATES_DIR = Path("templates")
 _FONTS_DIR = (_TEMPLATES_DIR / "fonts").resolve()
@@ -19,6 +19,30 @@ _FONTS_DIR = (_TEMPLATES_DIR / "fonts").resolve()
 # A résumé that runs past two pages reads as unedited, whatever is on page three.
 MAX_CV_PAGES = 2
 MAX_TRIM_ATTEMPTS = 30
+
+# Ad copy wears first and second person; a job title never does.
+_AD_COPY_RE = re.compile(r"\b(we|our|ours|you|your|yours)\b", re.IGNORECASE)
+
+
+def banner_role(title: str) -> str:
+    """The posting title for the target banner, or "" when it is not a title.
+
+    `redteam-facts.md` rule 6 permits this banner *because* it names the one
+    role being applied for. An aggregator that mis-parses a posting breaks that
+    premise: on 2026-09-01 an Adzuna row arrived titled "We're looking for a
+    highly engaged, self-directed developer who can turn product ideas, PRDs,
+    and UX mockups into exceptional working software", and the résumé went out
+    with the employer's own advertising sentence under the contact block. The
+    red team read it as the candidate not bothering to rephrase the posting.
+
+    Dropping the role leaves the employer name standing alone, which is still a
+    true and useful banner. Nothing else downstream is touched — the tracker,
+    the report and the run directory keep whatever the extractor produced.
+    """
+    title = (title or "").strip()
+    if len(title) > 120 or _AD_COPY_RE.search(title):
+        return ""
+    return title
 
 
 async def tailor_cv(state: JobHuntState, config: RunnableConfig) -> dict:
@@ -242,7 +266,7 @@ async def generate_cv_html_pdf(state: JobHuntState, config: RunnableConfig) -> d
                     cv_markdown_to_html(cv_md, strip_contact_block=not cv_tailored)
                 ),
                 company=jd_meta.company if jd_meta else "",
-                role=jd_meta.title if jd_meta else "",
+                role=banner_role(jd_meta.title) if jd_meta else "",
                 summary_angle=pdf_content.summary_angle if pdf_content else "",
                 top_bullets=pdf_content.top_bullets if pdf_content else [],
                 keywords=pdf_content.keywords if pdf_content else [],
@@ -251,8 +275,9 @@ async def generate_cv_html_pdf(state: JobHuntState, config: RunnableConfig) -> d
                 paper_size=paper_size,
             )
 
-        html_path = out_dir / "cv.html"
-        pdf_path = out_dir / "cv.pdf"
+        stem = artifact_filename(state, kind="Resume", suffix="")
+        html_path = out_dir / f"{stem}.html"
+        pdf_path = out_dir / f"{stem}.pdf"
 
         # Render, measure, trim, repeat. The tailoring node prunes for relevance and
         # has no notion of page count, so without this every generated CV ran to

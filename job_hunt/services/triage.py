@@ -196,20 +196,27 @@ def score(row: PipelineRow, *, today: date | None = None) -> tuple[float, list[s
     points = 0.0
     reasons: list[str] = []
 
-    # 1. Immigration value dominates: a nomination-qualifying region is worth
-    #    more than a better-matched posting in a city with no path.
+    # 1. Immigration value is real but must not stand in for role fit. Until
+    #    2026-08-31 a nomination-qualifying region was worth +4 while the three
+    #    metros that hold essentially every Canadian AI job scored 0 — less than
+    #    an unrecognised location — so a Brandon equipment operator (7.5)
+    #    outranked Mistral's Applied AI forward-deployed role in Montréal (4.0),
+    #    and 130 of the top 300 rows were government postings. The operator's
+    #    ruling: region belongs in the ORDERING, not in the score. The spread is
+    #    now 1.0 instead of 4.0, and ties break toward the region below.
     if TIER_A_RE.search(row.location):
-        points += 4
+        points += 1.5
         reasons.append("PNP/AIP region")
     elif TIER_C_RE.search(row.location):
+        points += 0.5
         reasons.append("major metro")
     else:
-        points += 1.5
+        points += 1.0
     if GOVERNMENT_RE.search(row.company):
-        points += 2
+        points += 1
         reasons.append("public sector")
 
-    # 2. Role shape.
+    # 2. Role shape, which now outweighs every location term combined.
     if AI_ROLE_RE.search(row.role):
         points += 3
         reasons.append("applied AI")
@@ -218,6 +225,12 @@ def score(row: PipelineRow, *, today: date | None = None) -> tuple[float, list[s
         reasons.append("one-person scope")
     if not AI_ROLE_RE.search(row.role) and ADJACENT_ROLE_RE.search(row.role):
         points += 1
+    # A row matching none of the three vocabularies is not a near miss — it is
+    # an equipment operator, a collections officer, a language coordinator. The
+    # region and public-sector points alone used to float those to the top.
+    if not (AI_ROLE_RE.search(row.role) or SOLO_ROLE_RE.search(row.role) or ADJACENT_ROLE_RE.search(row.role)):
+        points -= 2
+        reasons.append("off-target role")
 
     # 3. Freshness. A month-old posting on a board that reposts weekly is
     #    usually already filled.
@@ -317,5 +330,15 @@ def rank(
         pairs.add(pair)
         points, reasons = score(row, today=today)
         ranked.append(Ranked(row=row, score=points, reasons=tuple(reasons)))
-    ranked.sort(key=lambda item: (-item.score, item.row.posted or "", item.row.company))
+    # Region is the tie-break, not the score: among equally well-matched roles a
+    # nomination-qualifying province comes first, but it can no longer lift an
+    # off-target posting above a matching one.
+    ranked.sort(
+        key=lambda item: (
+            -item.score,
+            0 if TIER_A_RE.search(item.row.location) else (1 if not TIER_C_RE.search(item.row.location) else 2),
+            item.row.posted or "",
+            item.row.company,
+        )
+    )
     return ranked[:limit]

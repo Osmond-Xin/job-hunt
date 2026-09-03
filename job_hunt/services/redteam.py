@@ -100,6 +100,26 @@ def artifact_text(path: Path) -> str:
     return f"[{path.name} — {pages if pages is not None else 'unknown'} page(s)]\n\n{out.stdout}"
 
 
+# Two ground-truth rules turn on how the artifact was produced: the contact-line
+# separator (` / ` hand-written, `|` from the templates) and BANNED item 6, which
+# exempts the pipeline's own target banner. The reviewer was never told which it
+# was holding, defaulted to "hand-written", and on 2026-09-01 returned five false
+# BLOCKs in one day on those two rules alone — enough that every verdict needed
+# hand-adjudication before it meant anything.
+ORIGINS = {
+    "pipeline": (
+        "This artifact was rendered by the pipeline's own CV/cover-letter template "
+        "(`templates/cv.html.j2`). The template's house style and its target banner "
+        "are therefore NOT defects — see the ground truth's formatting invariants and "
+        "the carve-out in BANNED item 6. Do not report them."
+    ),
+    "hand-written": (
+        "This artifact was written and rendered by hand, so the hand-written "
+        "formatting invariants in the ground truth apply in full."
+    ),
+}
+
+
 def build_prompt(
     *,
     artifacts: list[Path],
@@ -107,6 +127,7 @@ def build_prompt(
     company: str,
     role: str,
     facts_path: Path = FACTS_PATH,
+    origin: str = "hand-written",
 ) -> str:
     facts = (
         facts_path.read_text(encoding="utf-8")
@@ -115,7 +136,10 @@ def build_prompt(
     )
     bodies = "\n\n".join(artifact_text(p) for p in artifacts)
     target = f"{role or '(role unstated)'} at {company or '(company unstated)'}"
+    provenance = ORIGINS.get(origin, ORIGINS["hand-written"])
     return f"""TARGET ROLE: {target}
+
+ARTIFACT ORIGIN: {provenance}
 
 <<<GROUND_TRUTH_BEGIN>>>
 {facts}
@@ -155,6 +179,7 @@ def run_review(
     model: str = DEFAULT_MODEL,
     max_tokens: int = DEFAULT_MAX_TOKENS,
     timeout: int = 600,
+    origin: str = "hand-written",
 ) -> RedTeamResult:
     if not artifacts:
         return RedTeamResult("UNREVIEWED", "", ["red team skipped: no artifacts"])
@@ -163,7 +188,7 @@ def run_review(
 
     try:
         prompt = build_prompt(
-            artifacts=artifacts, jd_text=jd_text, company=company, role=role
+            artifacts=artifacts, jd_text=jd_text, company=company, role=role, origin=origin
         )
     except Exception as exc:  # unreadable artifact
         return RedTeamResult("UNREVIEWED", "", [f"red team could not read artifact: {exc}"])

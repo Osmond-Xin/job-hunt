@@ -112,29 +112,43 @@ def _company_only_match(tracker: TrackerRepository, company: str) -> TrackerEntr
     employer; the legal-suffix noise is exactly what the distinctive-token
     reduction strips. The bar is high because there is no role to confirm with.
     """
-    wanted = normalize(company)
     wanted_tokens = _distinctive_tokens(company)
     for entry in tracker.parse():
-        if normalize(entry.company) == wanted:
+        if _same_employer(entry.company, company):
             return entry
-        entry_tokens = _distinctive_tokens(entry.company)
-        if not wanted_tokens or not entry_tokens:
+        if not wanted_tokens or not _distinctive_tokens(entry.company):
             continue
-        if wanted_tokens <= entry_tokens or entry_tokens <= wanted_tokens:
-            return entry
         score = fuzz.ratio(_distinctive_company_name(entry.company), "".join(sorted(wanted_tokens))) / 100
         if score >= _COMPANY_ONLY_THRESHOLD:
             return entry
     return None
 
 
+def _same_employer(entry_company: str, wanted_company: str) -> bool:
+    """Same employer, allowing one side to name a department or legal suffix.
+
+    The tracker records the department the competition was posted by
+    ("Government of Manitoba — Health, Seniors and Long Term Care"); the
+    SuccessFactors receipt names only the government. Requiring exact equality
+    reported rows #725 and #728 as missing applications on 2026-09-01 — the
+    shape of false positive that makes the whole check unusable, since six of
+    the twelve gaps that day were name mismatches for work already recorded.
+    """
+    if normalize(entry_company) == normalize(wanted_company):
+        return True
+    wanted_tokens = _distinctive_tokens(wanted_company)
+    entry_tokens = _distinctive_tokens(entry_company)
+    if not wanted_tokens or not entry_tokens:
+        return False
+    return wanted_tokens <= entry_tokens or entry_tokens <= wanted_tokens
+
+
 def _decorated_role_match(
     tracker: TrackerRepository, company: str, role: str
 ) -> TrackerEntry | None:
-    wanted_company = normalize(company)
     wanted_role = normalize(role)
     for entry in tracker.parse():
-        if normalize(entry.company) != wanted_company:
+        if not _same_employer(entry.company, company):
             continue
         entry_role = normalize(entry.role)
         if not entry_role:

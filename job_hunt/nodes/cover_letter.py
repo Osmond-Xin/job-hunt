@@ -11,7 +11,7 @@ from langchain_core.runnables import RunnableConfig
 from job_hunt.models.state import JobHuntState
 from job_hunt.nodes._prompts import render
 from job_hunt.nodes._quality import generate_with_audit
-from job_hunt.nodes.artifact_paths import run_output_dir
+from job_hunt.nodes.artifact_paths import artifact_filename, run_output_dir
 from job_hunt.nodes.pdf import artifact_template_env, detect_paper_size
 
 _TEMPLATES_DIR = Path("templates")
@@ -115,10 +115,11 @@ async def generate_cover_letter(state: JobHuntState, config: RunnableConfig) -> 
             paper_size=paper_size,
         )
 
-        html_path = out_dir / "cover-letter.html"
+        stem = artifact_filename(state, kind="Cover_Letter", suffix="")
+        html_path = out_dir / f"{stem}.html"
         html_path.write_text(html, encoding="utf-8")
 
-        pdf_path = out_dir / "cover-letter.pdf"
+        pdf_path = out_dir / f"{stem}.pdf"
         await _html_to_pdf(str(html_path), str(pdf_path), paper_size=paper_size)
 
         return {

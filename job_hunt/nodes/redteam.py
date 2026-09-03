@@ -35,6 +35,8 @@ async def redteam_review(state: JobHuntState, config: RunnableConfig) -> dict:
         jd_text=state.get("jd_text", ""),
         company=(jd_meta.company if jd_meta else "") or "",
         role=(jd_meta.title if jd_meta else "") or "",
+        # Everything this node reviews came out of templates/cv.html.j2.
+        origin="pipeline",
     )
 
     warnings: list[str] = []
