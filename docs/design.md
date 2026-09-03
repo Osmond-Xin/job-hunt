@@ -89,16 +89,19 @@ Core local state:
 
 ## Discovery
 
-`job-hunt scan` discovers jobs from configured ATS APIs and optional Brave
-WebSearch. Scans branch on the operator mode at runtime.
+`job-hunt scan` runs a seven-tier scan (`job_hunt/services/scan.py::scan_portals`).
+Tiers 1–3 are per-company or WebSearch-driven and are configured in
+`config/portals.yml`. Tiers 4–7 are quota-free direct board adapters — no
+WebSearch provider, no search quota, structured fields straight from each
+source. Scans branch on the operator mode at runtime.
 
-Direct ATS support:
+**Tier 1 — direct ATS fetch:**
 
 - Greenhouse
 - Lever
 - Ashby
 
-WebSearch support (Brave):
+**Tier 2 — per-company WebSearch** (Brave):
 
 - Enable with `web_search.provider: brave` in `config/settings.yml`.
 - Set the API key env var configured by `web_search.api_key_env`
@@ -119,7 +122,7 @@ Mode-aware filtering:
   default; covers ATS boards that mix intern + FT). Explicit tags restrict
   the company to a specific mode.
 
-### Tier-3 Cross-Employer Discovery Channels
+### Tier 3 — Cross-Employer Discovery Channels
 
 `config/portals.yml::discovery_channels` declares cross-employer search
 channels — LinkedIn / Indeed / Glassdoor / YC Work-at-a-Startup /
@@ -138,6 +141,82 @@ Each channel carries:
 Channels run only when a WebSearch provider is configured. Results flow
 through the same title / location / dedup pipeline as tier-1 and tier-2.
 Restrict a single run to one channel via `job-hunt scan --channel <id>`.
+
+### Tiers 4–7 — Quota-Free Direct Boards
+
+These run whenever `--company` is not set, independent of whether a
+WebSearch provider is configured or tier 3 is enabled. Because each source
+already establishes an occupation (a NOC code, a curated employer list, a
+category facet), rows from these tiers skip the positive title filter —
+`require_positive=False` in `_accept_jobs` — and rely on the negative list
+alone; requiring a positive match on top of an already-scoped source was
+measured to discard roughly half of Job Bank's results to title-naming
+variance. Every tier here reports per-source `stats` (collected / errors /
+truncated) so a quiet failure reads as a failure, not as "no postings this
+week".
+
+- **Tier 4 — Job Bank direct** (`job_hunt/services/jobbank.py`, config:
+  `portals.yml::jobbank_direct`). Queries `jobbank.gc.ca`'s own search by
+  NOC 2021 code (the working filter — `term=` and `searchstring=` are
+  accepted and silently dropped) crossed with province. Configured as 9 NOC
+  codes × 13 provinces = 117 requests/run. Replaced a Brave
+  `site:jobbank.gc.ca` channel that spent 78 queries to return 6 real rows
+  out of 294 hits (most were market-report pages, not postings).
+
+- **Tier 5 — public-sector boards** (`job_hunt/services/gov_boards.py`,
+  config: `portals.yml::gov_boards`). Five tenants, each with its own
+  parser: GNWT (Drupal Views), the Nova Scotia public service / Nova Scotia
+  Health / Winnipeg Regional Health Authority (three tenants of the same
+  SAP SuccessFactors markup, one parser parameterized by base URL and
+  company name), and New Brunswick (an Oracle Cloud Recruiting REST
+  endpoint, since the public `ere.gnb.ca` site is now only a postback that
+  redirects into it). All are whole-organisation boards where a source-side
+  keyword or `title_include` allowlist substitutes for a title filter,
+  because the source's own search matches posting body text, not just the
+  title. Saskatchewan, PEI, Yukon and Newfoundland were investigated and
+  could not be added without a real browser session (404s, bot protection,
+  or no stable listing URL) — recorded so nobody retries them blind.
+
+- **Tier 5b — regional tech-industry boards**
+  (`job_hunt/services/regional_boards.py`, config:
+  `portals.yml::regional_boards`). Digital Nova Scotia and Tech Manitoba —
+  industry-association boards carrying small local employers that national
+  aggregators rarely syndicate. Digital Nova Scotia's listing page carries
+  no employer name, so each posting is enriched from its own detail page
+  (cached permanently by URL) before the employer field is usable.
+
+- **Tier 6 — Workday employer boards** (`job_hunt/services/workday_boards.py`,
+  config: `portals.yml::workday_boards`). Calls the CxS JSON search behind
+  any `*.myworkdayjobs.com` site directly. Tenant and site ids cannot be
+  guessed (21 plausible Canadian tenant names produced exactly one hit) —
+  `resolve_workday_target` extracts them from a real posting URL, so a new
+  employer is added by pasting a URL, not by probing.
+
+- **Tier 7 — Adzuna** (`job_hunt/services/adzuna.py`). The one source
+  configured outside `portals.yml`: enablement and query shaping live in
+  `config/settings.yml::adzuna`, and the API credentials
+  (`ADZUNA_APP_ID` / `ADZUNA_APP_KEY` by default, both required) come from
+  the environment, following the same `*_env` convention as
+  `web_search.api_key_env`. Replaced several Brave aggregator channels: one
+  Adzuna call returns up to 50 structured rows against ten links per Brave
+  call.
+
+Two things a reader needs and cannot currently find anywhere else:
+
+- `config/portals.yml` and `config/settings.yml` are gitignored — they hold
+  live tracked-company lists and credentials-adjacent config. `job-hunt init`
+  seeds `config/portals.yml` from `config/portals.example.yml`, which is
+  checked in — but that example file has no `jobbank_direct`, `gov_boards`,
+  `regional_boards`, or `workday_boards` sections at all, and
+  `config/settings.example.yml` has no `adzuna` section either. So the
+  authoritative list of tiers 4–7 sources, and how they are tuned, exists
+  only on the machine where `portals.yml` / `settings.yml` were hand-built —
+  not in anything checked into this repo.
+- `config/sites.yml` declares a `kind` / `preferred_adapter` /
+  `fallback_adapters` shape per site. Nothing in `job_hunt/` reads those
+  fields at scan or apply time — `cli.py` only checks whether the file
+  exists (for `job-hunt init` and `config doctor`). Treat it as inert
+  configuration, not a live adapter-selection mechanism.
 
 ### WebSearch Cache And Quota
 
