@@ -130,8 +130,12 @@ def scan_adzuna(
     ``fetch_adzuna_page`` returns ``{}`` on a transport error, a non-200
     response or invalid JSON — a real Adzuna response always carries a
     ``results`` key (empty list included), so ``{}`` is counted as a failed
-    request here rather than silently read as "no matches for this role".
-    Keyed by role.
+    request here rather than silently read as "no matches for this role". A
+    200 that parses but is missing ``results`` is counted the same way, since
+    that is truthy and would otherwise read as the same thing one layer
+    deeper. Each entry also reports ``advertised`` (the API's ``count``, or
+    ``None`` if a page never returned one) and ``truncated`` (the page budget
+    ran out with more advertised than collected). Keyed by role.
     """
     if config is None or not getattr(config, "enabled", False):
         return []
@@ -153,7 +157,14 @@ def scan_adzuna(
         out: list[dict[str, str]] = []
         first = True
         for role in roles:
-            entry = stats.setdefault(role, {"collected": 0, "errors": 0}) if stats is not None else None
+            entry = (
+                stats.setdefault(
+                    role,
+                    {"collected": 0, "errors": 0, "advertised": None, "truncated": False},
+                )
+                if stats is not None
+                else None
+            )
             for page in range(1, max_pages + 1):
                 if not first and delay > 0:
                     sleep(delay)
@@ -168,8 +179,21 @@ def scan_adzuna(
                     max_days_old=max_days_old,
                     client=client,
                 )
-                if not payload and entry is not None:
-                    entry["errors"] += 1
+                # `{}` covers transport failure, a non-200 or invalid JSON (see
+                # ``fetch_adzuna_page``). A 200 that parses but does not carry a
+                # ``results`` list at all (missing/renamed key) is a second,
+                # distinct failure — truthy, so it would otherwise be read as
+                # zero matches for this role. Count both as errors, but never a
+                # response that legitimately carries ``results: []``.
+                if not payload:
+                    if entry is not None:
+                        entry["errors"] += 1
+                elif not isinstance(payload.get("results"), list):
+                    if entry is not None:
+                        entry["errors"] += 1
+                count = payload.get("count") if payload else None
+                if isinstance(count, int) and entry is not None:
+                    entry["advertised"] = count
                 # Paginate on what the API returned, not on what survived the
                 # category screen — a fully-filtered page is not the end of
                 # the result set.
@@ -188,6 +212,11 @@ def scan_adzuna(
                     out.append(row)
                     if entry is not None:
                         entry["collected"] += 1
+            # ``count`` is the role's whole result total, independent of
+            # ``results_per_page`` x ``max_pages``. A sweep that stopped with
+            # fewer rows collected than that total left rows on the table.
+            if entry is not None and entry["advertised"] is not None:
+                entry["truncated"] = entry["collected"] < entry["advertised"]
         return out
     finally:
         if owns_client:
@@ -217,6 +246,15 @@ def scan_adzuna_source(
     )
     collected = sum(entry.get("collected", 0) for entry in stats.values())
     errors = sum(entry.get("errors", 0) for entry in stats.values())
+    truncated = any(entry.get("truncated") for entry in stats.values())
+    # Sum only the roles that actually reported a total — a role whose fetch
+    # never returned valid JSON has no total to contribute, and folding that
+    # in as 0 would understate rather than omit it. ``None`` when nothing was
+    # known, never a fabricated number.
+    advertised_known = [
+        entry["advertised"] for entry in stats.values() if entry.get("advertised") is not None
+    ]
+    advertised = sum(advertised_known) if advertised_known else None
     postings: list[JobPosting] = []
     for row in rows:
         posting = from_row(
@@ -230,5 +268,12 @@ def scan_adzuna_source(
         )
         if posting is not None:
             postings.append(posting)
-    health = SourceHealth(source_id="adzuna", ok=errors == 0, collected=collected, errors=errors)
+    health = SourceHealth(
+        source_id="adzuna",
+        ok=errors == 0,
+        collected=collected,
+        advertised=advertised,
+        truncated=truncated,
+        errors=errors,
+    )
     return SourceResult(postings=postings, health=health)

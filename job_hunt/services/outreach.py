@@ -48,11 +48,6 @@ def _read_jsonl(path: Path, model: type[T]) -> tuple[list[T], list[MalformedLine
     return JsonlLog(path, model).read()
 
 
-def _write_jsonl(path: Path, model: type[T], items: list[T], malformed: list[MalformedLine] | None = None) -> None:
-    # Preserve malformed lines that existed in the file, appending them at the end.
-    JsonlLog(path, model).write_all(items, malformed)
-
-
 def list_contacts(path: Path = CONTACTS_PATH) -> list[Contact]:
     contacts, _ = _read_jsonl(path, Contact)
     return contacts
@@ -65,9 +60,14 @@ def malformed_contacts(path: Path = CONTACTS_PATH) -> list[MalformedLine]:
 
 
 def add_contact(contact: Contact, path: Path = CONTACTS_PATH) -> Contact:
-    contacts, malformed = _read_jsonl(path, Contact)
-    contacts.append(contact)
-    _write_jsonl(path, Contact, contacts, malformed)
+    # Hold the lock across the whole read-modify-write: a lock taken only
+    # around the write still loses a concurrent writer's update, and can
+    # silently drop a malformed line another process appended in between.
+    log = JsonlLog(path, Contact)
+    with log.lock():
+        contacts, malformed = log.read()
+        contacts.append(contact)
+        log.write_all(contacts, malformed)
     return contact
 
 
@@ -98,31 +98,37 @@ def malformed_events(path: Path = EVENTS_PATH) -> list[MalformedLine]:
 
 
 def add_event(event: OutreachEvent, path: Path = EVENTS_PATH) -> OutreachEvent:
-    events, malformed = _read_jsonl(path, OutreachEvent)
-    events.append(event)
-    _write_jsonl(path, OutreachEvent, events, malformed)
+    # See add_contact(): the lock must span the read and the write.
+    log = JsonlLog(path, OutreachEvent)
+    with log.lock():
+        events, malformed = log.read()
+        events.append(event)
+        log.write_all(events, malformed)
     return event
 
 
 def update_event(event_id: str, *, status: str | None = None, follow_up_at: str = "", notes: str = "", path: Path = EVENTS_PATH) -> OutreachEvent | None:
-    events, malformed = _read_jsonl(path, OutreachEvent)
-    updated: OutreachEvent | None = None
-    for index, event in enumerate(events):
-        if not event.id.startswith(event_id):
-            continue
-        data = event.model_dump()
-        if status:
-            data["status"] = status
-        if follow_up_at:
-            data["follow_up_at"] = follow_up_at
-        if notes:
-            data["notes"] = notes
-        data["updated_at"] = dt.datetime.now(dt.UTC).isoformat()
-        updated = OutreachEvent.model_validate(data)
-        events[index] = updated
-        break
-    if updated:
-        _write_jsonl(path, OutreachEvent, events, malformed)
+    # See add_contact(): the lock must span the read and the write.
+    log = JsonlLog(path, OutreachEvent)
+    with log.lock():
+        events, malformed = log.read()
+        updated: OutreachEvent | None = None
+        for index, event in enumerate(events):
+            if not event.id.startswith(event_id):
+                continue
+            data = event.model_dump()
+            if status:
+                data["status"] = status
+            if follow_up_at:
+                data["follow_up_at"] = follow_up_at
+            if notes:
+                data["notes"] = notes
+            data["updated_at"] = dt.datetime.now(dt.UTC).isoformat()
+            updated = OutreachEvent.model_validate(data)
+            events[index] = updated
+            break
+        if updated:
+            log.write_all(events, malformed)
     return updated
 
 

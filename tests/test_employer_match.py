@@ -140,6 +140,57 @@ def test_alias_applies_to_both_intents():
     assert report_match.entry.number == 1
 
 
+def test_unattended_gate_does_not_merge_two_distinct_postings_at_one_company():
+    """Two real Microsoft postings must not collapse into one tracker row.
+    Under `mutate`'s bare 0.70 the "Staff" posting scores 0.95 and matches —
+    safe for `apply.py`'s attended path, where a human already identified the
+    row, but not for an unattended writer like `nodes/tracker.py`. Measured:
+    fuzzy role similarity alone can't tell this apart from a genuinely
+    different role at the same company ("...Platform" vs "...Azure" scores
+    0.889 — indistinguishable from the Staff/Senior pair's 0.897, and that
+    second pair is already rejected by find_match's own exact-company floor).
+    `is_reliable_match` — the floor every unattended writer applies — must
+    reject the Staff/Senior pair too, by requiring one normalized title to
+    contain the other rather than trusting the fuzzy score."""
+    matcher = EmployerMatcher([
+        entry(1, "Microsoft", "Senior Backend Engineer, Platform"),
+    ])
+    matched_entry, score = matcher.raw_match(
+        company="Microsoft", role="Staff Backend Engineer, Platform"
+    )
+    assert matched_entry is not None
+    assert score >= 0.90  # confirms `mutate` alone would treat this as a strong match
+
+    attended = matcher.best(company="Microsoft", role="Staff Backend Engineer, Platform", intent="mutate")
+    assert attended is not None  # apply.py's attended path is unaffected
+
+    reliable = is_reliable_match(
+        company="Microsoft", role="Staff Backend Engineer, Platform",
+        matched_company=matched_entry.company, matched_role=matched_entry.role,
+        score=score,
+    )
+    assert reliable is False
+
+
+def test_unattended_gate_still_accepts_a_grade_suffix_on_the_same_title():
+    """The unattended containment check must not reject a legitimate
+    decoration of the same posting: "Software Developer" vs "Software
+    Developer I" is exactly the "Software Developer" / "…(ET - Canada/US)"
+    shape, not a seniority swap."""
+    matcher = EmployerMatcher([
+        entry(1, "Acme", "Software Developer"),
+    ])
+    matched_entry, score = matcher.raw_match(company="Acme", role="Software Developer I")
+    assert matched_entry is not None
+
+    reliable = is_reliable_match(
+        company="Acme", role="Software Developer I",
+        matched_company=matched_entry.company, matched_role=matched_entry.role,
+        score=score,
+    )
+    assert reliable is True
+
+
 def test_any_employer_expands_slug_tokens_through_an_alias():
     matcher = EmployerMatcher(
         [entry(1, "Safe Fleet", "Safety Engineer", "Applied")],

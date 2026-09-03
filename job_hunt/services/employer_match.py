@@ -11,14 +11,18 @@ asymmetries:
 
 - **"which row do I mutate?"** (``intent="mutate"``) — a false positive
   corrupts a real application's record. This is exactly ``find_match``'s
-  algorithm at the same ``0.70`` threshold ``nodes/tracker.py`` and the apply
-  CLI already applied — a human typed the company/role or confirmed a
-  submission, and has already made the identification. It is *not* the
-  stricter check ``email/reconcile.py`` layers on top: that extra floor is
-  reconcile's own policy for acting on inbound mail with nobody in the loop,
-  and stays in ``email/reconcile.py`` as ``is_reliable_match`` — an explicit
-  additional check callers opt into, not something ``mutate`` imposes on
-  everyone.
+  algorithm at the same ``0.70`` threshold every caller already applied. It
+  is safe at that bare threshold only for a caller a human is actually
+  driving: ``cli/apply.py``'s manual-submission path, where a person typed
+  ``--company``/``--role`` or ran ``--confirmed``. It is *not* safe, on its
+  own, for a caller that writes unattended — ``nodes/tracker.py``'s
+  ``write_tracker_addition`` and ``merge_or_update_tracker``, which run on
+  every ``evaluate``/``evaluate-batch`` against ``jd_meta.company``/``.title``
+  as the LLM extracted them from a scraped JD, with nobody confirming. Those
+  callers layer ``is_reliable_match`` on top of a raw match before acting,
+  the same stricter floor ``email/reconcile.py`` already applies for the same
+  reason (acting on inbound mail with nobody in the loop) — one definition of
+  "strict enough to act on without a human", used by every unattended writer.
 - **"does this employer appear anywhere?"** (``intent="report"``) — a false
   negative hides a sent application, the failure this project cares most
   about. Loose: this folds in the fallbacks ``email/gaps.py`` used to avoid
@@ -58,19 +62,20 @@ _DISTINCTIVE_GATE = 0.60
 # avoid conflating two different roles at the same company.
 _EXACT_COMPANY_ROLE_FLOOR = 0.85
 
-# ---- the bare 0.70 threshold every caller but reconcile applied to
-# find_match's raw score before this consolidation: nodes/tracker.py's and
-# apply.py's `mutate` decision (a human already made the identification —
-# typed --company, or confirmed a submission), and `report`'s primary check
-# before its two fallbacks. ----
+# ---- the bare 0.70 threshold find_match's raw score was checked against
+# before this consolidation: `apply.py`'s attended `mutate` decision (a human
+# typed --company/--role, or confirmed a submission, so the identification is
+# already made), and `report`'s primary check before its two fallbacks. ----
 MATCH_THRESHOLD = 0.70
 
-# ---- reconcile's own extra floor, layered on top of a raw find_match-style
-# score before it is safe to act on inbound mail with nobody in the loop.
-# This is NOT part of `EmployerMatcher.best(intent="mutate")` — it is
-# reconcile's policy, applied explicitly via `is_reliable_match` in
-# `email/reconcile.py`, because reconcile has no human confirming the
-# identification the way `apply --confirmed` or an evaluated JD does. ----
+# ---- the unattended floor, layered on top of a raw find_match-style score
+# before it is safe to act *without* a human confirming the identification.
+# This is NOT part of `EmployerMatcher.best(intent="mutate")` — that intent
+# stays at the bare 0.70 above and is only for `apply.py`'s attended path.
+# Every writer that acts with nobody in the loop applies this explicitly, via
+# `is_reliable_match`: `email/reconcile.py` (inbound mail) and
+# `nodes/tracker.py` (`write_tracker_addition` / `merge_or_update_tracker`,
+# on every evaluate/evaluate-batch run, against LLM-extracted jd_meta). ----
 MUTATE_SCORE_FLOOR = 0.75
 MUTATE_ROLE_FLOOR_EXACT_COMPANY = 0.82
 MUTATE_ROLE_FLOOR = 0.75
@@ -141,15 +146,18 @@ def is_reliable_match(
     *, company: str | None, role: str | None,
     matched_company: str, matched_role: str, score: float,
 ) -> bool:
-    """reconcile's extra floor on top of a raw find_match-style score, for
-    deciding whether an *unattended* write (inbound mail, nobody in the
-    loop) is safe. Not used by ``EmployerMatcher.best(intent="mutate")`` —
-    that gate is for callers where a human already made the identification.
+    """The floor every *unattended* writer layers on top of a raw
+    find_match-style score before it is safe to act with nobody in the loop
+    — ``email/reconcile.py`` (inbound mail) and ``nodes/tracker.py``
+    (evaluate/evaluate-batch, against LLM-extracted ``jd_meta``). Not used by
+    ``EmployerMatcher.best(intent="mutate")`` — that gate is for callers
+    where a human already made the identification (``cli/apply.py``).
 
     Kept as a standalone function (not a method on ``EmployerMatcher``)
-    because ``email/reconcile.py`` applies it as its own explicit policy on
-    top of a match, and ``email/review.py`` still calls it by this contract
-    via ``email/reconcile._is_reliable_tracker_match``.
+    because ``email/reconcile.py`` and ``nodes/tracker.py`` both apply it as
+    their own explicit policy on top of a match, and ``email/review.py``
+    still calls it by this contract via
+    ``email/reconcile._is_reliable_tracker_match``.
     """
     if score < MUTATE_SCORE_FLOOR:
         return False
@@ -157,7 +165,26 @@ def is_reliable_match(
         return True
     role_score = fuzz.token_set_ratio(matched_role, role or "") / 100
     if normalize(company or "") == normalize(matched_company):
-        return role_score >= MUTATE_ROLE_FLOOR_EXACT_COMPANY
+        if role_score < MUTATE_ROLE_FLOOR_EXACT_COMPANY:
+            return False
+        # Fuzzy role similarity alone cannot separate "a decorated or
+        # leveled variant of the same posting" from "two distinct postings
+        # at the same company": "Senior Backend Engineer, Platform" vs
+        # "Staff Backend Engineer, Platform" scores 0.897 here — measured
+        # indistinguishable from "Senior Backend Engineer, Platform" vs
+        # "Senior Backend Engineer, Azure" at 0.889, which find_match's own
+        # exact-company floor (0.85, token_sort) already rejects as a
+        # different role. Since merging two real postings into one row
+        # destroys a record invisibly, while failing to merge only leaves a
+        # duplicate row `tracker dedup` already exists to clean up, the
+        # unattended path requires one normalized title to contain the
+        # other — the relationship a legal-suffix/ATS decoration or a
+        # trailing "I"/"II" grade actually has ("Software Developer" /
+        # "Software Developer I"), and a seniority swap like Senior/Staff
+        # does not.
+        wanted_norm = normalize(role or "")
+        matched_norm = normalize(matched_role)
+        return wanted_norm in matched_norm or matched_norm in wanted_norm
     return role_score >= MUTATE_ROLE_FLOOR
 
 
@@ -252,12 +279,15 @@ class EmployerMatcher:
     ) -> Match | None:
         """intent='mutate': the gate before writing to a row on a caller's own
         identification — find_match's algorithm at its historical 0.70
-        threshold, no fallbacks. A caller acting *unattended* (inbound mail,
-        nobody confirming) needs a stricter check than this on top; that is
-        ``is_reliable_match`` / ``email/reconcile.py``'s own policy, not
-        something this intent applies for you. intent='report': the loose
-        gate for gaps/checkup — a miss hides a sent application, which is
-        worse.
+        threshold, no fallbacks. Safe at that bare threshold only for a
+        caller a human is actually driving (``cli/apply.py``'s
+        manual-submission path). Every *unattended* writer (inbound mail in
+        ``email/reconcile.py``; the LLM-extracted ``jd_meta`` in
+        ``nodes/tracker.py``) needs a stricter check than this on top; that
+        is ``is_reliable_match``, applied explicitly by each of them on top
+        of ``raw_match``, not something this intent applies for you.
+        intent='report': the loose gate for gaps/checkup — a miss hides a
+        sent application, which is worse.
         """
         if not company:
             return None

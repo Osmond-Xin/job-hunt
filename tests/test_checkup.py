@@ -163,3 +163,31 @@ def test_run_checkup_returns_failed_check_instead_of_raising(monkeypatch):
     assert "RuntimeError" in checks[3].detail
     assert "Outreach" in checks[3].detail
     assert checks[3].fix != ""
+
+
+def test_missing_output_directory_is_reported_as_failure(tmp_path):
+    """output_dir not existing is a failure to look, not an empty successful scan."""
+    nonexistent = tmp_path / "output"
+    check = unrecorded_artifacts(
+        since=SINCE, output_dir=nonexistent, tracker=tracker_with(tmp_path)
+    )
+    assert not check.ok
+    assert "not found" in check.detail
+    assert check.items == []
+    assert "output/" in check.fix
+
+
+def test_bad_days_argument_produces_failing_check():
+    from job_hunt.services.checkup import run_checkup
+
+    # days with an invalid type should produce a failing Check, not raise.
+    # timedelta(days="invalid") raises TypeError before any Check is produced;
+    # the fix wraps this in try/except so it becomes a Check instead.
+    checks = run_checkup(days="invalid", today=SINCE)  # type: ignore
+
+    # Should return a single failing check about date range computation
+    assert len(checks) == 1
+    assert checks[0].ok is False
+    assert checks[0].name == "date range computation"
+    assert "TypeError" in checks[0].detail
+    assert checks[0].fix != ""

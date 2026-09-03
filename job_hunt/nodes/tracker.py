@@ -10,7 +10,7 @@ from langchain_core.runnables import RunnableConfig
 
 from job_hunt.models.state import JobHuntState
 from job_hunt.repositories.tracker_repo import TrackerEntry, TrackerRepository
-from job_hunt.services.employer_match import EmployerMatcher, load_aliases
+from job_hunt.services.employer_match import EmployerMatcher, is_reliable_match, load_aliases
 
 _TRACKER_PATH = Path("data/applications.md")
 
@@ -24,6 +24,29 @@ _TRACKER_PATH = Path("data/applications.md")
 # runs, or a batch racing the scheduler's email ingest, can still duplicate row
 # numbers. Do not run them at the same time.
 _WRITE_LOCK = asyncio.Lock()
+
+
+def _unattended_match(matcher: EmployerMatcher, *, company: str, role: str) -> TrackerEntry | None:
+    """The gate for this module's own writes — evaluate/evaluate-batch, with
+    company/role LLM-extracted from a scraped JD and nobody confirming them.
+
+    ``EmployerMatcher.best(intent="mutate")`` is find_match's original 0.70
+    threshold, calibrated for a caller a human is actually driving
+    (``cli/apply.py``'s ``--company``/``--role``/``--confirmed``). Nobody is
+    in the loop here, so this mirrors ``email/reconcile.py``'s own pattern
+    instead: a raw match, gated by ``is_reliable_match`` before it is safe to
+    act on.
+    """
+    entry, score = matcher.raw_match(company=company, role=role)
+    if entry is None:
+        return None
+    if not is_reliable_match(
+        company=company, role=role,
+        matched_company=entry.company, matched_role=entry.role,
+        score=score,
+    ):
+        return None
+    return entry
 
 
 async def write_tracker_addition(state: JobHuntState, config: RunnableConfig) -> dict:
@@ -44,9 +67,8 @@ async def _write_tracker_addition(state: JobHuntState) -> dict:
     role = jd_meta.title if jd_meta else ""
 
     matcher = EmployerMatcher(repo.parse(), aliases=load_aliases())
-    match = matcher.best(company=company, role=role, intent="mutate")
-    if match:
-        existing = match.entry
+    existing = _unattended_match(matcher, company=company, role=role)
+    if existing:
         _mark_pipeline_processed(state, existing)
         return {"tracker_entry": existing, "errors": []}
 
@@ -121,10 +143,9 @@ async def _merge_or_update_tracker(state: JobHuntState) -> dict:
     role = jd_meta.title if jd_meta else ""
 
     matcher = EmployerMatcher(repo.parse(), aliases=load_aliases())
-    match = matcher.best(company=company, role=role, intent="mutate")
-    if not match:
+    existing = _unattended_match(matcher, company=company, role=role)
+    if not existing:
         return {"errors": []}
-    existing = match.entry
 
     score_str = f"{scores.weighted_total:.1f}/5" if scores else existing.score
     updated = TrackerEntry(

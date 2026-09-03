@@ -992,7 +992,7 @@ def test_workday_source_returns_postings_and_health() -> None:
     assert posting.company == "OLG"
     assert posting.posted  # "Posted Today" normalised to an ISO date
     assert result.health == SourceHealth(
-        source_id="workday", ok=True, collected=1, errors=0
+        source_id="workday", ok=True, collected=1, advertised=1, errors=0
     )
 
 
@@ -1086,3 +1086,220 @@ def test_adzuna_source_health_counts_errors_across_roles() -> None:
     assert result.health.ok is False
     assert result.health.collected == 0
     assert result.health.errors == 1
+
+
+# ----- advertised/truncated (2026-09-03): both adapters measured the page --
+# ----- budget running out but never reported it, so the design's own -------
+# ----- truncation warning could never fire for these two sources. ----------
+
+
+def test_workday_truncated_sweep_reports_advertised_and_warns() -> None:
+    """Page budget (max_pages=1) runs out with more rows advertised than the
+    single full page collected — must be flagged, not read as "done"."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        postings = [
+            {"title": f"Analyst {i}", "externalPath": f"/job/{i}"} for i in range(20)
+        ]
+        return httpx.Response(200, json={"total": 50, "jobPostings": postings}, request=request)
+
+    stats: dict[str, dict[str, object]] = {}
+    rows = scan_workday(
+        {
+            "enabled": True,
+            "max_pages": 1,
+            "employers": [{"name": "OLG", "tenant": "olg", "site": "Careers"}],
+        },
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        sleep=lambda s: None,
+        stats=stats,
+    )
+
+    assert len(rows) == 20
+    assert stats["OLG"]["collected"] == 20
+    assert stats["OLG"]["advertised"] == 50
+    assert stats["OLG"]["truncated"] is True
+
+    result = scan_workday_source(
+        {
+            "enabled": True,
+            "max_pages": 1,
+            "employers": [{"name": "OLG", "tenant": "olg", "site": "Careers"}],
+        },
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        sleep=lambda s: None,
+    )
+    assert result.health.truncated is True
+    assert result.health.advertised == 50
+    warnings = result.health.warnings()
+    assert any("raise max_pages" in w and "advertises 50" in w for w in warnings)
+
+
+def test_workday_malformed_200_counts_as_error_not_empty() -> None:
+    """A 200 whose body has no ``jobPostings`` key is truthy — it must not be
+    read as "this employer has no openings"."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"total": 5, "postings": []}, request=request)
+
+    stats: dict[str, dict[str, object]] = {}
+    rows = scan_workday(
+        {"enabled": True, "employers": [{"name": "X", "tenant": "t", "site": "s"}]},
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        sleep=lambda s: None,
+        stats=stats,
+    )
+
+    assert rows == []
+    assert stats["X"]["errors"] == 1
+    assert stats["X"]["collected"] == 0
+
+
+def test_workday_genuinely_empty_board_stays_ok() -> None:
+    """A 200 with a real, empty ``jobPostings`` list is not an error."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"total": 0, "jobPostings": []}, request=request)
+
+    stats: dict[str, dict[str, object]] = {}
+    rows = scan_workday(
+        {"enabled": True, "employers": [{"name": "X", "tenant": "t", "site": "s"}]},
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        sleep=lambda s: None,
+        stats=stats,
+    )
+
+    assert rows == []
+    assert stats["X"]["errors"] == 0
+    assert stats["X"]["truncated"] is False
+
+    result = scan_workday_source(
+        {"enabled": True, "employers": [{"name": "X", "tenant": "t", "site": "s"}]},
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        sleep=lambda s: None,
+    )
+    assert result.health.ok is True
+    assert result.health.warnings() == []
+
+
+def test_adzuna_truncated_sweep_reports_advertised_and_warns() -> None:
+    """Page budget (max_pages=1) runs out with more rows advertised than the
+    single full page collected — must be flagged, not read as "done"."""
+
+    class Cfg:
+        enabled = True
+        country = "ca"
+        results_per_page = 50
+        max_pages = 1
+        max_days_old = 30
+        delay_s = 0
+        timeout_s = 5
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        results = [
+            {"title": f"Role {i}", "redirect_url": f"https://a/{i}"} for i in range(50)
+        ]
+        return httpx.Response(200, json={"results": results, "count": 100}, request=request)
+
+    stats: dict[str, dict[str, object]] = {}
+    rows = scan_adzuna(
+        Cfg(),
+        ["AI Engineer"],
+        app_id="i",
+        app_key="k",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        sleep=lambda s: None,
+        stats=stats,
+    )
+
+    assert len(rows) == 50
+    assert stats["AI Engineer"]["collected"] == 50
+    assert stats["AI Engineer"]["advertised"] == 100
+    assert stats["AI Engineer"]["truncated"] is True
+
+    result = scan_adzuna_source(
+        Cfg(),
+        ["AI Engineer"],
+        app_id="i",
+        app_key="k",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        sleep=lambda s: None,
+    )
+    assert result.health.truncated is True
+    assert result.health.advertised == 100
+    warnings = result.health.warnings()
+    assert any("raise max_pages" in w and "advertises 100" in w for w in warnings)
+
+
+def test_adzuna_malformed_200_counts_as_error_not_empty() -> None:
+    """A 200 whose body has no ``results`` key is truthy — it must not be
+    read as "no matches for this role"."""
+
+    class Cfg:
+        enabled = True
+        country = "ca"
+        results_per_page = 50
+        max_pages = 2
+        max_days_old = 30
+        delay_s = 0
+        timeout_s = 5
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"count": 5, "matches": []}, request=request)
+
+    stats: dict[str, dict[str, object]] = {}
+    rows = scan_adzuna(
+        Cfg(),
+        ["AI Engineer"],
+        app_id="i",
+        app_key="k",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        sleep=lambda s: None,
+        stats=stats,
+    )
+
+    assert rows == []
+    assert stats["AI Engineer"]["errors"] == 1
+    assert stats["AI Engineer"]["collected"] == 0
+
+
+def test_adzuna_genuinely_empty_role_stays_ok() -> None:
+    """A 200 with a real, empty ``results`` list is not an error."""
+
+    class Cfg:
+        enabled = True
+        country = "ca"
+        results_per_page = 50
+        max_pages = 2
+        max_days_old = 30
+        delay_s = 0
+        timeout_s = 5
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"results": [], "count": 0}, request=request)
+
+    stats: dict[str, dict[str, object]] = {}
+    rows = scan_adzuna(
+        Cfg(),
+        ["AI Engineer"],
+        app_id="i",
+        app_key="k",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        sleep=lambda s: None,
+        stats=stats,
+    )
+
+    assert rows == []
+    assert stats["AI Engineer"]["errors"] == 0
+    assert stats["AI Engineer"]["truncated"] is False
+
+    result = scan_adzuna_source(
+        Cfg(),
+        ["AI Engineer"],
+        app_id="i",
+        app_key="k",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        sleep=lambda s: None,
+    )
+    assert result.health.ok is True
+    assert result.health.warnings() == []

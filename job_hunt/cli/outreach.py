@@ -423,10 +423,32 @@ def linkedin_outreach(
         research_context=research_context,
     )
     console.print(body)
-    if output:
-        output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_text(body, encoding="utf-8")
-        console.print(f"\n[green]Wrote[/green] {output}")
+
+    # CLAUDE.md §1 names outreach emails alongside résumés and cover letters
+    # as requiring red team before delivery. `outreach draft` got this gate;
+    # this command builds the same artifact class from the same prompt and
+    # was simply missed. The reviewer reads artifacts off disk, so — as
+    # `apply_answers` already does for the same problem — the message is
+    # always written out, not only when --output was passed.
+    if output is not None:
+        message_path = output
+    else:
+        company_slug = re.sub(r"[^a-z0-9]+", "-", company.lower()).strip("-")
+        role_slug = re.sub(r"[^a-z0-9]+", "-", role.lower()).strip("-")
+        message_path = Path("output") / f"{company_slug}-{role_slug}-linkedin.md"
+    message_path.parent.mkdir(parents=True, exist_ok=True)
+    message_path.write_text(body, encoding="utf-8")
+    console.print(f"\n[green]Wrote[/green] {message_path}")
+
+    if not jd_text:
+        # Without a JD the review's TARGETING pass (CLAUDE.md §1) has nothing
+        # to compare against and degrades to a no-op — say so rather than
+        # letting a clean-looking verdict imply all three passes ran.
+        console.print(
+            "[yellow]No JD supplied (--jd); the red team's targeting pass "
+            "has nothing to compare against.[/yellow]"
+        )
+    _gate_outward_artifact(artifact_path=message_path, jd_text=jd_text, company=company, role=role)
 
 
 @app.command("research")

@@ -84,37 +84,51 @@ def unrecorded_artifacts(
     This is the check that would have caught the 2026-08-19/20 batch: the
     materials existed on disk for ten days with nothing pointing at them.
     """
+    # If output/ doesn't exist, this is a failure to look, not a successful
+    # empty scan. Return a distinct failing check so the operator knows the
+    # check was unable to run, not that it found nothing.
+    if not output_dir.exists():
+        return Check(
+            name="artifacts without a tracker row",
+            ok=False,
+            detail=f"output/ directory not found at {output_dir.resolve()}",
+            items=[],
+            fix=(
+                "Ensure output/ directory exists and that this command is run "
+                "from the correct working directory (the repo root)."
+            ),
+        )
+
     tracker = tracker or TrackerRepository(Path("data/applications.md"))
     matcher = EmployerMatcher(tracker.parse(), aliases=aliases if aliases is not None else load_aliases())
 
     missing: list[str] = []
     unsent: list[str] = []
-    if output_dir.exists():
-        for child in sorted(output_dir.iterdir()):
-            if not child.is_dir():
-                continue
-            when = _dir_date(child.name)
-            if when is None or when < since:
-                continue
-            if not any(child.glob("*.pdf")):
-                continue
-            linked = _linked_row(child)
-            if linked is not None:
-                # Recorded through `apply --confirmed`, which stamped the row
-                # number in. No guessing needed, and no false positive when the
-                # directory slug abbreviates the employer ("ccl" vs
-                # "Connor, Clark & Lunn Financial Group").
-                if linked not in _SENT_STATUSES:
-                    unsent.append(f"{child.name} (row exists, status {linked})")
-                continue
-            tokens = _slug_tokens(child.name)
-            if not tokens:
-                continue
-            hits = [match.entry.status for match in matcher.any_employer(tokens)]
-            if not hits:
-                missing.append(child.name)
-            elif not any(status in _SENT_STATUSES for status in hits):
-                unsent.append(f"{child.name} (rows exist, none marked as sent)")
+    for child in sorted(output_dir.iterdir()):
+        if not child.is_dir():
+            continue
+        when = _dir_date(child.name)
+        if when is None or when < since:
+            continue
+        if not any(child.glob("*.pdf")):
+            continue
+        linked = _linked_row(child)
+        if linked is not None:
+            # Recorded through `apply --confirmed`, which stamped the row
+            # number in. No guessing needed, and no false positive when the
+            # directory slug abbreviates the employer ("ccl" vs
+            # "Connor, Clark & Lunn Financial Group").
+            if linked not in _SENT_STATUSES:
+                unsent.append(f"{child.name} (row exists, status {linked})")
+            continue
+        tokens = _slug_tokens(child.name)
+        if not tokens:
+            continue
+        hits = [match.entry.status for match in matcher.any_employer(tokens)]
+        if not hits:
+            missing.append(child.name)
+        elif not any(status in _SENT_STATUSES for status in hits):
+            unsent.append(f"{child.name} (rows exist, none marked as sent)")
 
     items = missing + unsent
     return Check(
@@ -184,8 +198,18 @@ def outreach_followups() -> Check:
 
 
 def run_checkup(*, days: int = 30, today: date | None = None) -> list[Check]:
-    today = today or date.today()
-    since_date = today - timedelta(days=days)
+    # Compute the date range inside the safety net so a bad `days` argument
+    # produces a Check instead of raising and killing the whole command.
+    try:
+        today = today or date.today()
+        since_date = today - timedelta(days=days)
+    except Exception as e:
+        return [Check(
+            name="date range computation",
+            ok=False,
+            detail=f"{type(e).__name__}: {str(e)}",
+            fix="Check that days is a valid integer and today is a valid date",
+        )]
 
     def safe_run_check(check_name: str, check_fn) -> Check:
         try:

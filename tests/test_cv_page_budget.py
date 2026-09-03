@@ -187,3 +187,106 @@ def test_cover_letter_within_budget_has_no_warning(monkeypatch, tmp_path) -> Non
 
     assert result["cover_letter_path"] is not None
     assert result["artifact_warnings"] == []
+
+
+# ----- generate_cv_html_pdf / _render_within_budget: a page-count failure must
+# not leave a résumé PDF sitting on disk with nothing saying it was never
+# reviewed (CLAUDE.md §1) -----
+
+
+class _FakePage:
+    """Stands in for a Playwright page: writes real bytes for `.pdf()` so the
+    file genuinely exists on disk, exactly like the crash this guards against."""
+
+    async def goto(self, url: str) -> None:
+        pass
+
+    async def pdf(self, *, path: str, format: str, print_background: bool) -> None:
+        Path(path).write_bytes(b"%PDF-1.4 fake but real bytes on disk")
+
+
+class _FakeBrowser:
+    async def new_page(self) -> _FakePage:
+        return _FakePage()
+
+    async def close(self) -> None:
+        pass
+
+
+class _FakeChromium:
+    async def launch(self) -> _FakeBrowser:
+        return _FakeBrowser()
+
+
+class _FakePlaywright:
+    chromium = _FakeChromium()
+
+
+class _FakeAsyncPlaywrightCM:
+    async def __aenter__(self) -> _FakePlaywright:
+        return _FakePlaywright()
+
+    async def __aexit__(self, *args) -> bool:
+        return False
+
+
+def test_page_count_failure_deletes_the_stale_pdf_and_reraises(monkeypatch, tmp_path) -> None:
+    """`_render_within_budget` writes a complete PDF to `pdf_path` on every
+    iteration before measuring it. If measuring raises, the file must not
+    survive the failure — left on disk it would sit in the run directory
+    looking like a finished, reviewed résumé that redteam_review never sees
+    (it filters on state["pdf_path"], which the caller nulls on this path)."""
+    import playwright.async_api as pw_async_api
+
+    from job_hunt.nodes import pdf as pdf_module
+
+    monkeypatch.setattr(pw_async_api, "async_playwright", lambda: _FakeAsyncPlaywrightCM())
+
+    def _raise(_pdf_bytes: bytes) -> int | None:
+        raise ValueError("corrupt PDF")
+
+    monkeypatch.setattr(pdf_module, "pdf_page_count", _raise)
+
+    html_path = tmp_path / "resume.html"
+    pdf_path = tmp_path / "resume.pdf"
+
+    try:
+        asyncio.run(
+            pdf_module._render_within_budget(
+                lambda cv_md: "<html></html>", "cv body", html_path, pdf_path, "letter", 2
+            )
+        )
+        raise AssertionError("expected the page-count failure to propagate")
+    except ValueError:
+        pass
+
+    assert not pdf_path.exists()
+
+
+def test_pdf_render_crash_is_reported_not_silent(monkeypatch, tmp_path) -> None:
+    """The node-level side of the same fix: `errors` never reaches report.md
+    (only console output does), so a render crash needs an artifact_warnings
+    entry or it leaves no trace in the document the operator reads before
+    sending anything."""
+    from job_hunt.nodes import pdf as pdf_module
+
+    monkeypatch.setattr(artifact_paths_module, "_OUTPUT_DIR", tmp_path)
+
+    async def _raising_render(*args, **kwargs):
+        raise ValueError("simulated render crash")
+
+    monkeypatch.setattr(pdf_module, "_render_within_budget", _raising_render)
+
+    state = {
+        "run_id": "abc123",
+        "jd_meta": None,
+        "profile": None,
+        "cv": "## Experience\n",
+        "cv_tailored": "",
+        "scores": None,
+    }
+    result = asyncio.run(pdf_module.generate_cv_html_pdf(state, None))
+
+    assert result["pdf_path"] is None
+    assert any("PDF generation failed" in e for e in result["errors"])
+    assert any("CV PDF was not generated" in w for w in result["artifact_warnings"])

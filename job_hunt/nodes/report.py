@@ -42,6 +42,16 @@ async def write_report(state: JobHuntState, config: RunnableConfig) -> dict:
     # come back to decide whether to send this.
     artifact_warnings = state.get("artifact_warnings") or []
     verdict = state.get("redteam_verdict") or ""
+    # A missing verdict must not read as silence. redteam_review sets
+    # redteam_verdict for every artifact it sees (CLAUDE.md §1) — pdf_path,
+    # cover_letter_path, or a drafted answers block — so one of those present
+    # with no verdict recorded means the node was skipped or crashed before
+    # setting one, not that the review passed. Treat that silence itself as
+    # UNREVIEWED rather than let an absent key look identical to a clean SEND.
+    if not verdict and (
+        state.get("pdf_path") or state.get("cover_letter_path") or blocks.get("draft_answers")
+    ):
+        verdict = "UNREVIEWED"
     if verdict and verdict != "SEND":
         banner = {
             "BLOCK": "🛑 RED TEAM: BLOCK — do not send until the findings are answered",

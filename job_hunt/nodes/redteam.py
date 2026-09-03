@@ -20,11 +20,34 @@ from job_hunt.services.redteam import run_review
 
 
 async def redteam_review(state: JobHuntState, config: RunnableConfig) -> dict:
+    out_dir = run_output_dir(state)
     artifacts = [
         Path(p)
         for p in (state.get("pdf_path"), state.get("cover_letter_path"))
         if p and Path(p).exists()
     ]
+    # Whether a templated CV/cover-letter (both out of templates/cv.html.j2)
+    # is actually in this batch — drives the `origin` passed to run_review
+    # below, since its "pipeline" exemptions (target banner, contact-line
+    # separator) are specific to that template and must not silently cover
+    # the freeform draft answers appended next.
+    templated = bool(artifacts)
+
+    # CLAUDE.md §1 names "application-form answers" alongside résumés and
+    # cover letters as requiring red team before delivery. draft_application_
+    # answers (nodes/personalize.py) only ever puts this text into
+    # evaluation_blocks["draft_answers"] for report.md — it never touches
+    # disk, so run_review, which reads artifacts off disk, never saw it. Give
+    # it a file, under the run directory and filename the `apply-answers` CLI
+    # command already uses for the same content (job_hunt/cli/apply.py), so
+    # there is one convention rather than two.
+    draft_answers = state.get("evaluation_blocks", {}).get("draft_answers")
+    if draft_answers:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        answers_path = out_dir / "apply-answers.md"
+        answers_path.write_text(draft_answers, encoding="utf-8")
+        artifacts.append(answers_path)
+
     if not artifacts:
         return {"errors": []}
 
@@ -35,13 +58,12 @@ async def redteam_review(state: JobHuntState, config: RunnableConfig) -> dict:
         jd_text=state.get("jd_text", ""),
         company=(jd_meta.company if jd_meta else "") or "",
         role=(jd_meta.title if jd_meta else "") or "",
-        # Everything this node reviews came out of templates/cv.html.j2.
-        origin="pipeline",
+        origin="pipeline" if templated else "hand-written",
     )
 
     warnings: list[str] = []
     if result.review:
-        review_path = run_output_dir(state) / "redteam.md"
+        review_path = out_dir / "redteam.md"
         review_path.write_text(result.review, encoding="utf-8")
         warnings.append(
             f"red team verdict: {result.verdict} — findings in {review_path.name}"

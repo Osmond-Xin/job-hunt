@@ -128,8 +128,12 @@ def scan_workday(
     ``fetch_workday_page`` returns ``{}`` on a transport error, a 404 or a
     422 — the same value a real CxS response never produces (a 200 always
     carries ``total``/``jobPostings``), so ``{}`` is counted as a failed
-    request here rather than silently read as "employer has no jobs".
-    Keyed by employer name.
+    request here rather than silently read as "employer has no jobs". A 200
+    that parses but is missing ``jobPostings`` is counted the same way, since
+    that is truthy and would otherwise read as the same thing one layer
+    deeper. Each entry also reports ``advertised`` (the CxS ``total``, or
+    ``None`` if a page never returned one) and ``truncated`` (the page budget
+    ran out with more advertised than collected). Keyed by employer name.
     """
     if not config or not config.get("enabled", False):
         return []
@@ -180,7 +184,14 @@ def scan_workday(
                 continue
             tenant, host, site = target
             name = str(employer.get("name") or tenant)
-            entry = stats.setdefault(name, {"collected": 0, "errors": 0}) if stats is not None else None
+            entry = (
+                stats.setdefault(
+                    name,
+                    {"collected": 0, "errors": 0, "advertised": None, "truncated": False},
+                )
+                if stats is not None
+                else None
+            )
             for page in range(max_pages):
                 if not first and delay > 0:
                     sleep(delay)
@@ -188,8 +199,23 @@ def scan_workday(
                 payload = fetch_workday_page(
                     tenant, host, site, offset=page * limit, limit=limit, client=client
                 )
-                if not payload and entry is not None:
-                    entry["errors"] += 1
+                # `{}` covers transport failure, 404 and 422 (see
+                # ``fetch_workday_page``). A 200 that parses as JSON but does not
+                # carry ``jobPostings`` at all (renamed/missing key) is a second,
+                # distinct failure: it is truthy, so it would otherwise sail
+                # through and read as "this employer has no openings" — the
+                # historical bug moved one layer deeper. Count both as errors,
+                # but never a response that legitimately carries
+                # ``jobPostings: []``.
+                if not payload:
+                    if entry is not None:
+                        entry["errors"] += 1
+                elif not isinstance(payload.get("jobPostings"), list):
+                    if entry is not None:
+                        entry["errors"] += 1
+                total = payload.get("total") if payload else None
+                if isinstance(total, int) and entry is not None:
+                    entry["advertised"] = total
                 rows = parse_workday_response(payload, tenant, host, site)
                 if not rows:
                     break
@@ -203,6 +229,12 @@ def scan_workday(
                         entry["collected"] += 1
                 if len(rows) < limit:
                     break
+            # The CxS ``total`` is the employer's whole result count, independent
+            # of the 20-row page cap. A sweep that stopped (page budget, or an
+            # early break) with fewer rows collected than that total left rows
+            # on the table.
+            if entry is not None and entry["advertised"] is not None:
+                entry["truncated"] = entry["collected"] < entry["advertised"]
         return out
     finally:
         if owns_client:
@@ -227,6 +259,15 @@ def scan_workday_source(
     rows = scan_workday(config, client=client, sleep=sleep, stats=stats)
     collected = sum(entry.get("collected", 0) for entry in stats.values())
     errors = sum(entry.get("errors", 0) for entry in stats.values())
+    truncated = any(entry.get("truncated") for entry in stats.values())
+    # Sum only the employers that actually reported a total — an employer
+    # whose fetch never returned valid JSON has no total to contribute, and
+    # folding that in as 0 would understate rather than omit it. ``None``
+    # when nothing was known, never a fabricated number.
+    advertised_known = [
+        entry["advertised"] for entry in stats.values() if entry.get("advertised") is not None
+    ]
+    advertised = sum(advertised_known) if advertised_known else None
     postings: list[JobPosting] = []
     for row in rows:
         posting = from_row(
@@ -240,5 +281,12 @@ def scan_workday_source(
         )
         if posting is not None:
             postings.append(posting)
-    health = SourceHealth(source_id="workday", ok=errors == 0, collected=collected, errors=errors)
+    health = SourceHealth(
+        source_id="workday",
+        ok=errors == 0,
+        collected=collected,
+        advertised=advertised,
+        truncated=truncated,
+        errors=errors,
+    )
     return SourceResult(postings=postings, health=health)
