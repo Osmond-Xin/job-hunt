@@ -36,6 +36,9 @@ class JobHuntState(TypedDict, total=False):
     # JD classification produced by the gate; pure-heuristic. Default
     # "unknown" passes through to scoring; mode mismatch routes to SKIP.
     jd_eligibility: Literal["student", "full", "unknown"]
+    # Set by verify_active() to indicate whether the JD text represents an
+    # active posting. Routes to mark_unavailable if False.
+    jd_active: bool
 
     # --- analysis outputs (parallel fan-in via reducer) ---
     archetype: ArchetypeResult

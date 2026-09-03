@@ -4,7 +4,7 @@ import json
 from datetime import date
 
 from job_hunt.repositories.tracker_repo import TRACKER_HEADER, TrackerEntry, TrackerRepository
-from job_hunt.services.checkup import unrecorded_artifacts
+from job_hunt.services.checkup import Check, unrecorded_artifacts
 
 
 def tracker_with(tmp_path, *entries: TrackerEntry) -> TrackerRepository:
@@ -93,3 +93,46 @@ def test_a_directory_with_no_pdf_is_ignored(tmp_path):
         since=SINCE, output_dir=tmp_path / "output", tracker=tracker_with(tmp_path)
     )
     assert check.ok
+
+
+def test_run_checkup_returns_failed_check_instead_of_raising(monkeypatch):
+    from job_hunt.services.checkup import run_checkup
+
+    def raise_error():
+        raise RuntimeError("Outreach service unavailable")
+
+    # Mock all checks: first 3 pass, last one raises
+    monkeypatch.setattr(
+        "job_hunt.services.checkup.event_log_readable",
+        lambda: Check("event log readable", ok=True, detail="OK", items=[])
+    )
+    monkeypatch.setattr(
+        "job_hunt.services.checkup.unrecorded_artifacts",
+        lambda **_: Check("artifacts without a tracker row", ok=True, detail="OK", items=[])
+    )
+    monkeypatch.setattr(
+        "job_hunt.services.checkup.mailbox_gaps",
+        lambda **_: Check("mailbox agrees with the tracker", ok=True, detail="OK", items=[])
+    )
+    monkeypatch.setattr(
+        "job_hunt.services.checkup.outreach_followups",
+        raise_error
+    )
+
+    checks = run_checkup(today=SINCE)
+
+    # Should return 4 Check objects
+    assert len(checks) == 4
+    assert all(isinstance(c, Check) for c in checks)
+
+    # First 3 should be ok
+    assert checks[0].ok is True
+    assert checks[1].ok is True
+    assert checks[2].ok is True
+
+    # Last should be failed with details
+    assert checks[3].ok is False
+    assert checks[3].name == "outreach follow-ups"
+    assert "RuntimeError" in checks[3].detail
+    assert "Outreach" in checks[3].detail
+    assert checks[3].fix != ""

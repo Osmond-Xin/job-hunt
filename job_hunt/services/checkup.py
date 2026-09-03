@@ -187,9 +187,21 @@ def outreach_followups() -> Check:
 def run_checkup(*, days: int = 30, today: date | None = None) -> list[Check]:
     today = today or date.today()
     since_date = today - timedelta(days=days)
+
+    def safe_run_check(check_name: str, check_fn) -> Check:
+        try:
+            return check_fn()
+        except Exception as e:
+            return Check(
+                name=check_name,
+                ok=False,
+                detail=f"{type(e).__name__}: {str(e)}",
+                fix=f"Check job_hunt/services/checkup.py for {check_name}",
+            )
+
     return [
-        event_log_readable(),
-        unrecorded_artifacts(since=since_date),
-        mailbox_gaps(since=since_date.isoformat()),
-        outreach_followups(),
+        safe_run_check("event log readable", event_log_readable),
+        safe_run_check("artifacts without a tracker row", lambda: unrecorded_artifacts(since=since_date)),
+        safe_run_check("mailbox agrees with the tracker", lambda: mailbox_gaps(since=since_date.isoformat())),
+        safe_run_check("outreach follow-ups", outreach_followups),
     ]
