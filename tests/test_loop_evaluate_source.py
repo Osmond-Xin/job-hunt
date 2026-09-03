@@ -29,11 +29,14 @@ class _FakeGraph:
 
 def test_loop_evaluate_passes_a_resolved_source_type(monkeypatch) -> None:
     graph = _FakeGraph()
-    monkeypatch.setattr(cli, "build_evaluate_job_graph", lambda: graph)
+    # full_loop_from_url (cli.apply) calls all three of these as bare names, so
+    # the patches have to land on cli.apply's own copies, not job_hunt.cli's
+    # re-export — that only rebinds this module's attribute.
+    monkeypatch.setattr(cli.apply, "build_evaluate_job_graph", lambda: graph)
     # Keep the rest of `loop` from doing real inference/network work; the fix
     # under test is entirely in the graph.ainvoke() call before this point.
     monkeypatch.setattr(
-        cli,
+        cli.apply,
         "_infer_loop_target",
         lambda *, url, description: {
             "company": None,
@@ -44,7 +47,7 @@ def test_loop_evaluate_passes_a_resolved_source_type(monkeypatch) -> None:
         },
     )
     monkeypatch.setattr(
-        cli, "_loop_agent_apply_command", lambda *, url, company, role, pdf: "echo noop"
+        cli.apply, "_loop_agent_apply_command", lambda *, url, company, role, pdf: "echo noop"
     )
 
     result = runner.invoke(

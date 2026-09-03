@@ -28,7 +28,10 @@ def tracker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 def _pages(monkeypatch: pytest.MonkeyPatch, pages: dict[str, dict[str, str]]) -> None:
-    monkeypatch.setattr(cli, "_extract_loop_url_metadata", lambda url: pages.get(url, {}))
+    # _partition_already_evaluated (cli.evaluation) calls _extract_loop_url_metadata
+    # as a bare name resolved from its own module's import of cli._shared, so the
+    # patch has to land on cli.evaluation's copy, not job_hunt.cli's re-export.
+    monkeypatch.setattr(cli.evaluation, "_extract_loop_url_metadata", lambda url: pages.get(url, {}))
 
 
 def test_a_page_naming_no_company_is_run_not_guessed_at(

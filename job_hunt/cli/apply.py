@@ -43,8 +43,9 @@ from job_hunt.services.workday.review_gate import (
 )
 
 from ._render import _short, console
-from . import app
+from ._shared import _apply_profile_values, _extract_loop_url_metadata, _resolve_source_type
 from .outreach import _gate_outward_artifact
+from . import app
 
 
 @app.command("apply")
@@ -255,17 +256,11 @@ def full_loop_from_url(
     print_prompt: bool = typer.Option(True, "--prompt/--no-prompt", help="Print the copy-paste agent prompt."),
 ) -> None:
     """Prepare full-loop apply commands from a job or application URL."""
-    # _resolve_source_type lives in cli.evaluation; resolved through the
-    # package (not a bare name or a static import) so job_hunt.cli.* monkeypatches
-    # in tests reach this call, and so cli.apply and cli.evaluation don't
-    # import each other at load time.
-    from job_hunt import cli
-
     if evaluate_first:
         console.print("[yellow]Running evaluation first. This may take a while.[/yellow]")
-        graph = cli.build_evaluate_job_graph()
+        graph = build_evaluate_job_graph()
         run_id = f"run_{uuid.uuid4().hex}"
-        source_type = cli._resolve_source_type(url, "auto")
+        source_type = _resolve_source_type(url, "auto")
         result = asyncio.run(
             graph.ainvoke(
                 {
@@ -283,7 +278,7 @@ def full_loop_from_url(
             for error in result["errors"]:
                 console.print(f"- {error}")
 
-    target = cli._infer_loop_target(url=url, description=description or "")
+    target = _infer_loop_target(url=url, description=description or "")
     if not target["company"] or not target["role"]:
         console.print("[yellow]Could not confidently infer company/role.[/yellow]")
         console.print("Run with --evaluate, or add an optional override description if the page blocks extraction.")
@@ -303,7 +298,7 @@ def full_loop_from_url(
         if _tracker_entry_blocks_apply(entry):
             console.print("[red]Warning:[/red] matched tracker/report suggests this may not be worth applying. Review before continuing.")
 
-    command = cli._loop_agent_apply_command(url=url, company=target["company"], role=target["role"], pdf=target["pdf"])
+    command = _loop_agent_apply_command(url=url, company=target["company"], role=target["role"], pdf=target["pdf"])
     console.print("\n[bold]Run this in the agent[/bold]")
     console.print(command, soft_wrap=True)
 
@@ -753,12 +748,8 @@ Expected smoke behavior: it fills safe fields, captures a screenshot, answers `n
 
 
 def _infer_loop_target(*, url: str, description: str) -> dict:
-    # Resolved through the cli package so a test that patches
-    # job_hunt.cli._extract_loop_url_metadata reaches this call.
-    from job_hunt import cli
-
     tracker = TrackerRepository(Path("data/applications.md"))
-    metadata = cli._extract_loop_url_metadata(url)
+    metadata = _extract_loop_url_metadata(url)
     inferred_text = " ".join(
         part
         for part in [
@@ -800,21 +791,6 @@ def _infer_loop_target(*, url: str, description: str) -> dict:
         "pdf": pdf,
         "tracker_entry": entry if entry and score >= 0.55 else None,
         "metadata": metadata,
-    }
-
-
-def _extract_loop_url_metadata(url: str) -> dict[str, str]:
-    try:
-        result = asyncio.run(extract_url_text(url, min_chars=50))
-    except Exception:
-        return {}
-    return {
-        "title": result.title.strip(),
-        "company": result.company.strip(),
-        "location": result.location.strip(),
-        "ats": result.ats.strip(),
-        "adapter": result.adapter,
-        "text": result.text.strip(),
     }
 
 
@@ -3721,10 +3697,6 @@ async def _fill_workday_textarea_answers(
     ``apply-review.json`` over canned/report-derived prose, so re-runs of the same artifact
     dir reuse last session's answer instead of regenerating it.
     """
-    # Resolved through the cli package so a test that patches
-    # job_hunt.cli._field_context / ._field_contains_text reaches these calls.
-    from job_hunt import cli
-
     filled: list[str] = []
     skipped: list[str] = []
     answers: list[dict[str, str]] = []
@@ -3741,7 +3713,7 @@ async def _fill_workday_textarea_answers(
                 continue
             if (await area.input_value()).strip():
                 continue  # already has content
-            question = await cli._field_context(area)
+            question = await _field_context(area)
         except Exception:
             continue
         answer = _answer_for_application_question(
@@ -3756,7 +3728,7 @@ async def _fill_workday_textarea_answers(
         except Exception:
             skipped.append(_short(f"Workday textarea: {question} (fill failed)", 140))
             continue
-        if await cli._field_contains_text(area, answer):
+        if await _field_contains_text(area, answer):
             filled.append(_short(f"Workday textarea: {question}", 100))
             answers.append({"question": question, "answer": answer})
         else:
@@ -3774,7 +3746,7 @@ async def _fill_workday_textarea_answers(
                 continue
             if (await box.inner_text()).strip():
                 continue
-            question = await cli._field_context(box)
+            question = await _field_context(box)
         except Exception:
             continue
         answer = _answer_for_application_question(
@@ -4746,105 +4718,6 @@ def _apply_artifact_dir(company: str | None, role: str | None) -> Path:
     if role:
         parts.append(_slug(" ".join(role.split()[:4]), 30))
     return Path("artifacts/apply") / "-".join(parts)
-
-
-def _apply_profile_values() -> dict[str, object]:
-    values = {
-        "name": "Example Candidate",
-        "first_name": "Example",
-        "last_name": "Candidate",
-        "email": "candidate@example.com",
-        "phone": "555-0100",
-        "linkedin": "https://www.linkedin.com/in/example-candidate/",
-        "github": "https://github.com/example-candidate",
-        "portfolio": "https://candidate.example.com",
-        "location": "City, Region, Country",
-        "country": "",
-        "address": "123 Example Street",
-        "city": "",
-        "province": "",
-        "postal_code": "",
-        "phone_device_type": "Mobile",
-        "source": "Company Website",
-        "full_time_start": "",
-        "graduation_date": "",
-        "gpa_4_scale": "",
-        # Co-op eligibility fields (used by Workday co-op forms)
-        "cowork_eligibility_category": "",
-        "cowork_eligibility_description": "",
-        # Path to an unofficial transcript PDF for Workday upload; leave empty to skip
-        "transcript_pdf": "",
-        # Academic distinction/award proof is not a transcript. Use it only for
-        # fields asking for honors or academic-achievement proof.
-        "academic_distinction_pdf": "",
-        # Legal/terms consent is never assumed. Set explicitly in profile.yml or
-        # create storage/private/workday-consent-terms after the user approves.
-        "workday_consent_terms_and_conditions": False,
-        # Auto-submit profile gate. CLI ``--auto-submit`` is only honoured when
-        # ``apply.auto_submit_enabled: true`` is also set in profile.yml.
-        "apply_auto_submit_enabled": False,
-        # Default to producing a one-page cover letter PDF on every evaluate run.
-        # CLI ``--cover-letter`` overrides per-run.
-        "apply_cover_letter_default": False,
-    }
-    profile_path = Path("profile/profile.yml")
-    if not profile_path.exists():
-        return values
-    try:
-        raw = yaml.safe_load(profile_path.read_text(encoding="utf-8")) or {}
-    except Exception:
-        return values
-    candidate = raw.get("candidate") or raw
-    location = raw.get("location") or {}
-    cowork = raw.get("cowork") or {}
-    workday = raw.get("workday") or {}
-    apply_section = raw.get("apply") or {}
-    values.update(
-        {
-            "name": candidate.get("full_name") or candidate.get("name") or values["name"],
-            "email": candidate.get("email") or values["email"],
-            "phone": candidate.get("phone") or values["phone"],
-            "linkedin": candidate.get("linkedin") or values["linkedin"],
-            "github": candidate.get("github") or values["github"],
-            "portfolio": candidate.get("portfolio_url") or candidate.get("website") or values["portfolio"],
-            "location": candidate.get("location") or values["location"],
-            "country": location.get("country") or values["country"],
-            "address": location.get("address") or values["address"],
-            "city": location.get("city") or values["city"],
-            "province": location.get("province") or values["province"],
-            "postal_code": location.get("postal_code") or values["postal_code"],
-            "cowork_eligibility_category": cowork.get("eligibility_category") or values["cowork_eligibility_category"],
-            "cowork_eligibility_description": cowork.get("eligibility_description") or values["cowork_eligibility_description"],
-            "gpa_4_scale": cowork.get("gpa_4_scale")
-            or candidate.get("gpa_4_scale")
-            or values["gpa_4_scale"],
-            "graduation_date": cowork.get("graduation_date")
-            or candidate.get("graduation_date")
-            or values["graduation_date"],
-            "full_time_start": apply_section.get("full_time_start")
-            or candidate.get("full_time_start")
-            or values["full_time_start"],
-            "transcript_pdf": cowork.get("transcript_pdf") or candidate.get("transcript_pdf") or values["transcript_pdf"],
-            "academic_distinction_pdf": cowork.get("academic_distinction_pdf")
-            or candidate.get("academic_distinction_pdf")
-            or values.get("academic_distinction_pdf", ""),
-            "workday_consent_terms_and_conditions": bool(
-                workday.get("consent_terms_and_conditions")
-                or candidate.get("workday_consent_terms_and_conditions")
-            ),
-            "apply_auto_submit_enabled": bool(
-                apply_section.get("auto_submit_enabled")
-            ),
-            "apply_cover_letter_default": bool(
-                apply_section.get("cover_letter_default")
-            ),
-        }
-    )
-    name_parts = values["name"].split()
-    if name_parts:
-        values["first_name"] = candidate.get("first_name") or name_parts[0]
-        values["last_name"] = candidate.get("last_name") or " ".join(name_parts[1:]) or values["last_name"]
-    return values
 
 
 # Tracks the Ethical Use threshold in `prompts/shared.md`, lowered 4.0 → 3.0 on

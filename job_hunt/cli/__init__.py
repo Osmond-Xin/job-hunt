@@ -35,12 +35,20 @@ app.add_typer(pipeline_app, name="pipeline")
 # decorators below running at import time. The names below are re-exported
 # so `job_hunt.cli.<name>` keeps resolving exactly as it did when this was
 # a single module - tests import commands and private helpers directly off
-# `job_hunt.cli`, and some monkeypatch them there (see cli/evaluation.py
-# and cli/apply.py for how those call sites read the patched value back
-# through this module rather than through a bare/static-imported name).
+# `job_hunt.cli`. A test that monkeypatches one of these instead (rather than
+# importing and calling it) must patch the module that actually owns the
+# name it wants intercepted (e.g. `job_hunt.cli.evaluation._batch_preflight`),
+# since that is the namespace the owning function's bare calls resolve
+# against - patching this module's copy of a re-exported name only rebinds
+# this module's attribute, not the definer's.
 from ._render import (
     console,
     _short,
+)
+from ._shared import (
+    _resolve_source_type,
+    _extract_loop_url_metadata,
+    _apply_profile_values,
 )
 from .setup import (
     ONBOARDING_NEXT_STEPS,
@@ -78,7 +86,6 @@ from .evaluation import (
     _ledger_line_count,
     _ledger_cost_since,
     _ledger_spend_since,
-    _resolve_source_type,
     build_evaluate_job_graph,
     load_settings,
     LLM_FAILURE_MARKER,
@@ -162,7 +169,6 @@ from .apply import (
     _active_apply_artifact_dir,
     _build_agent_apply_prompt,
     _infer_loop_target,
-    _extract_loop_url_metadata,
     _parse_company_role_from_description,
     _company_from_apply_url,
     _best_tracker_text_match,
@@ -260,7 +266,6 @@ from .apply import (
     _field_context,
     _click_radio_near_text,
     _apply_artifact_dir,
-    _apply_profile_values,
     _LOW_SCORE_GATE_THRESHOLD,
     APPLY_REVIEW_SCHEMA_VERSION,
     _enforce_low_score_gate,

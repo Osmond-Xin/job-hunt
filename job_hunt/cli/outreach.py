@@ -128,10 +128,6 @@ def outreach_draft(
     """Draft a LinkedIn outreach message and record a drafted outreach event."""
     from job_hunt.services.outreach import OutreachEvent, add_event, get_contact
 
-    # Resolved through the cli package so a test that patches
-    # job_hunt.cli._run_one_shot_prompt reaches this call.
-    from job_hunt import cli
-
     contact = get_contact(contact_id)
     if contact is None:
         console.print(f"[red]Contact not found:[/red] {contact_id}")
@@ -141,7 +137,7 @@ def outreach_draft(
     if jd:
         jd_path = Path(jd)
         jd_text = jd_path.read_text(encoding="utf-8") if jd_path.exists() else jd
-    body = cli._run_one_shot_prompt(
+    body = _run_one_shot_prompt(
         template="linkedin_outreach.md",
         node_name="outreach_draft",
         graph_name="outreach_cli",

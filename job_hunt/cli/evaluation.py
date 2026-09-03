@@ -18,6 +18,7 @@ from job_hunt.repositories.tracker_repo import TrackerRepository
 from job_hunt.services import cv_sync_check
 
 from ._render import _short, console
+from ._shared import _apply_profile_values, _extract_loop_url_metadata, _resolve_source_type
 from . import app
 
 
@@ -32,11 +33,6 @@ def evaluate(
         help="Generate a standalone one-page cover letter PDF. Defaults to apply.cover_letter_default in profile.yml.",
     ),
 ) -> None:
-    # _apply_profile_values lives in cli.apply; read it through the package so
-    # tests that monkeypatch job_hunt.cli._apply_profile_values still apply,
-    # and so this module and cli.apply don't import each other at load time.
-    from job_hunt import cli
-
     if trace is not None:
         os.environ["JOB_HUNT_LANGSMITH_ENABLED"] = "true" if trace else "false"
 
@@ -52,7 +48,7 @@ def evaluate(
 
     resolved_source = _resolve_source_type(target, source_type)
     run_id = uuid.uuid4().hex
-    profile_values = cli._apply_profile_values()
+    profile_values = _apply_profile_values()
     if cover_letter is None:
         generate_cover_letter_flag = bool(profile_values.get("apply_cover_letter_default"))
     else:
@@ -119,11 +115,6 @@ def evaluate_batch(
     batch is a multi-hour, real-money operation: it preflights once up front
     and stops early rather than burning the whole list on a broken setup.
     """
-    # Resolved through the cli package (not as bare names) so tests that
-    # monkeypatch job_hunt.cli.<name> reach the real call sites below, and so
-    # this module and cli.apply don't have to import each other at load time.
-    from job_hunt import cli
-
     targets = [
         line.strip()
         for line in urls_file.read_text(encoding="utf-8").splitlines()
@@ -152,16 +143,16 @@ def evaluate_batch(
         console.print("[red]--max-cost cannot be negative.[/red]")
         raise typer.Exit(1)
 
-    cli._batch_preflight(budget_enforced=max_cost > 0)
+    _batch_preflight(budget_enforced=max_cost > 0)
 
-    profile_values = cli._apply_profile_values()
+    profile_values = _apply_profile_values()
     if cover_letter is None:
         generate_cover_letter_flag = bool(profile_values.get("apply_cover_letter_default"))
     else:
         generate_cover_letter_flag = cover_letter
 
     if skip_evaluated:
-        targets, skipped = cli._partition_already_evaluated(targets)
+        targets, skipped = _partition_already_evaluated(targets)
         for target, entry in skipped:
             console.print(f"[dim]skip (tracker #{entry.number} {entry.status}): {target}[/dim]")
         if not targets:
@@ -169,14 +160,14 @@ def evaluate_batch(
             return
 
     console.print(f"Evaluating {len(targets)} jobs, {concurrency} at a time.")
-    ledger_start = cli._ledger_line_count()
+    ledger_start = _ledger_line_count()
     budget_stop = asyncio.Event() if max_cost > 0 else None
     # Set when premium spend is happening but is not being recorded, which
     # is a different failure from simply hitting the cap.
     unmeasurable = asyncio.Event()
 
     async def run_all() -> list[dict]:
-        graph = cli.build_evaluate_job_graph()
+        graph = build_evaluate_job_graph()
         semaphore = asyncio.Semaphore(max(1, concurrency))
 
         async def run_one(target: str) -> dict:
@@ -204,7 +195,7 @@ def evaluate_batch(
                     return {"target": target, "failed": f"{type(exc).__name__}: {exc}"}
                 finally:
                     if budget_stop is not None:
-                        spent, premium_records, priced_records = cli._ledger_spend_since(ledger_start)
+                        spent, premium_records, priced_records = _ledger_spend_since(ledger_start)
                         if premium_records > priced_records:
                             # Any premium call that reported no cost makes the
                             # running total an undercount, so the cap trips late
@@ -268,7 +259,7 @@ def evaluate_batch(
         for row in warned:
             console.print(f"- {row.get('company', row['target'])}: {row['errors'][0]}")
 
-    spend = cli._ledger_cost_since(ledger_start)
+    spend = _ledger_cost_since(ledger_start)
     console.print(f"\nPremium spend this batch: [bold]${spend:.2f}[/bold] over {len(rows)} job(s).")
     if unmeasurable.is_set():
         console.print(
@@ -311,10 +302,6 @@ def _batch_preflight(budget_enforced: bool = False) -> None:
     A stale CV or a premium command that is not on PATH degrades every job in
     the batch identically, and the damage is only visible hours later.
     """
-    # test_evaluate_batch.py patches job_hunt.cli.load_settings directly, and
-    # calls this function itself (bypassing evaluate_batch) to exercise it.
-    from job_hunt import cli
-
     if os.environ.get("JOB_HUNT_SKIP_CV_SYNC_CHECK") != "1":
         sync_result = cv_sync_check.run()
         for warning in sync_result.warnings:
@@ -325,7 +312,7 @@ def _batch_preflight(budget_enforced: bool = False) -> None:
             console.print("[red]Aborting batch.[/red] Run `job-hunt tracker check-sync` for details.")
             raise typer.Exit(1)
 
-    settings = cli.load_settings()
+    settings = load_settings()
     command = settings.llm.premium.command
     if not command:
         console.print("[red]No premium command configured (llm.premium.command is empty).[/red]")
@@ -374,19 +361,13 @@ def _partition_already_evaluated(targets: list[str]) -> tuple[list[str], list[tu
     — and the pipeline row this target came from is ticked off after a run, so
     a job the tracker cannot recognise still stops coming back.
     """
-    # _extract_loop_url_metadata lives in cli.apply; resolved through the
-    # package (not a bare name) so job_hunt.cli._extract_loop_url_metadata
-    # monkeypatches apply here, and so this module and cli.apply don't have
-    # to import each other at load time.
-    from job_hunt import cli
-
     tracker = TrackerRepository(Path("data/applications.md"))
     runnable: list[str] = []
     skipped: list[tuple[str, object]] = []
     for target in targets:
         entry = None
         try:
-            metadata = cli._extract_loop_url_metadata(target)
+            metadata = _extract_loop_url_metadata(target)
             company = (metadata.get("company") or "").strip()
             role = _strip_aggregator_suffix(metadata.get("title") or "")
             if company and role:
@@ -441,11 +422,7 @@ def _ledger_spend_since(start_line: int) -> tuple[float, int, int]:
     is not being recorded". Both look like $0.00 to a simple sum, and the
     second one silently disables the cap.
     """
-    # test_evaluate_batch.py captures this function directly and patches
-    # job_hunt.cli._ledger_path, so the lookup must go through the package.
-    from job_hunt import cli
-
-    path = cli._ledger_path()
+    path = _ledger_path()
     if not path.exists():
         return 0.0, 0, 0
     total = 0.0
@@ -469,19 +446,3 @@ def _ledger_spend_since(start_line: int) -> tuple[float, int, int]:
                 priced_records += 1
                 total += float(cost)
     return total, premium_records, priced_records
-
-
-def _resolve_source_type(target: str, source_type: str) -> str:
-    if source_type != "auto":
-        if source_type not in {"url", "jd_text", "local_file"}:
-            raise typer.BadParameter("source_type must be auto, url, jd_text, or local_file")
-        return source_type
-    if target.startswith(("http://", "https://")):
-        return "url"
-    # P2-10: `local:jds/foo.md` is treated as a URL — web_extract intercepts the
-    # `local:` scheme and reads the file directly.
-    if target.startswith("local:"):
-        return "url"
-    if Path(target).exists() or (Path("jds") / target).exists():
-        return "local_file"
-    return "jd_text"

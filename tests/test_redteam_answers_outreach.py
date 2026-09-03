@@ -73,7 +73,7 @@ def _drafted_message() -> Path:
 
 def test_outreach_draft_send_writes_review_beside_the_message(tmp_path, monkeypatch, capsys) -> None:
     contact = _make_contact(tmp_path, monkeypatch)
-    monkeypatch.setattr("job_hunt.cli._run_one_shot_prompt", lambda **kw: "Hi Jo, here's why I'm reaching out.")
+    monkeypatch.setattr("job_hunt.cli.outreach._run_one_shot_prompt", lambda **kw: "Hi Jo, here's why I'm reaching out.")
     monkeypatch.setattr(svc, "run_review", _fake_run_review("SEND", "VERDICT: SEND — looks fine"))
 
     _draft(contact)
@@ -87,7 +87,7 @@ def test_outreach_draft_send_writes_review_beside_the_message(tmp_path, monkeypa
 
 def test_outreach_draft_block_is_loud_but_keeps_the_message(tmp_path, monkeypatch, capsys) -> None:
     contact = _make_contact(tmp_path, monkeypatch)
-    monkeypatch.setattr("job_hunt.cli._run_one_shot_prompt", lambda **kw: "Hi Jo, here's why I'm reaching out.")
+    monkeypatch.setattr("job_hunt.cli.outreach._run_one_shot_prompt", lambda **kw: "Hi Jo, here's why I'm reaching out.")
     monkeypatch.setattr(svc, "run_review", _fake_run_review("BLOCK", "VERDICT: BLOCK — wrong email"))
 
     _draft(contact)
@@ -104,7 +104,7 @@ def test_outreach_draft_block_is_loud_but_keeps_the_message(tmp_path, monkeypatc
 
 def test_outreach_draft_unreviewed_is_not_a_pass_and_names_no_file(tmp_path, monkeypatch, capsys) -> None:
     contact = _make_contact(tmp_path, monkeypatch)
-    monkeypatch.setattr("job_hunt.cli._run_one_shot_prompt", lambda **kw: "Hi Jo, here's why I'm reaching out.")
+    monkeypatch.setattr("job_hunt.cli.outreach._run_one_shot_prompt", lambda **kw: "Hi Jo, here's why I'm reaching out.")
     monkeypatch.setattr(svc, "run_review", _fake_run_review("UNREVIEWED", "", ["red team unavailable: mmx not on PATH"]))
 
     _draft(contact)

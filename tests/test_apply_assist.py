@@ -395,12 +395,14 @@ def test_workday_textarea_uses_saved_answer(monkeypatch) -> None:
     )
     page = _fake_page_with_textareas([area])
     # _field_context is async + uses page.evaluate; stub it to return the question text directly.
+    # _fill_workday_textarea_answers (cli.apply) calls both as bare names, so
+    # the patch has to land on cli.apply's own copy.
     monkeypatch.setattr(
-        "job_hunt.cli._field_context",
+        "job_hunt.cli.apply._field_context",
         AsyncMock(return_value="Why are you interested in this role? *"),
     )
     monkeypatch.setattr(
-        "job_hunt.cli._field_contains_text",
+        "job_hunt.cli.apply._field_contains_text",
         AsyncMock(return_value=True),
     )
 
@@ -438,8 +440,10 @@ def test_workday_textarea_skips_already_filled_areas(monkeypatch) -> None:
     area.input_value = AsyncMock(return_value="user-typed answer")
     area.fill = AsyncMock()
     page = _fake_page_with_textareas([area])
-    monkeypatch.setattr("job_hunt.cli._field_context", AsyncMock(return_value="Question?"))
-    monkeypatch.setattr("job_hunt.cli._field_contains_text", AsyncMock(return_value=True))
+    # _fill_workday_textarea_answers (cli.apply) calls both as bare names, so
+    # the patch has to land on cli.apply's own copy.
+    monkeypatch.setattr("job_hunt.cli.apply._field_context", AsyncMock(return_value="Question?"))
+    monkeypatch.setattr("job_hunt.cli.apply._field_contains_text", AsyncMock(return_value=True))
 
     filled, skipped, answers = asyncio.run(
         _fill_workday_textarea_answers(
@@ -523,7 +527,7 @@ def test_workday_textarea_marks_no_answer_questions_as_skipped(monkeypatch) -> N
     area, _ = _fake_workday_textarea(question_html="Some unmatched custom question?")
     page = _fake_page_with_textareas([area])
     monkeypatch.setattr(
-        "job_hunt.cli._field_context",
+        "job_hunt.cli.apply._field_context",
         AsyncMock(return_value="Some unmatched custom question?"),
     )
 
@@ -658,8 +662,11 @@ def test_infer_loop_target_uses_url_metadata_without_description(tmp_path, monke
     pdf = output_dir / "cohere-security-agents-resume.pdf"
     pdf.write_text("pdf", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
+    # _infer_loop_target (cli.apply) calls this as a bare name resolved from
+    # its own module's import of cli._shared, so the patch has to land on
+    # cli.apply's copy, not job_hunt.cli's re-export.
     monkeypatch.setattr(
-        "job_hunt.cli._extract_loop_url_metadata",
+        "job_hunt.cli.apply._extract_loop_url_metadata",
         lambda url: {"company": "Cohere", "title": "Senior Software Engineer, Security Agents", "text": ""},
     )
 
