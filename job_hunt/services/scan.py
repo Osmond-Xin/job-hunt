@@ -201,11 +201,11 @@ def scan_portals(
             _workday_scanned_jobs(config.get("workday_boards"), result.errors),
             _adzuna_scanned_jobs(settings, discovery_context().get("roles", []), result.errors),
         ]
-        # All four already establish the occupation before we see the title:
+        # All five already establish the occupation before we see the title:
         # Job Bank is queried by NOC code, Adzuna rows are filtered on their
-        # own `category` facet, and the gov / Workday boards are small curated
-        # employer boards. Requiring a positive title match on top of that
-        # discards ~half of them for naming variance alone.
+        # own `category` facet, and the gov / regional / Workday boards are
+        # small curated employer boards. Requiring a positive title match on
+        # top of that discards ~half of them for naming variance alone.
         for tier_jobs in extra_tiers:
             _accept_jobs(
                 tier_jobs,

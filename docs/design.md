@@ -151,9 +151,12 @@ category facet), rows from these tiers skip the positive title filter —
 `require_positive=False` in `_accept_jobs` — and rely on the negative list
 alone; requiring a positive match on top of an already-scoped source was
 measured to discard roughly half of Job Bank's results to title-naming
-variance. Every tier here reports per-source `stats` (collected / errors /
-truncated) so a quiet failure reads as a failure, not as "no postings this
-week".
+variance. Every tier here reports its per-source coverage (collected /
+errors / truncated) so a quiet failure reads as a failure, not as "no
+postings this week" — Workday and Adzuna through a `SourceResult`/
+`SourceHealth` pair (`job_hunt/models/posting.py`), the other three through
+an older `stats` dict, a migration in progress (`docs/module-map.md` has the
+detail and what each of the three needs first).
 
 - **Tier 4 — Job Bank direct** (`job_hunt/services/jobbank.py`, config:
   `portals.yml::jobbank_direct`). Queries `jobbank.gc.ca`'s own search by
@@ -214,7 +217,7 @@ Two things a reader needs and cannot currently find anywhere else:
   not in anything checked into this repo.
 - `config/sites.yml` declares a `kind` / `preferred_adapter` /
   `fallback_adapters` shape per site. Nothing in `job_hunt/` reads those
-  fields at scan or apply time — `cli.py` only checks whether the file
+  fields at scan or apply time — `cli/setup.py` only checks whether the file
   exists (for `job-hunt init` and `config doctor`). Treat it as inert
   configuration, not a live adapter-selection mechanism.
 
@@ -378,9 +381,9 @@ job-hunt apply-close-session
 job-hunt apply '<url>' --no-browser --confirmed
 ```
 
-Workday-specific logic is split between `cli.py` orchestration and service
-modules under `job_hunt/services/workday/`. Employer-specific question answers
-belong in YAML under `profile/workday-employers/`.
+Workday-specific logic is split between `cli/apply.py` orchestration and
+service modules under `job_hunt/services/workday/`. Employer-specific
+question answers belong in YAML under `profile/workday-employers/`.
 
 Non-Workday fallback:
 
