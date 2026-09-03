@@ -9,10 +9,16 @@ from pathlib import Path
 from langchain_core.runnables import RunnableConfig
 
 from job_hunt.models.state import JobHuntState
+from job_hunt.nodes._cv_fit import pdf_page_count
 from job_hunt.nodes._prompts import render
 from job_hunt.nodes._quality import generate_with_audit
 from job_hunt.nodes.artifact_paths import artifact_filename, run_output_dir
-from job_hunt.nodes.pdf import artifact_template_env, detect_paper_size
+from job_hunt.nodes.pdf import (
+    MAX_COVER_LETTER_PAGES,
+    _html_to_pdf,
+    artifact_template_env,
+    detect_paper_size,
+)
 
 _TEMPLATES_DIR = Path("templates")
 _FONTS_DIR = (_TEMPLATES_DIR / "fonts").resolve()
@@ -122,11 +128,24 @@ async def generate_cover_letter(state: JobHuntState, config: RunnableConfig) -> 
         pdf_path = out_dir / f"{stem}.pdf"
         await _html_to_pdf(str(html_path), str(pdf_path), paper_size=paper_size)
 
+        # CLAUDE.md §2: "Cover letter: 1 page. Enforced, not aspirational." The
+        # résumé has a trim order (`_cv_fit.next_trim`) that decides which block
+        # to drop; a cover letter's paragraphs have no such order, so dropping
+        # one silently would change the argument. Measure and report instead —
+        # same warnings channel the audit-failed and UNVERIFIED cases above use.
+        overflow_warnings: list[str] = []
+        pages = pdf_page_count(pdf_path.read_bytes())
+        if pages is not None and pages > MAX_COVER_LETTER_PAGES:
+            overflow_warnings.append(
+                f"cover letter is {pages} pages — budget is {MAX_COVER_LETTER_PAGES}. "
+                "Shorten it by hand; the letter is not auto-trimmed."
+            )
+
         return {
             "cover_letter_path": str(pdf_path),
             "evaluation_blocks": {"cover_letter": body_md},
             "errors": errors,
-            "artifact_warnings": unverified,
+            "artifact_warnings": unverified + overflow_warnings,
         }
 
     except Exception as exc:
@@ -147,15 +166,3 @@ def _split_paragraphs(markdown: str) -> list[str]:
     cleaned = re.sub(r"\*{1,2}([^*\n]+)\*{1,2}", r"\1", cleaned)
     chunks = [chunk.strip() for chunk in re.split(r"\n\s*\n", cleaned) if chunk.strip()]
     return [re.sub(r"\s+", " ", chunk) for chunk in chunks]
-
-
-async def _html_to_pdf(html_path: str, pdf_path: str, *, paper_size: str = "letter") -> None:
-    from playwright.async_api import async_playwright
-
-    fmt = "Letter" if paper_size.lower() == "letter" else "A4"
-    async with async_playwright() as pw:
-        browser = await pw.chromium.launch()
-        page = await browser.new_page()
-        await page.goto(Path(html_path).resolve().as_uri())
-        await page.pdf(path=pdf_path, format=fmt, print_background=True)
-        await browser.close()

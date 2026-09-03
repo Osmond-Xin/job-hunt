@@ -20,6 +20,11 @@ _FONTS_DIR = (_TEMPLATES_DIR / "fonts").resolve()
 MAX_CV_PAGES = 2
 MAX_TRIM_ATTEMPTS = 30
 
+# CLAUDE.md §2: "Cover letter: 1 page. Enforced, not aspirational." Unlike the
+# résumé's MAX_CV_PAGES, nothing trims against this — see generate_cover_letter
+# in cover_letter.py for why an overflow is reported instead of auto-trimmed.
+MAX_COVER_LETTER_PAGES = 1
+
 # Ad copy wears first and second person; a job title never does.
 _AD_COPY_RE = re.compile(r"\b(we|our|ours|you|your|yours)\b", re.IGNORECASE)
 

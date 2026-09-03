@@ -8,7 +8,7 @@ from pathlib import Path
 from langchain_core.runnables import RunnableConfig
 
 from job_hunt.models.state import JobHuntState
-from job_hunt.nodes.artifact_paths import run_stem
+from job_hunt.nodes.artifact_paths import run_output_dir, run_stem
 
 _REPORTS_DIR = Path("reports")
 
@@ -49,7 +49,16 @@ async def write_report(state: JobHuntState, config: RunnableConfig) -> dict:
             "UNREVIEWED": "⚪ RED TEAM: UNREVIEWED — the reviewer could not be reached; "
             "this is not a pass",
         }.get(verdict, f"RED TEAM: {verdict}")
-        lines += [f"## {banner}", "", "See `redteam.md` in the run directory.", ""]
+        lines += [f"## {banner}", ""]
+        # CLAUDE.md §1: UNREVIEWED is not a pass. redteam_review only writes
+        # redteam.md when a review actually came back (see nodes/redteam.py) —
+        # on the mmx-unreachable / timeout / non-zero-exit paths there is no
+        # file, and pointing at one anyway reads as though a review happened.
+        if (run_output_dir(state) / "redteam.md").exists():
+            lines.append("See `redteam.md` in the run directory.")
+        else:
+            lines.append("No `redteam.md` was written — this artifact was not reviewed.")
+        lines.append("")
     if artifact_warnings:
         lines += ["## ⚠️ Artifacts needing review", ""]
         lines += [f"- {warning}" for warning in artifact_warnings]

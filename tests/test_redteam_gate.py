@@ -7,7 +7,11 @@ could not be reached is UNREVIEWED, never a pass.
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
+import pytest
+
+from job_hunt.models.job import JobMeta
 from job_hunt.services import redteam as svc
 
 
@@ -90,3 +94,55 @@ def test_node_is_a_no_op_without_artifacts():
     out = asyncio.run(redteam_review({"pdf_path": None, "cover_letter_path": None}, None))
     assert out == {"errors": []}
     assert "redteam_verdict" not in out
+
+
+# ----- write_report: must not point at a redteam.md that redteam_review never wrote -----
+
+
+def _report_state(verdict: str) -> dict:
+    return {
+        "run_id": "abc123",
+        "jd_meta": JobMeta(company="Acme", title="Engineer"),
+        "evaluation_blocks": {},
+        "redteam_verdict": verdict,
+        "errors": [],
+    }
+
+
+def test_unreviewed_report_does_not_point_at_a_file_that_was_never_written(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CLAUDE.md §1: UNREVIEWED is not a pass. redteam_review only writes
+    redteam.md when a review actually came back — on the mmx-unreachable /
+    timeout / non-zero-exit paths, no file exists, so the report must not send
+    the operator to look for one."""
+    from job_hunt.nodes.report import write_report
+
+    monkeypatch.chdir(tmp_path)  # write_report writes a relative reports/ dir
+    result = asyncio.run(write_report(_report_state("UNREVIEWED"), None))
+    report = result["report_md"]
+
+    assert "RED TEAM: UNREVIEWED" in report
+    assert "not reviewed" in report.lower()
+    assert "See `redteam.md`" not in report
+
+
+def test_reviewed_block_report_points_at_the_file_that_was_written(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The other side of the same fix: when redteam_review did write the file,
+    the report must still send the operator to it."""
+    from job_hunt.nodes.artifact_paths import run_output_dir
+    from job_hunt.nodes.report import write_report
+
+    monkeypatch.chdir(tmp_path)
+    state = _report_state("BLOCK")
+    out_dir = run_output_dir(state)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "redteam.md").write_text("VERDICT: BLOCK — wrong email", encoding="utf-8")
+
+    result = asyncio.run(write_report(state, None))
+    report = result["report_md"]
+
+    assert "RED TEAM: BLOCK" in report
+    assert "See `redteam.md`" in report
