@@ -9,14 +9,24 @@ that decides the ordering is already in the row.
 
 Priorities, in the order they were established:
 
-1. **Immigration value first.** A permanent role in an AIP province, a
-   territory, or an SINP/MPNP province outranks a better-matched job in
-   Toronto, because the offer is what converts into status.
-2. **Non-major-metro next.** Toronto, Vancouver and Montréal are ranked
-   last, not excluded — the operator cleared Toronto explicitly once the
-   remote pool thinned.
-3. **Role shape.** Applied-AI work, and roles whose real content is one
+1. **Role shape.** Applied-AI work, and roles whose real content is one
    person owning everything, over generic engineering.
+2. **Freshness.** A month-old posting on a board that reposts weekly is
+   usually already filled.
+3. **Direct employer over aggregator redirect.**
+
+Geography scored and ordered rows here until 2026-09-03: a nomination-
+qualifying province or territory outranked a major metro, which outranked
+nothing in particular. That tier list was built for an immigration-path
+ranking the operator's own later research reversed — his 2026-07-07 notes
+rank the paths ① OINP (Ontario, including Toronto) ② RCIP ③ AIP, with AIP
+tightening to ~4,000 national places — and it duplicated, badly, the region
+list actually maintained at `profile/profile.yml::immigration_priority` and
+read by `services/immigration.py`. The operator's own ruling settled it: he
+looks for a matching job first and immigration second — "两个能一起解决最好，
+但是不一起肯定先找工作" — so location has been removed from this file
+entirely, score and tie-break both. Immigration still reaches him downstream,
+in `services/immigration.py`, against the list that is actually kept current.
 
 Exclusions are the categories that were measured to convert at zero: staffing
 agencies, roles above the reachable level, clearance-gated defence work, and
@@ -73,19 +83,6 @@ BIG_EMPLOYER_RE = re.compile(
     re.I,
 )
 
-# AIP provinces, the three territories, and the two Prairie PNP provinces.
-TIER_A_RE = re.compile(
-    r"\b(nova scotia|new brunswick|prince edward|newfoundland|labrador|halifax|dartmouth|"
-    r"sydney|moncton|fredericton|saint john|charlottetown|st\.? john's|"
-    r"northwest territories|yukon|nunavut|yellowknife|whitehorse|iqaluit|inuvik|"
-    r"saskatchewan|manitoba|saskatoon|regina|winnipeg|brandon|nb|ns|pe|nl|nt|yt|nu|sk|mb)\b",
-    re.I,
-)
-TIER_C_RE = re.compile(
-    r"\b(toronto|vancouver|montr[ée]al|greater toronto|gta|mississauga|brampton|markham|"
-    r"north york|scarborough|etobicoke|vaughan|richmond hill|burnaby|surrey)\b",
-    re.I,
-)
 GOVERNMENT_RE = re.compile(
     r"\b(government|gouvernement|province of|city of|municipality|public service|"
     r"health authority|school district|crown corporation)\b",
@@ -196,27 +193,26 @@ def score(row: PipelineRow, *, today: date | None = None) -> tuple[float, list[s
     points = 0.0
     reasons: list[str] = []
 
-    # 1. Immigration value is real but must not stand in for role fit. Until
-    #    2026-08-31 a nomination-qualifying region was worth +4 while the three
-    #    metros that hold essentially every Canadian AI job scored 0 — less than
-    #    an unrecognised location — so a Brandon equipment operator (7.5)
-    #    outranked Mistral's Applied AI forward-deployed role in Montréal (4.0),
-    #    and 130 of the top 300 rows were government postings. The operator's
-    #    ruling: region belongs in the ORDERING, not in the score. The spread is
-    #    now 1.0 instead of 4.0, and ties break toward the region below.
-    if TIER_A_RE.search(row.location):
-        points += 1.5
-        reasons.append("PNP/AIP region")
-    elif TIER_C_RE.search(row.location):
-        points += 0.5
-        reasons.append("major metro")
-    else:
-        points += 1.0
+    # 1. Geography scored here until 2026-09-03, on a scale that inverted the
+    #    priority it was meant to serve: a nomination-qualifying region was
+    #    worth +1.5, a major metro only +0.5 — less than an unrecognised
+    #    location's flat +1.0 — so a Brandon equipment operator (7.5)
+    #    outranked Mistral's Applied AI forward-deployed role in Montréal
+    #    (4.0), and 130 of the top 300 rows were government postings. That
+    #    was already the second version of the rule, tightened once from an
+    #    even worse +4 spread; the tightening didn't fix the premise. The
+    #    operator's ruling, 2026-09-03: "两个能一起解决最好，但是不一起肯定
+    #    先找工作" — a job match first, immigration second, always — and the
+    #    tiers here were built for an immigration-path ranking his own later
+    #    research reversed (see the module docstring). Geography no longer
+    #    scores or orders anything in this file; immigration still reaches
+    #    him, downstream of triage, through `services/immigration.py`
+    #    against the region list that is actually kept current.
     if GOVERNMENT_RE.search(row.company):
         points += 1
         reasons.append("public sector")
 
-    # 2. Role shape, which now outweighs every location term combined.
+    # 2. Role shape, the dominant term now that geography scores nothing.
     if AI_ROLE_RE.search(row.role):
         points += 3
         reasons.append("applied AI")
@@ -330,13 +326,13 @@ def rank(
         pairs.add(pair)
         points, reasons = score(row, today=today)
         ranked.append(Ranked(row=row, score=points, reasons=tuple(reasons)))
-    # Region is the tie-break, not the score: among equally well-matched roles a
-    # nomination-qualifying province comes first, but it can no longer lift an
-    # off-target posting above a matching one.
+    # Geography broke ties here until 2026-09-03 (see score() above and the
+    # module docstring for why that stopped). Ties now fall to freshness,
+    # then company name — both already inherent to the row, neither of them
+    # a location, and both stable regardless of the order rows arrived in.
     ranked.sort(
         key=lambda item: (
             -item.score,
-            0 if TIER_A_RE.search(item.row.location) else (1 if not TIER_C_RE.search(item.row.location) else 2),
             item.row.posted or "",
             item.row.company,
         )

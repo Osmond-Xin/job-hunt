@@ -6,7 +6,6 @@ from rich.table import Table
 from job_hunt.config.models import Settings, load_settings
 from job_hunt.repositories.tracker_repo import TrackerRepository
 from job_hunt.services.scan import scan_portals
-from job_hunt.services.shortlist import _IMMIGRATION_LANE_SLOTS, _immigration_lane
 
 from ._render import _short, console
 from . import app
@@ -105,8 +104,9 @@ def triage(
 
     Discovery outgrew reading: the inbox is thousands of rows, so without a
     ranking the real filter is "whatever is near the bottom of the file".
-    Scoring is deterministic — immigration value, then location, then role
-    shape, then freshness — so the same inbox always yields the same list.
+    Scoring is deterministic — role shape, then freshness, then direct
+    employer over aggregator — so the same inbox always yields the same
+    list. Location plays no part in it.
     """
     from job_hunt.services.shortlist import ShortlistOptions, build_shortlist
 
@@ -139,7 +139,7 @@ def triage(
             note += f", {result.unscreened} kept unscreened"
         console.print(f"[dim]{note}[/dim]")
 
-    best_count = sum(1 for entry in result.entries if not entry.lane)
+    best_count = sum(1 for entry in result.entries if not entry.overflow)
     verify_note = ""
     if verify:
         if result.rejected:
@@ -181,22 +181,22 @@ def triage(
         if llm_screen:
             cells.insert(2, f"{entry.fit:.0f}" if entry.fit is not None else "?")
             cells[-1] = _short((entry.screen_reason if entry.fit is not None else cells[-1]) or "—", 34)
-        if entry.lane:
+        if entry.overflow:
             cells[0] = f"L{index - best_count}"
-            cells[-1] = _short(f"[lane] {cells[-1]}", 34)
+            cells[-1] = _short(f"[overflow] {cells[-1]}", 34)
         table.add_row(*cells)
     console.print(table)
-    lane_count = len(result.entries) - best_count
-    if lane_count:
+    overflow_count = len(result.entries) - best_count
+    if overflow_count:
         console.print(
-            f"[dim]L1–L{lane_count} are the immigration lane: the highest deterministic-score "
+            f"[dim]L1–L{overflow_count} are the overflow lane: the highest deterministic-score "
             "rows the model's fit ranking pushed out. They are an exploration budget, not a "
             "recommendation — the heuristic has been wrong by 7 points.[/dim]"
         )
     console.print()
     for index, entry in enumerate(result.entries, start=1):
         item = entry.ranked
-        label = str(index) if not entry.lane else f"L{index - best_count}"
+        label = str(index) if not entry.overflow else f"L{index - best_count}"
         console.print(f"[bold]{label}.[/bold] {item.row.company} — {item.row.role}")
         console.print(f"   [dim]{item.row.location or 'location not stated'}[/dim]")
         console.print(f"   {item.row.url}")

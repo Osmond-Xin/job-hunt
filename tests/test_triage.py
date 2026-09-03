@@ -1,9 +1,11 @@
 """Pipeline triage: turning an unreadable inbox into a day's shortlist.
 
 The ordering encodes standing decisions, so these tests are mostly about those
-decisions holding — role fit outranking immigration value, region breaking ties
-rather than deciding them, Toronto ranked last rather than dropped, and
-already-applied work never resurfacing.
+decisions holding — role shape deciding rank on its own now that geography
+scores and orders nothing (removed 2026-09-03: the operator looks for a
+matching job first and immigration second, and immigration reaches him
+downstream in `services/immigration.py` instead), and already-applied work
+never resurfacing.
 """
 
 from __future__ import annotations
@@ -66,26 +68,53 @@ def test_a_url_already_settled_does_not_come_back_under_a_new_company_name():
     assert "https://example.invalid/6" not in {row.url for row in parse_pipeline(text)}
 
 
-def test_region_breaks_ties_but_does_not_outrank_role_fit():
-    """Reversed 2026-08-31 on the operator's ruling.
+def test_location_no_longer_affects_the_score_at_all():
+    """Removed entirely 2026-09-03 on the operator's ruling.
 
-    This test used to assert the opposite: a Manitoba public-sector row beat a
-    Toronto "Senior AI Engineer". Under those weights a Brandon equipment
+    This test used to assert region as a bounded tie-break (a correction of
+    an earlier version where region dominated outright: a Brandon equipment
     operator scored 7.5 against 4.0 for Mistral's Applied AI forward-deployed
-    role, 130 of the top 300 rows were government postings, and three weeks of
-    matching work was never seen. Region is now the tie-break, not the score.
+    role, and 130 of the top 300 rows were government postings). Bounding it
+    still wasn't the fix — the tiers were built for an immigration-path
+    ranking the operator's own later research reversed. His decision: a job
+    match first, immigration second — "两个能一起解决最好，但是不一起肯定先
+    找工作" — so a Toronto row and a Halifax row with otherwise identical
+    content must score identically, full stop.
     """
-    rows = parse_pipeline(PIPELINE)
-    manitoba = next(r for r in rows if r.company == "Government of Manitoba")
-    toronto = next(r for r in rows if r.company == "BigCo")
+    toronto = PipelineRow(
+        url="https://example.invalid/toronto", company="Foundry", role="AI Engineer",
+        location="Toronto, Ontario", posted="2026-08-11", source="direct",
+    )
+    halifax = PipelineRow(
+        url="https://example.invalid/halifax", company="Foundry", role="AI Engineer",
+        location="Halifax, NS", posted="2026-08-11", source="direct",
+    )
     today = date(2026, 8, 12)
-    # The Manitoba row is a Data Engineer — on-target AND in a nomination
-    # region, so it may still lead. What must not survive is the SIZE of the
-    # lead: region used to buy 3.5 points over a strong AI title, enough to bury
-    # matching work under hundreds of government postings. Within one point, the
-    # two compete on their merits and both reach the operator.
-    gap = score(manitoba, today=today)[0] - score(toronto, today=today)[0]
-    assert gap <= 1.0, f"region still dominates role fit by {gap}"
+    assert score(toronto, today=today) == score(halifax, today=today)
+
+
+def test_rank_order_does_not_depend_on_location():
+    """Same property at the rank() level: ties are broken by freshness then
+    company name, never by geography.
+
+    Under the tier scheme this replaced, a nomination-qualifying region beat
+    a major metro in the tie-break regardless of company name — so a
+    Halifax "Zeta" would have outranked a Toronto "Alpha" even though "Alpha"
+    sorts first alphabetically. It must not now: with scores tied, company
+    name alone decides, so "Alpha" (Toronto) comes first despite Toronto
+    being listed second in the input.
+    """
+    toronto = PipelineRow(
+        url="https://example.invalid/alpha", company="Alpha", role="AI Engineer",
+        location="Toronto, Ontario", posted="2026-08-11", source="direct",
+    )
+    halifax = PipelineRow(
+        url="https://example.invalid/zeta", company="Zeta", role="AI Engineer",
+        location="Halifax, NS", posted="2026-08-11", source="direct",
+    )
+    today = date(2026, 8, 12)
+    ranked = rank([halifax, toronto], limit=10, today=today)
+    assert [item.row.company for item in ranked] == ["Alpha", "Zeta"]
 
 
 def test_a_role_matching_no_target_vocabulary_sinks_below_a_matching_one():
@@ -102,12 +131,15 @@ def test_a_role_matching_no_target_vocabulary_sinks_below_a_matching_one():
     assert points < score(toronto, today=today)[0]
 
 
-def test_toronto_is_ranked_last_not_excluded():
+def test_toronto_is_not_excluded_or_scored_on_location():
+    """Toronto used to be down-ranked, then merely a tie-break loser; now
+    location plays no part in the score at all."""
     rows = parse_pipeline(PIPELINE)
     toronto = next(r for r in rows if r.company == "BigCo")
     assert excluded(toronto) == ""
     points, reasons = score(toronto, today=date(2026, 8, 12))
-    assert "major metro" in reasons
+    assert "major metro" not in reasons
+    assert "PNP/AIP region" not in reasons
     assert points > 0
 
 

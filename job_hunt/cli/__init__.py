@@ -68,8 +68,6 @@ from .discovery import (
     _shortlist_rows,
     search_jobs,
     shortlist,
-    _IMMIGRATION_LANE_SLOTS,
-    _immigration_lane,
     triage,
     scan,
 )

@@ -1,4 +1,4 @@
-"""Tests for the composed `triage` pipeline: rank -> screen -> verify -> lane.
+"""Tests for the composed `triage` pipeline: rank -> screen -> verify -> overflow lane.
 
 `job_hunt.services.triage` tests the leaves. This file tests the five
 ordering invariants that used to live only as comments inside the `triage`
@@ -178,7 +178,7 @@ def test_verification_resets_the_lane_pool_to_survivors(tmp_path) -> None:
     tracker = _write(tmp_path, "applications.md", "")
 
     # RowA and RowB pass the model's screen with a good fit; RowC is the
-    # immigration-lane candidate the fit ranking pushed out.
+    # overflow-lane candidate the fit ranking pushed out.
     fit_by_company = {"RowA Co": 5.0, "RowB Co": 5.0, "RowC Co": 1.0}
 
     def fake_screener(pairs):
@@ -207,7 +207,7 @@ def test_verification_resets_the_lane_pool_to_survivors(tmp_path) -> None:
     companies = [entry.ranked.row.company for entry in result.entries]
     assert "RowC Co" not in companies
     assert companies == ["RowA Co", "RowB Co"]  # RowA shortlisted, RowB rescued to the lane
-    assert result.entries[1].lane is True
+    assert result.entries[1].overflow is True
 
 
 def test_skipped_verification_is_not_folded_into_nothing_dead(tmp_path) -> None:
