@@ -120,6 +120,85 @@ def test_same_company_different_role_imports_separate_tracker_row(tmp_path) -> N
     ]
 
 
+def test_alias_resolves_the_mail_side_brand_to_the_tracker_row(tmp_path) -> None:
+    # "Seon" (the sender's brand in the mail) shares no distinctive token with
+    # "Safe Fleet" (the tracker's employer name) — only the alias connects them.
+    tracker_path = tmp_path / "applications.md"
+    tracker_path.write_text(TRACKER_HEADER, encoding="utf-8")
+    tracker = TrackerRepository(tracker_path)
+    tracker.append_entry(tracker_entry(1, "Safe Fleet", "Safety Engineer", "Applied"))
+
+    event_repo = EmailEventRepository(tmp_path / "email-events.jsonl")
+    event_repo.append(
+        event(
+            event_type="rejection",
+            company="Seon",
+            role="Safety Engineer",
+            message_id="seon_rejection",
+        )
+    )
+
+    result = reconcile_email_events(
+        apply=True,
+        import_new=True,
+        update_existing=True,
+        create_review=False,
+        limit=100,
+        event_repo=event_repo,
+        tracker=tracker,
+        review_repo=ReviewRepository(tmp_path / "review.jsonl"),
+        aliases={"Seon": "Safe Fleet"},
+    )
+
+    assert result.matched == 1
+    assert result.updated == 1
+    assert result.imported == 0
+    entries = tracker.parse()
+    assert len(entries) == 1
+    assert entries[0].status == "Rejected"
+
+
+def test_without_the_alias_the_brand_name_reads_as_a_new_employer(tmp_path) -> None:
+    """Regression guard for the alias test above: without the alias, "Seon"
+    and "Safe Fleet" genuinely fail the distinctive-token gate, so the event
+    imports as a new row instead of updating #1 — the alias, not a fuzzy
+    coincidence, is what makes the match above work."""
+    tracker_path = tmp_path / "applications.md"
+    tracker_path.write_text(TRACKER_HEADER, encoding="utf-8")
+    tracker = TrackerRepository(tracker_path)
+    tracker.append_entry(tracker_entry(1, "Safe Fleet", "Safety Engineer", "Applied"))
+
+    event_repo = EmailEventRepository(tmp_path / "email-events.jsonl")
+    event_repo.append(
+        event(
+            event_type="rejection",
+            company="Seon",
+            role="Safety Engineer",
+            message_id="seon_rejection",
+        )
+    )
+
+    result = reconcile_email_events(
+        apply=True,
+        import_new=True,
+        update_existing=True,
+        create_review=False,
+        limit=100,
+        event_repo=event_repo,
+        tracker=tracker,
+        review_repo=ReviewRepository(tmp_path / "review.jsonl"),
+        aliases={},
+    )
+
+    assert result.matched == 0
+    assert result.imported == 1
+    entries = tracker.parse()
+    assert [(e.company, e.status) for e in entries] == [
+        ("Safe Fleet", "Applied"),
+        ("Seon", "Rejected"),
+    ]
+
+
 def test_low_confidence_event_can_be_skipped_without_review_file(tmp_path) -> None:
     event_repo = EmailEventRepository(tmp_path / "email-events.jsonl")
     event_repo.append(

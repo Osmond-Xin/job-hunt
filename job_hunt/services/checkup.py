@@ -16,10 +16,11 @@ import re
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from pathlib import Path
+from typing import Mapping
 
 from job_hunt.repositories.email_event_repo import EmailEventRepository
 from job_hunt.repositories.tracker_repo import TrackerRepository
-from job_hunt.services.email.gaps import _distinctive_tokens
+from job_hunt.services.employer_match import EmployerMatcher, load_aliases
 
 # Statuses that mean the application was actually sent.
 _SENT_STATUSES = {"Applied", "Rejected", "Interview", "Responded", "Offer"}
@@ -76,6 +77,7 @@ def unrecorded_artifacts(
     since: date,
     output_dir: Path = Path("output"),
     tracker: TrackerRepository | None = None,
+    aliases: Mapping[str, str] | None = None,
 ) -> Check:
     """Directories holding a rendered PDF whose employer has no tracker row.
 
@@ -83,10 +85,7 @@ def unrecorded_artifacts(
     materials existed on disk for ten days with nothing pointing at them.
     """
     tracker = tracker or TrackerRepository(Path("data/applications.md"))
-    entries = tracker.parse()
-    known: list[tuple[set[str], str]] = [
-        (set(_distinctive_tokens(entry.company)), entry.status) for entry in entries
-    ]
+    matcher = EmployerMatcher(tracker.parse(), aliases=aliases if aliases is not None else load_aliases())
 
     missing: list[str] = []
     unsent: list[str] = []
@@ -111,7 +110,7 @@ def unrecorded_artifacts(
             tokens = _slug_tokens(child.name)
             if not tokens:
                 continue
-            hits = [status for company, status in known if company & tokens]
+            hits = [match.entry.status for match in matcher.any_employer(tokens)]
             if not hits:
                 missing.append(child.name)
             elif not any(status in _SENT_STATUSES for status in hits):

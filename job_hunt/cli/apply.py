@@ -5142,8 +5142,12 @@ def _record_manual_submission(
         tracker.update_entry(updated)
         return updated
 
-    existing, score = tracker.find_match(company=company, role=role)
-    if existing and score >= 0.70:
+    from job_hunt.services.employer_match import EmployerMatcher, load_aliases
+
+    matcher = EmployerMatcher(tracker.parse(), aliases=load_aliases())
+    match = matcher.best(company=company, role=role, intent="mutate")
+    if match:
+        existing = match.entry
         updated = existing.model_copy(
             update={
                 "status": "Applied",

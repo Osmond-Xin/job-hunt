@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+from typing import Mapping
+
 from pydantic import BaseModel
-from rapidfuzz import fuzz
 
 from job_hunt.models.events import ApplicationEvent
 from job_hunt.models.review import ReviewItem
 from job_hunt.repositories.email_event_repo import EmailEventRepository
 from job_hunt.repositories.review_repo import ReviewRepository
-from job_hunt.repositories.tracker_repo import TrackerEntry, TrackerRepository, normalize
+from job_hunt.repositories.tracker_repo import TrackerEntry, TrackerRepository
+from job_hunt.services.employer_match import EmployerMatcher, is_reliable_match, load_aliases
 
 
 EMAIL_STATUS_MAP = {
@@ -40,10 +42,12 @@ def reconcile_email_events(
     event_repo: EmailEventRepository | None = None,
     tracker: TrackerRepository | None = None,
     review_repo: ReviewRepository | None = None,
+    aliases: Mapping[str, str] | None = None,
 ) -> ReconcileResult:
     event_repo = event_repo or EmailEventRepository()
     tracker = tracker or TrackerRepository()
     review_repo = review_repo or ReviewRepository()
+    aliases = aliases if aliases is not None else load_aliases()
     events = event_repo.list(limit=limit)
     result = ReconcileResult(scanned=len(events))
     for event in events:
@@ -51,7 +55,17 @@ def reconcile_email_events(
         if not status:
             result.skipped += 1
             continue
-        matched, match_score = tracker.find_match(company=event.company, role=event.role)
+        # Re-read per event, not once for the whole batch: `apply` mutates the
+        # tracker mid-loop (update_entry / add_imported_email_entry below), and
+        # a later event in the same batch must see those writes — the same
+        # freshness `tracker.find_match` gave every caller before this change.
+        matcher = EmployerMatcher(tracker.parse(), aliases=aliases)
+        matched, match_score = matcher.raw_match(company=event.company, role=event.role)
+        # `EmployerMatcher.best(intent="mutate")` is the general "a human
+        # already made this identification" gate (find_match's own 0.70
+        # threshold, no more). Nobody is in the loop here, so reconcile keeps
+        # its own extra floor as an explicit check on top of the raw match —
+        # this is reconcile's policy, not something `mutate` imposes for it.
         if matched and event.role and _is_reliable_tracker_match(event, matched, match_score):
             result.matched += 1
             if apply and update_existing and matched.status != status:
@@ -86,14 +100,19 @@ def reconcile_email_events(
 
 
 def _is_reliable_tracker_match(event: ApplicationEvent, matched: TrackerEntry, match_score: float) -> bool:
-    if match_score < 0.75:
-        return False
-    if normalize(event.role or "") == normalize(matched.role):
-        return True
-    role_score = fuzz.token_set_ratio(matched.role, event.role or "") / 100
-    if normalize(event.company or "") == normalize(matched.company):
-        return role_score >= 0.82
-    return role_score >= 0.75
+    """reconcile's extra floor on top of a raw find_match-style score,
+    applied because reconcile acts on inbound mail with nobody in the loop —
+    thin wrapper around ``employer_match.is_reliable_match``, kept as a
+    module-level function (rather than inlined) because ``email/review.py``
+    still imports this by name.
+    """
+    return is_reliable_match(
+        company=event.company,
+        role=event.role,
+        matched_company=matched.company,
+        matched_role=matched.role,
+        score=match_score,
+    )
 
 
 def _safe_import_candidate(event: ApplicationEvent) -> bool:

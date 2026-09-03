@@ -6,7 +6,6 @@ from pathlib import Path
 
 from filelock import FileLock, Timeout
 from pydantic import BaseModel
-from rapidfuzz import fuzz
 
 _LOCK_TIMEOUT = 30
 
@@ -144,42 +143,21 @@ class TrackerRepository:
         return replaced
 
     def find_match(self, *, company: str | None, role: str | None) -> tuple[TrackerEntry | None, float]:
+        """Best (entry, score) by company/role similarity, no threshold applied.
+
+        Thin wrapper around ``EmployerMatcher.raw_match`` — the scoring
+        algorithm (weights, distinctive-token gate) lives there now, since it
+        is the shared core for both the strict `mutate` gate and the loose
+        `report` gate used across the tracker-matching call sites. Deferred
+        import to avoid a circular import (employer_match imports TrackerEntry
+        and normalize from this module).
+        """
+        from job_hunt.services.employer_match import EmployerMatcher
+
         if not company:
             return None, 0.0
-        entries = self.parse()
-        best: TrackerEntry | None = None
-        best_score = 0.0
-        company_norm = normalize(company)
-        role_norm = normalize(role or "")
-        for entry in entries:
-            company_score = 1.0 if normalize(entry.company) == company_norm else fuzz.ratio(normalize(entry.company), company_norm) / 100
-            # Generic tokens ("Software", "Inc", …) inflate the raw ratio:
-            # "CoLab Software" vs "Jonas Software" scores 0.79 and once matched
-            # a wrong tracker row on a real submission (2026-07-09). Distinct
-            # companies must also be similar on their distinctive tokens.
-            if company_score < 1.0:
-                distinctive = (
-                    fuzz.ratio(
-                        _distinctive_company_name(entry.company),
-                        _distinctive_company_name(company),
-                    )
-                    / 100
-                )
-                if distinctive < 0.60:
-                    continue
-            if role_norm:
-                role_score = 1.0 if normalize(entry.role) == role_norm else fuzz.token_sort_ratio(entry.role, role or "") / 100
-            else:
-                role_score = 0.0
-            # When the company is an exact match, require strong role similarity to
-            # avoid conflating two different roles at the same company.
-            if company_score == 1.0 and role_score < 0.85:
-                continue
-            score = company_score * 0.65 + role_score * 0.35
-            if score > best_score:
-                best_score = score
-                best = entry
-        return best, best_score
+        matcher = EmployerMatcher(self.parse())
+        return matcher.raw_match(company=company, role=role)
 
 
 _SEPARATOR_ROW = re.compile(r"^\|[\s:|-]+\|?$")
@@ -220,22 +198,6 @@ def parse_tracker_line(line: str) -> TrackerEntry | None:
 
 def normalize(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", value.lower())
-
-
-_GENERIC_COMPANY_TOKENS = {
-    "software", "inc", "corp", "corporation", "ltd", "llc", "co", "company",
-    "technologies", "technology", "tech", "solutions", "systems",
-    "group", "partners", "labs", "canada", "the",
-}
-
-
-def _distinctive_company_name(name: str) -> str:
-    """Company name reduced to its distinctive tokens for fuzzy comparison."""
-    tokens = [
-        t for t in re.findall(r"[a-z0-9]+", name.lower())
-        if t not in _GENERIC_COMPANY_TOKENS
-    ]
-    return "".join(tokens) or normalize(name)
 
 
 def _cell(value: object) -> str:

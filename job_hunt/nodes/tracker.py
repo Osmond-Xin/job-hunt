@@ -10,9 +10,9 @@ from langchain_core.runnables import RunnableConfig
 
 from job_hunt.models.state import JobHuntState
 from job_hunt.repositories.tracker_repo import TrackerEntry, TrackerRepository
+from job_hunt.services.employer_match import EmployerMatcher, load_aliases
 
 _TRACKER_PATH = Path("data/applications.md")
-_MATCH_THRESHOLD = 0.70
 
 # Both nodes read-modify-write the whole tracker file and derive the next row
 # number from what they read. TrackerRepository is fully synchronous, so the
@@ -43,8 +43,10 @@ async def _write_tracker_addition(state: JobHuntState) -> dict:
     company = jd_meta.company if jd_meta else ""
     role = jd_meta.title if jd_meta else ""
 
-    existing, match_score = repo.find_match(company=company, role=role)
-    if existing and match_score >= _MATCH_THRESHOLD:
+    matcher = EmployerMatcher(repo.parse(), aliases=load_aliases())
+    match = matcher.best(company=company, role=role, intent="mutate")
+    if match:
+        existing = match.entry
         _mark_pipeline_processed(state, existing)
         return {"tracker_entry": existing, "errors": []}
 
@@ -118,9 +120,11 @@ async def _merge_or_update_tracker(state: JobHuntState) -> dict:
     company = jd_meta.company if jd_meta else ""
     role = jd_meta.title if jd_meta else ""
 
-    existing, match_score = repo.find_match(company=company, role=role)
-    if not existing or match_score < _MATCH_THRESHOLD:
+    matcher = EmployerMatcher(repo.parse(), aliases=load_aliases())
+    match = matcher.best(company=company, role=role, intent="mutate")
+    if not match:
         return {"errors": []}
+    existing = match.entry
 
     score_str = f"{scores.weighted_total:.1f}/5" if scores else existing.score
     updated = TrackerEntry(
