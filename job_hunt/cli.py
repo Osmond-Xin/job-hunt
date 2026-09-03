@@ -360,7 +360,15 @@ def onboarding_init(
         console.print("[green]Created[/green] profile/cv.md placeholder")
 
     if configure_ai_now:
-        configure_ai()
+        # `configure_ai` is a Typer command, so an omitted argument keeps its
+        # OptionInfo default rather than None/"" — pass every parameter explicitly.
+        configure_ai(
+            provider="minimax",
+            api_key=None,
+            base_url="https://api.minimax.chat",
+            model="",
+            endpoint_style="minimax",
+        )
 
     if guided and not yes:
         from job_hunt.services import onboarding as _onb
@@ -869,6 +877,8 @@ def activity_list(
 
 @activity_app.command("tail")
 def activity_tail(limit: int = 20) -> None:
+    # `activity_list` is a Typer command, so an omitted argument keeps its
+    # OptionInfo default rather than None — every parameter is passed explicitly.
     activity_list(limit=limit, since=None)
 
 
@@ -1039,6 +1049,51 @@ def contacts_search(company: str = typer.Option("", help="Filter by company subs
     console.print(table)
 
 
+def _gate_outward_artifact(
+    *,
+    artifact_path: Path,
+    jd_text: str,
+    company: str,
+    role: str,
+) -> None:
+    """CLAUDE.md §1: "No artifact is delivered to the user until it has passed
+    through the red team" names outreach emails and application-form answers
+    in the same sentence as résumés and cover letters, but only those two ever
+    ran the review — this closes that gap for the CLI paths. Mirrors
+    `nodes/redteam.py`: UNREVIEWED (mmx unreachable, timeout, no verdict line)
+    is never presented as a pass, and BLOCK is loud but does not delete or
+    withhold the generated text — the operator adjudicates findings, the
+    reviewer has no veto.
+
+    The review is written beside the artifact under a paired name
+    (``<stem>.redteam.md``) rather than the pipeline's plain ``redteam.md``:
+    unlike a pipeline run directory, these CLI locations can already hold (or
+    later hold) an unrelated ``redteam.md`` — e.g. an apply-answers file
+    written into the same `output/<run>/` directory as a CV that already has
+    its own review — and a fixed name would silently overwrite it.
+    """
+    from job_hunt.services.redteam import run_review
+
+    result = run_review(artifacts=[artifact_path], jd_text=jd_text, company=company, role=role)
+    style = {"SEND": "green", "REVISE": "yellow", "BLOCK": "bold red"}.get(
+        result.verdict, "bold white"
+    )
+    if result.review:
+        review_path = artifact_path.parent / f"{artifact_path.stem}.redteam.md"
+        review_path.write_text(result.review, encoding="utf-8")
+        console.print(f"\n[{style}]RED TEAM: {result.verdict}[/{style}] — findings in {review_path}")
+    else:
+        console.print(
+            f"\n[{style}]RED TEAM: UNREVIEWED[/{style}] — not reviewed "
+            f"({'; '.join(result.errors) or 'no reviewer output'}); this is not a pass."
+        )
+    if result.verdict == "BLOCK":
+        console.print(
+            "[red]Do not send until the findings above are addressed. The text "
+            "above is not discarded — you adjudicate; the reviewer has no veto.[/red]"
+        )
+
+
 @outreach_app.command("draft")
 def outreach_draft(
     contact_id: str = typer.Argument(..., help="Contact id or unique prefix."),
@@ -1082,6 +1137,12 @@ def outreach_draft(
         )
     message_path.parent.mkdir(parents=True, exist_ok=True)
     message_path.write_text(body, encoding="utf-8")
+    # CLAUDE.md §1: outreach emails are named alongside résumés and cover
+    # letters as requiring red team before delivery — this message goes to a
+    # real employer contact under the user's name.
+    _gate_outward_artifact(
+        artifact_path=message_path, jd_text=jd_text, company=target_company, role=role
+    )
     event = add_event(
         OutreachEvent(
             contact_id=contact.id,
@@ -1271,6 +1332,8 @@ def pipeline_process(
     for entry in pending:
         console.print(f"\n[bold]→[/bold] Evaluating {entry.url}")
         try:
+            # `evaluate` is a Typer command, so an omitted argument keeps its
+            # OptionInfo default rather than None — every parameter is passed explicitly.
             evaluate(target=entry.url, source_type="auto", trace=None, cover_letter=cover_letter)
         except SystemExit as exc:
             # evaluate() may exit on cv-sync-check errors etc; treat as inbox error.
@@ -1595,6 +1658,8 @@ def email_reconcile(
     new_only: bool = False,
     skip_review: bool = False,
 ) -> None:
+    # `email_import_events` is a Typer command, so an omitted argument keeps its
+    # OptionInfo default rather than None — every parameter is passed explicitly.
     email_import_events(
         apply=apply,
         limit=limit,
@@ -2920,9 +2985,16 @@ def full_loop_from_url(
         console.print("[yellow]Running evaluation first. This may take a while.[/yellow]")
         graph = build_evaluate_job_graph()
         run_id = f"run_{uuid.uuid4().hex}"
+        source_type = _resolve_source_type(url, "auto")
         result = asyncio.run(
             graph.ainvoke(
-                {"input": url, "run_id": run_id, "thread_id": run_id},
+                {
+                    "input": url,
+                    "run_id": run_id,
+                    "thread_id": run_id,
+                    "source_type": source_type,
+                    "url": url if source_type == "url" else None,
+                },
                 config={"configurable": {"thread_id": run_id}},
             )
         )
@@ -3023,6 +3095,12 @@ def apply_answers(
         help="Path to a text file containing the verbatim form questions.",
     ),
     url: str | None = typer.Option(None, "--url", help="Optional application URL for context."),
+    jd: str | None = typer.Option(
+        None,
+        "--jd",
+        help="Path to JD file or pasted JD text. Grounds the red team's targeting "
+        "pass (CLAUDE.md §1) against the actual posting; optional.",
+    ),
     output: Path | None = typer.Option(
         None,
         "--output",
@@ -3038,6 +3116,11 @@ def apply_answers(
             "[red]Provide form questions via --form-text or --form-text-file.[/red]"
         )
         raise typer.Exit(1)
+
+    jd_text = ""
+    if jd:
+        jd_path = Path(jd)
+        jd_text = jd_path.read_text(encoding="utf-8") if jd_path.exists() else jd
 
     tracker = TrackerRepository(Path("data/applications.md"))
     report_context = _load_apply_report_context(
@@ -3078,12 +3161,37 @@ def apply_answers(
             cv_md=cv_md,
         )
         console.print(result.content)
-        if output:
-            output.parent.mkdir(parents=True, exist_ok=True)
-            output.write_text(result.content + "\n", encoding="utf-8")
-            console.print(f"\n[green]Wrote answers to[/green] {output}")
         for error in result.errors:
             console.print(f"[yellow]warning:[/yellow] {error}")
+
+        # CLAUDE.md §1: application-form answers are named alongside résumés
+        # and cover letters as requiring red team before delivery, and the
+        # reviewer reads artifacts off disk — so, unlike before, the answers
+        # always get written out, not only when --output was passed. Prefer
+        # the run directory the matched report already lives in (paired with
+        # the pipeline's own cv.pdf / redteam.md); fall back to a company/role
+        # slug when no report matched.
+        if output is not None:
+            answers_path = output
+        elif report_context and report_context.get("path"):
+            answers_path = Path("output") / Path(report_context["path"]).stem / "apply-answers.md"
+        else:
+            company_slug = re.sub(r"[^a-z0-9]+", "-", company.lower()).strip("-")
+            role_slug = re.sub(r"[^a-z0-9]+", "-", role.lower()).strip("-")
+            answers_path = Path("output") / f"{company_slug}-{role_slug}-apply-answers.md"
+        answers_path.parent.mkdir(parents=True, exist_ok=True)
+        answers_path.write_text(result.content + "\n", encoding="utf-8")
+        console.print(f"\n[green]Wrote answers to[/green] {answers_path}")
+
+        if not jd_text:
+            # Without a JD the review's TARGETING pass (CLAUDE.md §1) has nothing
+            # to compare against and degrades to a no-op — say so rather than
+            # letting a clean-looking verdict imply all three passes ran.
+            console.print(
+                "[yellow]No JD supplied (--jd); the red team's targeting pass "
+                "has nothing to compare against.[/yellow]"
+            )
+        _gate_outward_artifact(artifact_path=answers_path, jd_text=jd_text, company=company, role=role)
 
     asyncio.run(run())
 
@@ -4903,97 +5011,6 @@ async def _auto_fill_application(
     return filled, skipped, answers
 
 
-async def _fill_workday_phone_code(page, search_term: str = "Canada") -> bool:
-    """Fill Workday Country Phone Code by removing any auto-filled chip then re-selecting.
-
-    Workday profile auto-fill may pre-populate a chip visually, but that chip is often
-    not "confirmed" in React's controlled state, causing form validation to reject it.
-    Removing the chip and re-selecting forces Workday to register a fresh selection event.
-    """
-    try:
-        # Step 1: Remove any existing phone code chips (click all × buttons near phone section).
-        # Use JavaScript to find and click × buttons scoped to the Country Phone Code section.
-        await page.evaluate(
-            """() => {
-                const normalize = t => (t || '').replace(/\\s+/g, ' ').trim().toLowerCase();
-                const visible = el => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
-                // Find the Country Phone Code label
-                const labels = Array.from(document.querySelectorAll('label, div, span, p'))
-                    .filter(el => visible(el) && normalize(el.innerText) === 'country phone code');
-                for (const lbl of labels) {
-                    let scope = lbl.parentElement;
-                    for (let d = 0; scope && d < 5; d++, scope = scope.parentElement) {
-                        // Click any × / remove buttons inside this section
-                        const removeBtns = Array.from(scope.querySelectorAll('button'))
-                            .filter(b => visible(b) && /^[×✕✗x]$/i.test(normalize(b.innerText)));
-                        removeBtns.forEach(b => b.click());
-                        if (removeBtns.length) break;
-                    }
-                }
-            }"""
-        )
-        await page.wait_for_timeout(500)
-
-        # Step 2: Find the text input inside the Country Phone Code combobox and type to search.
-        # Workday's chip combobox has an underlying <input> for text entry.
-        input_found = bool(
-            await page.evaluate(
-                """(searchTerm) => {
-                    const normalize = t => (t || '').replace(/\\s+/g, ' ').trim().toLowerCase();
-                    const visible = el => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
-                    const labels = Array.from(document.querySelectorAll('label, div, span, p'))
-                        .filter(el => visible(el) && normalize(el.innerText) === 'country phone code');
-                    for (const lbl of labels) {
-                        let scope = lbl.parentElement;
-                        for (let d = 0; scope && d < 5; d++, scope = scope.parentElement) {
-                            const inputs = Array.from(scope.querySelectorAll('input:not([type=hidden])'))
-                                .filter(visible);
-                            for (const inp of inputs) {
-                                inp.focus();
-                                // Use React's native setter to trigger onChange
-                                const setter = Object.getOwnPropertyDescriptor(
-                                    window.HTMLInputElement.prototype, 'value').set;
-                                if (setter) setter.call(inp, searchTerm);
-                                inp.dispatchEvent(new Event('input', {bubbles: true}));
-                                inp.dispatchEvent(new Event('change', {bubbles: true}));
-                                return true;
-                            }
-                        }
-                    }
-                    return false;
-                }""",
-                search_term,
-            )
-        )
-        await page.wait_for_timeout(1200)
-
-        # Step 3: Click the matching option from autocomplete.
-        for option_text in [f"{search_term} (+1)", "Canada (+1)", search_term]:
-            pat = re.compile(re.escape(option_text), re.IGNORECASE)
-            for locator in [
-                page.get_by_role("option", name=pat),
-                page.get_by_role("menuitem", name=pat),
-                page.locator('[role="option"], [role="menuitem"], li').filter(has_text=pat),
-            ]:
-                if await locator.count():
-                    await locator.first.click(timeout=4000)
-                    await page.wait_for_timeout(500)
-                    return True
-
-        # Fallback: keyboard navigation (ArrowDown + Enter)
-        if input_found:
-            await page.keyboard.press("ArrowDown")
-            await page.wait_for_timeout(300)
-            await page.keyboard.press("Enter")
-            await page.wait_for_timeout(500)
-            return True
-
-        # Last resort: dropdown-button approach
-        return await _select_workday_dropdown_by_label(page, "Country Phone Code", ["Canada (+1)", "Canada", "+1"])
-    except Exception:
-        return False
-
-
 async def _fill_workday_current_step(
     page,
     values: dict[str, str],
@@ -5305,44 +5322,6 @@ async def _select_workday_dropdown_in_question(page, label_fragment: str, choice
         return False
 
 
-async def _fill_workday_textarea_containing_label(page, label_fragment: str, value: str) -> bool:
-    """Fill the first textarea whose nearby label CONTAINS label_fragment (partial match)."""
-    if not value:
-        return False
-    try:
-        return bool(
-            await page.evaluate(
-                """({fragment, value}) => {
-                    const normalize = text => (text || '').replace(/\\*/g, '').replace(/\\s+/g, ' ').trim().toLowerCase();
-                    const wanted = normalize(fragment);
-                    const visible = el => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
-                    const setVal = (el, val) => {
-                        const proto = window.HTMLTextAreaElement.prototype;
-                        const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
-                        if (setter) setter.call(el, val); else el.value = val;
-                        el.dispatchEvent(new Event('input', {bubbles: true}));
-                        el.dispatchEvent(new Event('change', {bubbles: true}));
-                        el.dispatchEvent(new Event('blur', {bubbles: true}));
-                    };
-                    const areas = Array.from(document.querySelectorAll('textarea')).filter(visible);
-                    for (const area of areas) {
-                        let scope = area.parentElement;
-                        for (let depth = 0; scope && depth < 8; depth++, scope = scope.parentElement) {
-                            if (normalize(scope.innerText).includes(wanted)) {
-                                setVal(area, value);
-                                return true;
-                            }
-                        }
-                    }
-                    return false;
-                }""",
-                {"fragment": label_fragment, "value": value},
-            )
-        )
-    except Exception:
-        return False
-
-
 async def _choose_workday_option(page, choices: list[str]) -> bool:
     await page.wait_for_timeout(700)
     for choice in choices:
@@ -5462,24 +5441,6 @@ async def _click_workday_save_and_continue(page) -> bool:
         return True
     except Exception:
         return False
-
-
-async def _maybe_continue_workday_experience(page) -> bool:
-    if "myworkdayjobs.com" not in page.url:
-        return False
-    try:
-        text = await page.locator("body").inner_text(timeout=5000)
-    except Exception:
-        return False
-    if "My Experience" not in text:
-        return False
-    if "Resume/CV" in text and "Successfully Uploaded" not in text:
-        return False
-    try:
-        await page.keyboard.press("Escape")
-    except Exception:
-        pass
-    return await _click_workday_save_and_continue(page)
 
 
 # Phase 3.2: hard cap on the advancement loop. Workday has 5 known steps
@@ -5723,19 +5684,6 @@ async def _workday_advance_all_steps(
 
 async def _workday_review_needs_repair(page) -> bool:
     return await _workday_review_needs_repair_from_module(
-        page,
-        experience_entries=_workday_experience_entries(),
-        education_entries=_workday_education_entries(_apply_profile_values()),
-    )
-
-
-async def _workday_review_validation_issues(page) -> list[str]:
-    """Return human-readable Review-gate messages (backwards-compatible signature).
-
-    Phase 3.1: the structured ``ReviewIssue`` records are also captured via
-    ``_collect_workday_review_issues`` so they can be written to apply-review.json.
-    """
-    return await _workday_review_validation_messages(
         page,
         experience_entries=_workday_experience_entries(),
         education_entries=_workday_education_entries(_apply_profile_values()),
@@ -6259,151 +6207,6 @@ async def _fill_workday_scoped_field(page, marker: str, label_fragment: str, val
         return False
 
 
-async def _fill_workday_input_near_text(page, label_fragment: str, value: str) -> bool:
-    if not value:
-        return False
-    try:
-        return bool(
-            await page.evaluate(
-                """({labelFragment, value}) => {
-                    const visible = el => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
-                    const norm = text => (text || '').replace(/\\*/g, '').replace(/\\s+/g, ' ').trim().toLowerCase();
-                    const wanted = norm(labelFragment);
-                    const setValue = (input, val) => {
-                        const proto = input.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
-                        const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
-                        if (setter) setter.call(input, val); else input.value = val;
-                        input.dispatchEvent(new InputEvent('input', {bubbles: true, inputType: 'insertText', data: val}));
-                        input.dispatchEvent(new Event('change', {bubbles: true}));
-                        input.dispatchEvent(new Event('blur', {bubbles: true}));
-                    };
-                    const labels = Array.from(document.querySelectorAll('label, div, span'))
-                        .filter(visible)
-                        .map(el => ({el, text: norm(el.innerText), rect: el.getBoundingClientRect()}))
-                        .filter(item => item.text.includes(wanted))
-                        .sort((a, b) => a.rect.top - b.rect.top);
-                    for (const label of labels) {
-                        const inputs = Array.from(document.querySelectorAll('input:not([type="hidden"]):not([type="file"]):not([type="checkbox"]):not([type="radio"]), textarea'))
-                            .filter(visible)
-                            .map(input => ({input, rect: input.getBoundingClientRect()}))
-                            .filter(item => item.rect.top >= label.rect.top - 8 && item.rect.top - label.rect.bottom < 120)
-                            .sort((a, b) => Math.abs(a.rect.top - label.rect.bottom) - Math.abs(b.rect.top - label.rect.bottom));
-                        if (inputs[0]) {
-                            setValue(inputs[0].input, value);
-                            return true;
-                        }
-                    }
-                    return false;
-                }""",
-                {"labelFragment": label_fragment, "value": value},
-            )
-        )
-    except Exception:
-        return False
-
-
-async def _fill_workday_month_year_containing(page, label_fragment: str, month: str, year: str) -> bool:
-    masked_value = f"{int(month):02d}/{year}"
-    try:
-        month_spin = page.locator(
-            "xpath="
-            f"//*[self::label or self::div or self::span][normalize-space()='{label_fragment}' or normalize-space()='{label_fragment}*']"
-            "/following::input[@role='spinbutton' and @aria-label='Month'][1]"
-        )
-        year_spin = page.locator(
-            "xpath="
-            f"//*[self::label or self::div or self::span][normalize-space()='{label_fragment}' or normalize-space()='{label_fragment}*']"
-            "/following::input[@role='spinbutton' and @aria-label='Year'][1]"
-        )
-        if await month_spin.count() and await year_spin.count():
-            await month_spin.first.fill(str(int(month)), timeout=5000)
-            await year_spin.first.fill(str(year), timeout=5000)
-            await page.wait_for_timeout(300)
-            month_value = await month_spin.first.input_value(timeout=1000)
-            year_value = await year_spin.first.input_value(timeout=1000)
-            if str(int(month)) == str(int(month_value or 0)) and str(year) == str(year_value):
-                return True
-    except Exception:
-        pass
-    try:
-        loc = page.locator(
-            "xpath="
-            f"//*[self::label or self::div or self::span][normalize-space()='{label_fragment}' or normalize-space()='{label_fragment}*']"
-            "/following::input[not(@type='hidden') and not(@type='file')][1]"
-        )
-        if await loc.count():
-            field = loc.first
-            await field.scroll_into_view_if_needed(timeout=3000)
-            try:
-                await field.fill(masked_value, timeout=5000)
-            except Exception:
-                await field.click(timeout=5000, force=True)
-                await page.keyboard.press("Meta+A")
-                await page.keyboard.type(masked_value, delay=20)
-            await page.wait_for_timeout(300)
-            try:
-                current = (await field.input_value(timeout=1000)).strip()
-                if year in current and f"{int(month):02d}" in current:
-                    return True
-            except Exception:
-                pass
-    except Exception:
-        pass
-    try:
-        return bool(
-            await page.evaluate(
-                """({labelFragment, month, year}) => {
-                    const visible = el => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
-                    const norm = text => (text || '').replace(/\\s+/g, ' ').trim().toLowerCase();
-                    const wanted = norm(labelFragment);
-                    const setValue = (input, value) => {
-                        const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
-                        if (setter) setter.call(input, String(value)); else input.value = String(value);
-                        input.dispatchEvent(new InputEvent('input', {bubbles: true, inputType: 'insertText', data: String(value)}));
-                        input.dispatchEvent(new Event('change', {bubbles: true}));
-                        input.dispatchEvent(new Event('blur', {bubbles: true}));
-                    };
-                    const paddedMonth = String(Number(month)).padStart(2, '0');
-                    const maskedValue = `${paddedMonth}/${year}`;
-                    const labels = Array.from(document.querySelectorAll('label, div, span'))
-                        .filter(visible)
-                        .map(el => ({el, text: norm(el.innerText), rect: el.getBoundingClientRect()}))
-                        .filter(item => item.text === wanted || item.text.startsWith(wanted + ' '))
-                        .sort((a, b) => a.rect.top - b.rect.top);
-                    for (const label of labels) {
-                        const visibleDateInputs = Array.from(document.querySelectorAll('input:not([type="hidden"]):not([type="file"])'))
-                            .filter(visible)
-                            .filter(input => (input.getAttribute('role') || '') !== 'spinbutton')
-                            .map(input => ({input, rect: input.getBoundingClientRect(), placeholder: input.placeholder || ''}))
-                            .filter(item => item.rect.top >= label.rect.top - 12 && item.rect.top - label.rect.bottom < 140)
-                            .sort((a, b) => a.rect.left - b.rect.left);
-                        const masked = visibleDateInputs.find(item => /mm\\s*\\/\\s*yyyy/i.test(item.placeholder) || item.input.value.includes('/'));
-                        if (masked) {
-                            setValue(masked.input, maskedValue);
-                            return true;
-                        }
-                        const inputs = Array.from(document.querySelectorAll('input[role="spinbutton"]'))
-                            .filter(visible)
-                            .map(input => ({input, rect: input.getBoundingClientRect()}))
-                            .filter(item => item.rect.top >= label.rect.top - 12 && item.rect.top - label.rect.bottom < 120)
-                            .sort((a, b) => a.rect.left - b.rect.left);
-                        const monthInput = inputs.find(item => /month/i.test(item.input.getAttribute('aria-label') || ''))?.input;
-                        const yearInput = inputs.find(item => /year/i.test(item.input.getAttribute('aria-label') || ''))?.input;
-                        if (monthInput && yearInput) {
-                            setValue(monthInput, Number(month));
-                            setValue(yearInput, year);
-                            return true;
-                        }
-                    }
-                    return false;
-                }""",
-                {"labelFragment": label_fragment, "month": month, "year": year},
-            )
-        )
-    except Exception:
-        return False
-
-
 async def _workday_any_input_has_value(page, value: str) -> bool:
     try:
         return bool(
@@ -6422,179 +6225,6 @@ def _workday_experience_entries() -> list[dict[str, str]]:
 
 def _workday_education_entries(values: dict) -> list[dict[str, str]]:
     return _load_workday_education_entries(values)
-
-
-async def _workday_fill_repeating_section(page, *, section_keywords: list[str], entries: list[dict[str, str]], kind: str) -> bool:
-    try:
-        try:
-            body_text = await page.locator("body").inner_text(timeout=2000)
-        except Exception:
-            body_text = ""
-        marker = entries[0].get("title") if kind == "experience" else entries[0].get("school")
-        if marker and marker not in body_text:
-            for keyword in section_keywords:
-                keyword_text = keyword.replace("'", "")
-                add = page.locator(
-                    "xpath="
-                    f"//*[self::h3 or self::h4 or self::h5 or @role='heading'][contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{keyword_text.lower()}')]"
-                    "/following::button[normalize-space()='Add' or normalize-space()='Add Another' or normalize-space()='添加' or normalize-space()='添加另一个'][1]"
-                )
-                try:
-                    if await add.count():
-                        await add.first.click(timeout=5000, force=True)
-                        await page.wait_for_timeout(1200)
-                        break
-                except Exception:
-                    continue
-        result = await page.evaluate(
-            """async ({sectionKeywords, entries, kind}) => {
-                const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
-                const visible = el => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
-                const norm = text => (text || '').replace(/\\*/g, '').replace(/\\s+/g, ' ').trim().toLowerCase();
-                const setInput = (el, value) => {
-                    if (!el || value === undefined || value === null) return false;
-                    const proto = el.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
-                    const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
-                    if (setter) setter.call(el, String(value)); else el.value = String(value);
-                    el.dispatchEvent(new InputEvent('input', {bubbles: true, inputType: 'insertText', data: String(value)}));
-                    el.dispatchEvent(new Event('change', {bubbles: true}));
-                    el.dispatchEvent(new Event('blur', {bubbles: true}));
-                    return true;
-                };
-                const headings = Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,[role="heading"], div, span'))
-                    .filter(visible)
-                    .filter(h => {
-                        const text = norm(h.innerText);
-                        return text && text.length < 80;
-                    });
-                const heading = headings.find(h => {
-                    const text = norm(h.innerText);
-                    return sectionKeywords.some(k => text === norm(k) || text.includes(norm(k)));
-                });
-                if (!heading) return false;
-                const headingRect = heading.getBoundingClientRect();
-                const nextHeading = headings
-                    .filter(h => h !== heading)
-                    .map(h => ({h, rect: h.getBoundingClientRect(), text: norm(h.innerText)}))
-                    .filter(item => item.rect.top > headingRect.top + 8)
-                    .filter(item => {
-                        const text = item.text;
-                        return [
-                            'work experience', 'professional experience', 'education', 'education history',
-                            'skills', 'resume/cv', 'websites', 'social network', '专业经验', '教育背景', '技能', '网站'
-                        ].some(k => text.includes(k));
-                    })
-                    .sort((a, b) => a.rect.top - b.rect.top)[0];
-                const sectionTop = headingRect.top;
-                const sectionBottom = nextHeading ? nextHeading.rect.top : Number.POSITIVE_INFINITY;
-                const inSection = el => {
-                    const rect = el.getBoundingClientRect();
-                    return rect.bottom > sectionTop && rect.top < sectionBottom;
-                };
-                const findItemGroups = () => Array.from(document.querySelectorAll('[role="group"], fieldset, div'))
-                    .filter(inSection)
-                    .filter(visible)
-                    .filter(el => {
-                        const text = norm(el.innerText);
-                        if (!text) return false;
-                        if (kind === 'experience') {
-                            return /(work experience|professional experience|专业经验)\\s*\\d+/.test(text)
-                                || (text.includes('job title') && text.includes('company'))
-                                || (text.includes('职务名称') && text.includes('公司'));
-                        }
-                        return /(education|education history|教育背景)\\s*\\d+/.test(text)
-                            || text.includes('school or university')
-                            || text.includes('学校或大学');
-                    })
-                    .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top)
-                    .filter((el, idx, arr) => !arr.slice(0, idx).some(prev => prev.contains(el)));
-                const addButton = () => Array.from(document.querySelectorAll('button,[role="button"]'))
-                    .filter(inSection)
-                    .filter(visible)
-                    .filter(btn => /^(add|add another|添加|添加另一个)$/i.test((btn.innerText || btn.getAttribute('aria-label') || '').trim()))
-                    .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top)
-                    .at(0);
-                for (let guard = 0; guard < entries.length + 2 && findItemGroups().length < entries.length; guard++) {
-                    const btn = addButton();
-                    if (!btn) break;
-                    btn.scrollIntoView({block: 'center'});
-                    btn.click();
-                    await sleep(900);
-                }
-                const groups = findItemGroups().slice(0, entries.length);
-                if (!groups.length) return false;
-                for (let i = 0; i < Math.min(groups.length, entries.length); i++) {
-                    const group = groups[i];
-                    const entry = entries[i];
-                    const inputs = Array.from(group.querySelectorAll('input:not([type="hidden"]):not([type="file"]):not([type="checkbox"]), textarea'))
-                        .filter(visible)
-                        .filter(input => (input.getAttribute('role') || '') !== 'spinbutton')
-                        .filter(input => !/search/i.test(input.getAttribute('placeholder') || ''))
-                        .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top || a.getBoundingClientRect().left - b.getBoundingClientRect().left);
-                    const textInputs = inputs.filter(input => input.tagName !== 'TEXTAREA');
-                    const textareas = inputs.filter(input => input.tagName === 'TEXTAREA');
-                    const spins = Array.from(group.querySelectorAll('input[role="spinbutton"], input[data-automation-id*="Year"], input[data-automation-id*="Month"]'))
-                        .filter(visible)
-                        .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top || a.getBoundingClientRect().left - b.getBoundingClientRect().left);
-                    const setMonthYearPairs = () => {
-                        const months = spins.filter(input => /month/i.test(input.getAttribute('aria-label') || input.getAttribute('data-automation-id') || ''));
-                        const years = spins.filter(input => /year/i.test(input.getAttribute('aria-label') || input.getAttribute('data-automation-id') || ''));
-                        if (months.length >= 2 && years.length >= 2) {
-                            setInput(months[0], entry.start_month);
-                            setInput(years[0], entry.start_year);
-                            setInput(months[1], entry.end_month);
-                            setInput(years[1], entry.end_year);
-                        } else {
-                            setInput(spins[0], entry.start_month);
-                            setInput(spins[1], entry.start_year);
-                            setInput(spins[2], entry.end_month);
-                            setInput(spins[3], entry.end_year);
-                        }
-                    };
-                    if (kind === 'experience') {
-                        setInput(textInputs[0], entry.title);
-                        setInput(textInputs[1], entry.company);
-                        setInput(textInputs[2], entry.location);
-                        setInput(textareas[0], entry.description);
-                    } else {
-                        setInput(textInputs[0], entry.school);
-                        const gpaInput = textInputs.find(input => /gpa|综合成绩/i.test(input.getAttribute('aria-label') || input.placeholder || input.parentElement?.innerText || ''));
-                        if (gpaInput && entry.gpa) setInput(gpaInput, entry.gpa);
-                        const majorInput = textInputs.find((input, idx) => idx > 0 && input !== gpaInput && /major|field|主修|专业/i.test(input.getAttribute('aria-label') || input.placeholder || input.parentElement?.innerText || ''));
-                        if (majorInput) setInput(majorInput, entry.field);
-                    }
-                    setMonthYearPairs();
-                }
-                return true;
-            }""",
-            {"sectionKeywords": section_keywords, "entries": entries, "kind": kind},
-        )
-        if not result:
-            return False
-        if kind == "education":
-            for entry in entries:
-                await _select_workday_dropdown_containing_label(page, "Degree", [entry["degree"], "Masters", "Bachelor", "Other"])
-                await _select_workday_dropdown_containing_label(page, "学位", [entry["degree"], "2级学位", "1级学位", "其他"])
-        marker = entries[0].get("title") if kind == "experience" else entries[0].get("school")
-        if marker:
-            try:
-                marker_visible = bool(
-                    await page.evaluate(
-                        """(marker) => {
-                            const text = document.body.innerText || '';
-                            if (text.includes(marker)) return true;
-                            return Array.from(document.querySelectorAll('input, textarea')).some(el => (el.value || '').includes(marker));
-                        }""",
-                        marker,
-                    )
-                )
-            except Exception:
-                marker_visible = False
-            if not marker_visible:
-                return False
-        return True
-    except Exception:
-        return False
 
 
 async def _workday_remove_duplicate_uploads(page, *, keep_filenames: list[str]) -> int:
@@ -6675,19 +6305,6 @@ async def _fill_workday_voluntary_disclosures(page, values: dict) -> tuple[list[
     )
 
     return await fill_voluntary_disclosures(page, values)
-
-
-async def _wait_for_workday_step(page, step_name: str, *, timeout_ms: int = 10000) -> bool:
-    deadline = asyncio.get_event_loop().time() + timeout_ms / 1000
-    while asyncio.get_event_loop().time() < deadline:
-        try:
-            text = await page.locator("body").inner_text(timeout=2000)
-            if step_name in text:
-                return True
-        except Exception:
-            pass
-        await page.wait_for_timeout(500)
-    return False
 
 
 async def _wait_for_workday_step_change(page, previous_step: str, *, timeout_ms: int = 10000) -> bool:
@@ -7127,23 +6744,6 @@ async def _workday_element_in_question(page, label_fragment: str, selector: str)
         return handle.as_element()
     except Exception:
         return None
-
-
-async def _fill_first_visible_textarea(page, value: str) -> bool:
-    try:
-        areas = page.locator("textarea")
-        for index in range(await areas.count()):
-            area = areas.nth(index)
-            if not await area.is_visible():
-                continue
-            current = await area.input_value()
-            if not current:
-                await area.fill(value)
-                await area.blur(timeout=2000)
-                return True
-    except Exception:
-        return False
-    return False
 
 
 async def _fill_workday_field_containing(page, needle: str, value: str, force: bool = False) -> bool:
