@@ -1,10 +1,17 @@
 import asyncio
 import json
 from datetime import datetime
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from job_hunt.config.models import (
+    LocalLedgerConfig,
+    ObservabilityConfig,
+    PathsConfig,
+    Settings,
+)
 from job_hunt.services.email.message_parser import ParsedEmail
 from job_hunt.services.email.summarize import (
     build_query,
@@ -62,13 +69,14 @@ def test_summarized_ids_resume(tmp_path):
     assert summarized_ids(path) == {"a1", "b2"}
 
 
-def _fake_settings():
-    settings = MagicMock()
-    settings.email_ingest.token_path = "token"
-    settings.email_ingest.credentials_path = "creds"
-    settings.email_ingest.auth_mode = "gcloud_adc"
-    settings.llm.cheap.model = "MiniMax-M3"
-    return settings
+def _fake_settings(tmp_path: Path | None = None) -> Settings:
+    """Build test Settings with optional temp directory for data_dir.
+
+    When tmp_path is provided, paths.data_dir is set to it to avoid littering
+    the repository with mock directories during traced_chat calls.
+    """
+    paths = PathsConfig(data_dir=tmp_path) if tmp_path else PathsConfig()
+    return Settings(paths=paths)
 
 
 def test_summarize_mailbox_skips_done_and_appends(tmp_path, monkeypatch):
@@ -109,12 +117,13 @@ def test_summarize_mailbox_skips_done_and_appends(tmp_path, monkeypatch):
         invocation="http",
     )
 
+    settings = _fake_settings(tmp_path)
     monkeypatch.setattr("job_hunt.services.email.summarize.GmailClient", lambda **kwargs: client)
     monkeypatch.setattr(
         "job_hunt.services.email.summarize.build_cheap_provider", lambda settings: provider
     )
 
-    result = asyncio.run(summarize_mailbox(_fake_settings(), output_path=output))
+    result = asyncio.run(summarize_mailbox(settings, output_path=output))
 
     assert result.listed == 2
     assert result.skipped_done == 1
@@ -133,12 +142,13 @@ def test_summarize_mailbox_records_error_and_continues(tmp_path, monkeypatch):
     client.list_messages_all.return_value = [{"id": "bad1"}]
     client.get_message.side_effect = RuntimeError("gmail down")
 
+    settings = _fake_settings(tmp_path)
     monkeypatch.setattr("job_hunt.services.email.summarize.GmailClient", lambda **kwargs: client)
     monkeypatch.setattr(
         "job_hunt.services.email.summarize.build_cheap_provider", lambda settings: AsyncMock()
     )
 
-    result = asyncio.run(summarize_mailbox(_fake_settings(), output_path=output))
+    result = asyncio.run(summarize_mailbox(settings, output_path=output))
 
     assert result.errors == 1
     assert result.error_ids == ["bad1"]
@@ -146,7 +156,11 @@ def test_summarize_mailbox_records_error_and_continues(tmp_path, monkeypatch):
 
 
 def test_summarize_mailbox_uses_traced_chat(tmp_path, monkeypatch):
-    """Verify that summarize_mailbox calls through traced_chat for LLM calls."""
+    """Verify that summarize_mailbox calls through traced_chat and writes usage ledger.
+
+    This test ensures the call goes through traced_chat (not provider.chat directly)
+    so that the LLM cost is recorded in the usage ledger.
+    """
     output = tmp_path / "summaries.jsonl"
 
     client = MagicMock()
@@ -164,7 +178,6 @@ def test_summarize_mailbox_uses_traced_chat(tmp_path, monkeypatch):
     provider = AsyncMock()
     provider.provider = "minimax"
 
-    # Create a mock ChatResult
     from job_hunt.services.llm.base import ChatResult
 
     provider.chat.return_value = ChatResult(
@@ -183,25 +196,28 @@ def test_summarize_mailbox_uses_traced_chat(tmp_path, monkeypatch):
         provider="minimax",
         tier="cheap",
         invocation="http",
+        input_tokens=100,
+        output_tokens=50,
     )
 
+    settings = _fake_settings(tmp_path)
     monkeypatch.setattr("job_hunt.services.email.summarize.GmailClient", lambda **kwargs: client)
     monkeypatch.setattr(
         "job_hunt.services.email.summarize.build_cheap_provider", lambda settings: provider
     )
 
-    with patch("job_hunt.services.email.summarize.traced_chat") as mock_traced:
-        mock_traced.return_value = provider.chat.return_value
-        result = asyncio.run(summarize_mailbox(_fake_settings(), output_path=output))
+    result = asyncio.run(summarize_mailbox(settings, output_path=output))
 
     assert result.summarized == 1
-    # Verify traced_chat was called with correct metadata
-    mock_traced.assert_called_once()
-    call_kwargs = mock_traced.call_args[1]
-    assert call_kwargs["node_name"] == "summarize_message"
-    assert call_kwargs["graph_name"] == "mailbox_summarize_graph"
-    assert call_kwargs["model_tier"] == "cheap"
-    assert call_kwargs["metadata"]["message_id"] == "msg1"
+    # Verify usage ledger was written (the whole point of routing through traced_chat)
+    ledger_path = settings.paths.data_dir / "usage-ledger.jsonl"
+    assert ledger_path.exists(), f"Usage ledger not written to {ledger_path}"
+    ledger_lines = ledger_path.read_text(encoding="utf-8").strip().split("\n")
+    assert len(ledger_lines) > 0
+    ledger_record = json.loads(ledger_lines[-1])
+    assert ledger_record["graph_name"] == "mailbox_summarize_graph"
+    assert ledger_record["node_name"] == "summarize_message"
+    assert ledger_record["model_tier"] == "cheap"
 
 
 def test_parse_llm_json_invalid_escape_still_works():
