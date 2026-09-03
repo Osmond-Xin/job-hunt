@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from job_hunt.cli import _IMMIGRATION_LANE_SLOTS, _immigration_lane
+from job_hunt.services.shortlist import _IMMIGRATION_LANE_SLOTS, _immigration_lane
 from job_hunt.services.triage import PipelineRow, Ranked
 
 

@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import shutil
 import asyncio
-import json
-import math
 import os
 import re
 import uuid
@@ -13,7 +11,14 @@ from rich.table import Table
 from job_hunt.config.models import Settings, load_settings
 from job_hunt.graphs.evaluate_job import build_evaluate_job_graph
 from job_hunt.nodes._llm import LLM_FAILURE_MARKER
+from job_hunt.services.batch import run_batch
 from job_hunt.services.llm.local_command import wants_json as provider_wants_json
+from job_hunt.services.usage_ledger import (
+    _ledger_cost_since,
+    _ledger_line_count,
+    _ledger_path,
+    _ledger_spend_since,
+)
 from job_hunt.repositories.tracker_repo import TrackerRepository
 from job_hunt.services import cv_sync_check
 
@@ -160,68 +165,13 @@ def evaluate_batch(
             return
 
     console.print(f"Evaluating {len(targets)} jobs, {concurrency} at a time.")
-    ledger_start = _ledger_line_count()
-    budget_stop = asyncio.Event() if max_cost > 0 else None
-    # Set when premium spend is happening but is not being recorded, which
-    # is a different failure from simply hitting the cap.
-    unmeasurable = asyncio.Event()
-
-    async def run_all() -> list[dict]:
-        graph = build_evaluate_job_graph()
-        semaphore = asyncio.Semaphore(max(1, concurrency))
-
-        async def run_one(target: str) -> dict:
-            if budget_stop is not None and budget_stop.is_set():
-                return {"target": target, "skipped_over_budget": True}
-            async with semaphore:
-                if budget_stop is not None and budget_stop.is_set():
-                    return {"target": target, "skipped_over_budget": True}
-                run_id = uuid.uuid4().hex
-                source_type = _resolve_source_type(target, "auto")
-                try:
-                    result = await graph.ainvoke(
-                        {
-                            "run_id": run_id,
-                            "thread_id": run_id,
-                            "input": target,
-                            "source_type": source_type,
-                            "url": target if source_type == "url" else None,
-                            "generate_cover_letter": generate_cover_letter_flag,
-                            "errors": [],
-                        },
-                        config={"configurable": {"thread_id": run_id}},
-                    )
-                except Exception as exc:  # one bad JD must not sink the batch
-                    return {"target": target, "failed": f"{type(exc).__name__}: {exc}"}
-                finally:
-                    if budget_stop is not None:
-                        spent, premium_records, priced_records = _ledger_spend_since(ledger_start)
-                        if premium_records > priced_records:
-                            # Any premium call that reported no cost makes the
-                            # running total an undercount, so the cap trips late
-                            # or never. Partial data is not safer than none —
-                            # an unmeasurable budget is not a budget.
-                            unmeasurable.set()
-                            budget_stop.set()
-                        elif spent >= max_cost:
-                            budget_stop.set()
-                jd_meta = result.get("jd_meta")
-                scores = result.get("scores")
-                return {
-                    "target": target,
-                    "company": jd_meta.company if jd_meta else "?",
-                    "role": jd_meta.title if jd_meta else "?",
-                    "score_value": scores.weighted_total if scores else None,
-                    "score": f"{scores.weighted_total:.2f}" if scores else "—",
-                    "recommendation": result.get("recommendation", "skip"),
-                    "report": result.get("report_path") or "",
-                    "errors": result.get("errors") or [],
-                    "artifact_warnings": result.get("artifact_warnings") or [],
-                }
-
-        return await asyncio.gather(*(run_one(target) for target in targets))
-
-    rows = asyncio.run(run_all())
+    outcome = run_batch(
+        targets,
+        concurrency=concurrency,
+        max_cost=max_cost,
+        generate_cover_letter=generate_cover_letter_flag,
+    )
+    rows = outcome.jobs
 
     table = Table(title=f"Batch evaluation ({len(rows)} jobs)")
     table.add_column("Company", overflow="fold")
@@ -230,64 +180,58 @@ def evaluate_batch(
     table.add_column("Rec")
     table.add_column("Report", overflow="fold")
     # Sort on the numeric score. Sorting the display string put "—" above 5.00.
-    for row in sorted(rows, key=lambda item: item.get("score_value") or -1.0, reverse=True):
-        if row.get("failed"):
-            table.add_row(_short(row["target"], 40), "[red]FAILED[/red]", "—", "—", row["failed"][:60])
+    for row in sorted(rows, key=lambda item: item.score_value if item.score_value is not None else -1.0, reverse=True):
+        if row.failed:
+            table.add_row(_short(row.target, 40), "[red]FAILED[/red]", "—", "—", row.failed[:60])
             continue
-        if row.get("skipped_over_budget"):
-            table.add_row(_short(row["target"], 40), "[yellow]OVER BUDGET[/yellow]", "—", "—", "not started")
+        if row.skipped_over_budget:
+            table.add_row(_short(row.target, 40), "[yellow]OVER BUDGET[/yellow]", "—", "—", "not started")
             continue
         table.add_row(
-            _short(row["company"], 24),
-            _short(row["role"], 32),
-            row["score"],
-            row["recommendation"],
-            _short(row["report"], 48),
+            _short(row.company, 24),
+            _short(row.role, 32),
+            row.score,
+            row.recommendation,
+            _short(row.report, 48),
         )
     console.print(table)
 
-    flagged = [row for row in rows if row.get("artifact_warnings")]
+    flagged = [row for row in rows if row.artifact_warnings]
     if flagged:
         console.print(f"\n[red]{len(flagged)} job(s) produced artifacts you must review before sending:[/red]")
         for row in flagged:
-            for warning in row["artifact_warnings"]:
-                console.print(f"- {row.get('company', row['target'])}: {warning}")
+            for warning in row.artifact_warnings:
+                console.print(f"- {row.company}: {warning}")
 
-    warned = [row for row in rows if row.get("errors")]
+    warned = [row for row in rows if row.errors]
     if warned:
         console.print(f"\n[yellow]{len(warned)} job(s) completed with warnings:[/yellow]")
         for row in warned:
-            console.print(f"- {row.get('company', row['target'])}: {row['errors'][0]}")
+            console.print(f"- {row.company}: {row.errors[0]}")
 
-    spend = _ledger_cost_since(ledger_start)
-    console.print(f"\nPremium spend this batch: [bold]${spend:.2f}[/bold] over {len(rows)} job(s).")
-    if unmeasurable.is_set():
+    console.print(f"\nPremium spend this batch: [bold]${outcome.spend:.2f}[/bold] over {len(rows)} job(s).")
+    if outcome.unmeasurable:
         console.print(
             "[red]Premium calls recorded no cost, so --max-cost could not be enforced.[/red] "
             "Remaining jobs were not started. Check that the premium command still passes "
             "`--output-format json`."
         )
-    elif budget_stop is not None and budget_stop.is_set():
+    elif outcome.budget_capped:
         console.print(f"[yellow]Budget cap ${max_cost:.2f} reached — remaining jobs were not started.[/yellow]")
 
     # A job whose LLM calls all failed still "completes" — every node falls back
     # to placeholder content and the tracker row is written as if it were real.
     # A provider outage would otherwise show up as 50 successes.
-    degraded = [
-        row
-        for row in rows
-        if not row.get("failed")
-        and any(LLM_FAILURE_MARKER in error for error in row.get("errors") or [])
-    ]
+    degraded = [row for row in rows if row.degraded]
     if degraded:
         console.print(
             f"\n[red]{len(degraded)} job(s) ran on fallback content because an LLM "
             "provider failed — their reports and artifacts are not trustworthy:[/red]"
         )
         for row in degraded:
-            console.print(f"- {row.get('company', row['target'])}")
+            console.print(f"- {row.company}")
 
-    failures = [row for row in rows if row.get("failed")]
+    failures = [row for row in rows if row.failed]
     if len(failures) + len(degraded) > max_failures:
         console.print(
             f"[red]{len(failures)} failed + {len(degraded)} degraded "
@@ -391,58 +335,3 @@ def _strip_aggregator_suffix(title: str) -> str:
     same posting gets paid for twice.
     """
     return re.sub(r"\s*[-|–]\s*(?:www\.)?[\w.-]+\.(?:ca|com|org|net)\s*$", "", title).strip()
-
-
-def _ledger_path() -> Path:
-    """Ledger location as observability.write_usage_ledger computes it.
-
-    Hardcoding `data/` here made --max-cost a silent no-op for anyone whose
-    paths.data_dir is not the default.
-    """
-    return Path(load_settings().paths.data_dir) / "usage-ledger.jsonl"
-
-
-def _ledger_line_count() -> int:
-    path = _ledger_path()
-    if not path.exists():
-        return 0
-    with path.open("r", encoding="utf-8") as handle:
-        return sum(1 for _ in handle)
-
-
-def _ledger_cost_since(start_line: int) -> float:
-    """Sum reported USD cost of ledger records written after ``start_line``."""
-    return _ledger_spend_since(start_line)[0]
-
-
-def _ledger_spend_since(start_line: int) -> tuple[float, int, int]:
-    """Return ``(total_usd, premium_records, records_with_a_cost)``.
-
-    The counts exist so a budget cap can tell "nothing was spent" from "spend
-    is not being recorded". Both look like $0.00 to a simple sum, and the
-    second one silently disables the cap.
-    """
-    path = _ledger_path()
-    if not path.exists():
-        return 0.0, 0, 0
-    total = 0.0
-    premium_records = 0
-    priced_records = 0
-    with path.open("r", encoding="utf-8") as handle:
-        for index, line in enumerate(handle):
-            if index < start_line or not line.strip():
-                continue
-            try:
-                record = json.loads(line)
-            except ValueError:
-                continue
-            if record.get("model_tier") != "premium":
-                continue
-            premium_records += 1
-            cost = record.get("cost_usd")
-            # bool is an int subclass, and JSON round-trips NaN/Infinity — any
-            # of those would count as "priced" while corrupting the total.
-            if isinstance(cost, (int, float)) and not isinstance(cost, bool) and math.isfinite(cost):
-                priced_records += 1
-                total += float(cost)
-    return total, premium_records, priced_records
