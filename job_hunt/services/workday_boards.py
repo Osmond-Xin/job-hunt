@@ -27,6 +27,9 @@ from urllib.parse import urlparse
 
 import httpx
 
+from job_hunt.models.posting import JobPosting, SourceHealth, SourceResult, from_row
+from job_hunt.services.posted_date import relative_age_to_iso
+
 _CXS = "https://{tenant}.{host}.myworkdayjobs.com/wday/cxs/{tenant}/{site}/jobs"
 _USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
@@ -204,3 +207,38 @@ def scan_workday(
     finally:
         if owns_client:
             client.close()
+
+
+def scan_workday_source(
+    config: dict[str, Any] | None,
+    *,
+    client: httpx.Client | None = None,
+    sleep=time.sleep,
+) -> SourceResult:
+    """``scan_workday`` plus normalisation, returned as a ``SourceResult``.
+
+    Same sweep, same per-employer ``stats`` collapsed into one ``SourceHealth``
+    for the whole source — a caller of this function cannot get the postings
+    without also seeing whether the sweep actually completed. ``scan_workday``
+    itself is unchanged and stays the entry point ``scan.py`` calls (it needs
+    the raw dict rows and its own per-tier ``stats`` keyword).
+    """
+    stats: dict[str, dict[str, Any]] = {}
+    rows = scan_workday(config, client=client, sleep=sleep, stats=stats)
+    collected = sum(entry.get("collected", 0) for entry in stats.values())
+    errors = sum(entry.get("errors", 0) for entry in stats.values())
+    postings: list[JobPosting] = []
+    for row in rows:
+        posting = from_row(
+            {
+                **row,
+                "source": f"workday {row.get('company', '')}",
+                "posted": relative_age_to_iso(row.get("posted", "")),
+            },
+            source_id="workday",
+            portal="workday",
+        )
+        if posting is not None:
+            postings.append(posting)
+    health = SourceHealth(source_id="workday", ok=errors == 0, collected=collected, errors=errors)
+    return SourceResult(postings=postings, health=health)

@@ -14,18 +14,15 @@ import httpx
 import yaml
 from pydantic import BaseModel, Field
 
+from job_hunt.models.posting import JobPosting, from_row
 from job_hunt.repositories.tracker_repo import TrackerRepository, normalize
-from job_hunt.services.adzuna import scan_adzuna
+from job_hunt.services.adzuna import scan_adzuna_source
 from job_hunt.services.gov_boards import scan_gov_boards
 from job_hunt.services.regional_boards import scan_regional_boards
 from job_hunt.services.immigration import place_tokens as immigration_place_tokens
 from job_hunt.services.jobbank import scan_jobbank
-from job_hunt.services.posted_date import (
-    adzuna_created_to_iso,
-    jobbank_date_to_iso,
-    relative_age_to_iso,
-)
-from job_hunt.services.workday_boards import scan_workday
+from job_hunt.services.posted_date import jobbank_date_to_iso
+from job_hunt.services.workday_boards import scan_workday_source
 from job_hunt.services.profile_loader import current_mode, discovery_context
 from job_hunt.services.web_extract import _bamboohr_slug
 
@@ -186,6 +183,16 @@ def scan_portals(
     # Tiers 4-7 are all direct, structured and quota-free. They are skipped
     # under --company, which scopes the run to one tracked employer.
     if not company:
+        # Migration in progress (job_hunt.models.posting.SourceResult): the
+        # Workday and Adzuna mappers below get their postings + coverage
+        # health from scan_workday_source/scan_adzuna_source. The other three
+        # still build a local `stats` dict and go through
+        # `_board_coverage_warnings` because converting them needs a prior
+        # refactor first — gov_boards.py's board registry is a dict literal
+        # closing over six locals 190 lines into scan_gov_boards, and
+        # regional_boards.py's BOARDS vtable dispatches `fetch` as the string
+        # "curl" rather than through a real seam. jobbank.py has neither
+        # obstacle and is the next one worth converting.
         extra_tiers = [
             _jobbank_scanned_jobs(config.get("jobbank_direct"), result.errors),
             _gov_board_scanned_jobs(config.get("gov_boards"), result.errors),
@@ -300,6 +307,25 @@ def _board_coverage_warnings(stats: dict[str, dict[str, Any]]) -> list[str]:
     return warnings
 
 
+def _scanned_job_from_posting(posting: JobPosting) -> ScannedJob:
+    """``ScannedJob`` is the mutable record ``_accept_jobs`` dedups and
+    stamps a ``status`` onto; ``JobPosting`` is the frozen value ``from_row``
+    hands back. They cannot be the same type, so this is the seam between
+    them.
+    """
+    return ScannedJob(
+        url=posting.url,
+        title=posting.title,
+        company=posting.company,
+        location=posting.location,
+        portal=posting.portal,
+        source=posting.source,
+        status=posting.status,
+        closes=posting.closes,
+        posted=posting.posted,
+    )
+
+
 def _regional_board_scanned_jobs(
     config: dict[str, Any] | None, warnings: list[str] | None = None
 ) -> list[ScannedJob]:
@@ -313,19 +339,17 @@ def _regional_board_scanned_jobs(
         return []
     if warnings is not None:
         warnings.extend(_board_coverage_warnings(stats))
-    return [
-        ScannedJob(
-            url=row.get("url", ""),
-            title=row["title"],
-            company=row.get("company") or "Unknown (see posting)",
-            location=row.get("location", ""),
-            portal=row.get("board", "regional"),
-            source=row.get("board", "regional"),
-            posted=row.get("posted", ""),
+    jobs: list[ScannedJob] = []
+    for row in rows:
+        board = row.get("board", "regional")
+        posting = from_row(
+            {**row, "company": row.get("company") or "Unknown (see posting)", "source": board},
+            source_id=f"regional:{board}",
+            portal=board,
         )
-        for row in rows
-        if (row.get("title") or "").strip() and row.get("url")
-    ]
+        if posting is not None:
+            jobs.append(_scanned_job_from_posting(posting))
+    return jobs
 
 
 def _gov_board_scanned_jobs(
@@ -348,54 +372,43 @@ def _gov_board_scanned_jobs(
         return []
     if warnings is not None:
         warnings.extend(_board_coverage_warnings(stats))
-    return [
-        ScannedJob(
-            url=row.get("url", ""),
-            title=row["title"],
-            company=row.get("company") or "Unknown",
-            location=row.get("location", ""),
-            portal=row.get("board", "gov"),
-            source=row.get("board", "gov"),
-            closes=row.get("closes", ""),
-            posted=row.get("posted", ""),
-        )
-        for row in rows
-        if (row.get("title") or "").strip() and row.get("url")
-    ]
+    jobs: list[ScannedJob] = []
+    for row in rows:
+        board = row.get("board", "gov")
+        posting = from_row({**row, "source": board}, source_id=f"gov:{board}", portal=board)
+        if posting is not None:
+            jobs.append(_scanned_job_from_posting(posting))
+    return jobs
 
 
 def _workday_scanned_jobs(
     workday_config: dict[str, Any] | None, warnings: list[str] | None = None
 ) -> list[ScannedJob]:
-    """Tier 6: Workday CxS JSON boards. Free, structured."""
-    stats: dict[str, dict[str, Any]] = {}
+    """Tier 6: Workday CxS JSON boards. Free, structured.
+
+    Converted to the ``SourceResult`` seam (see ``job_hunt.models.posting``):
+    ``scan_workday_source`` already runs the sweep through ``from_row`` and
+    folds the per-employer ``stats`` into one ``SourceHealth``, so there is no
+    local ``stats`` dict here and no call into ``_board_coverage_warnings``.
+    """
     try:
-        rows = scan_workday(workday_config, stats=stats)
+        result = scan_workday_source(workday_config)
     except Exception as exc:
         if warnings is not None:
             warnings.append(f"workday: sweep failed ({exc})")
         return []
     if warnings is not None:
-        warnings.extend(_board_coverage_warnings(stats))
-    return [
-        ScannedJob(
-            url=row.get("url", ""),
-            title=row["title"],
-            company=row.get("company") or "Unknown",
-            location=row.get("location", ""),
-            portal="workday",
-            source=f"workday {row.get('company', '')}",
-            posted=relative_age_to_iso(row.get("posted", "")),
-        )
-        for row in rows
-        if (row.get("title") or "").strip() and row.get("url")
-    ]
+        warnings.extend(result.health.warnings())
+    return [_scanned_job_from_posting(posting) for posting in result.postings]
 
 
 def _adzuna_scanned_jobs(
     settings, roles: list[str], warnings: list[str] | None = None
 ) -> list[ScannedJob]:
-    """Tier 7: Adzuna aggregator API. Credentials come from the environment."""
+    """Tier 7: Adzuna aggregator API. Credentials come from the environment.
+
+    Converted to the ``SourceResult`` seam, same as the Workday mapper above.
+    """
     config = getattr(settings, "adzuna", None) if settings is not None else None
     if config is None or not getattr(config, "enabled", False):
         return []
@@ -403,28 +416,15 @@ def _adzuna_scanned_jobs(
     app_key = os.getenv(getattr(config, "app_key_env", "ADZUNA_APP_KEY"), "").strip()
     if not app_id or not app_key:
         return []
-    stats: dict[str, dict[str, Any]] = {}
     try:
-        rows = scan_adzuna(config, roles, app_id=app_id, app_key=app_key, stats=stats)
+        result = scan_adzuna_source(config, roles, app_id=app_id, app_key=app_key)
     except Exception as exc:
         if warnings is not None:
             warnings.append(f"adzuna: sweep failed ({exc})")
         return []
     if warnings is not None:
-        warnings.extend(_board_coverage_warnings(stats))
-    return [
-        ScannedJob(
-            url=row.get("url", ""),
-            title=row["title"],
-            company=row.get("company") or "Unknown",
-            location=row.get("location", ""),
-            portal="adzuna",
-            source=f"adzuna {row.get('query', '')}",
-            posted=adzuna_created_to_iso(row.get("created", "")),
-        )
-        for row in rows
-        if (row.get("title") or "").strip() and row.get("url")
-    ]
+        warnings.extend(result.health.warnings())
+    return [_scanned_job_from_posting(posting) for posting in result.postings]
 
 
 def _jobbank_scanned_jobs(
@@ -442,20 +442,17 @@ def _jobbank_scanned_jobs(
         warnings.extend(_board_coverage_warnings(stats))
     jobs: list[ScannedJob] = []
     for row in rows:
-        title = (row.get("title") or "").strip()
-        if not title:
-            continue
-        jobs.append(
-            ScannedJob(
-                url=row.get("url", ""),
-                title=title,
-                company=(row.get("company") or "Unknown").strip() or "Unknown",
-                location=row.get("location", ""),
-                portal="jobbank",
-                source=f"jobbank fn21={row.get('noc', '')}",
-                posted=jobbank_date_to_iso(row.get("date", "")),
-            )
+        posting = from_row(
+            {
+                **row,
+                "source": f"jobbank fn21={row.get('noc', '')}",
+                "posted": jobbank_date_to_iso(row.get("date", "")),
+            },
+            source_id="jobbank",
+            portal="jobbank",
         )
+        if posting is not None:
+            jobs.append(_scanned_job_from_posting(posting))
     return jobs
 
 
