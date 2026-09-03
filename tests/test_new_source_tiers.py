@@ -451,23 +451,245 @@ def test_an_incomplete_board_sweep_becomes_an_operator_warning() -> None:
     assert "mb_gov" not in joined
 
 
-def test_a_board_sweep_that_raises_is_reported_not_swallowed() -> None:
-    """`except Exception: return []` made a broken tier look like an empty one."""
+@pytest.mark.parametrize(
+    "attr, call",
+    [
+        (
+            "scan_jobbank",
+            lambda scan_mod, warnings: scan_mod._jobbank_scanned_jobs(
+                {"enabled": True}, warnings
+            ),
+        ),
+        (
+            "scan_gov_boards",
+            lambda scan_mod, warnings: scan_mod._gov_board_scanned_jobs(
+                {"enabled": True}, warnings
+            ),
+        ),
+        (
+            "scan_regional_boards",
+            lambda scan_mod, warnings: scan_mod._regional_board_scanned_jobs(
+                {"enabled": True}, warnings
+            ),
+        ),
+        (
+            "scan_workday",
+            lambda scan_mod, warnings: scan_mod._workday_scanned_jobs(
+                {"enabled": True}, warnings
+            ),
+        ),
+    ],
+)
+def test_a_board_sweep_that_raises_is_reported_not_swallowed(attr, call) -> None:
+    """`except Exception: return []` made a broken tier look like an empty one.
+
+    Covers all five tier mappers except adzuna, which needs credentials wired
+    first — see ``test_adzuna_sweep_that_raises_is_reported_not_swallowed``.
+    """
     import job_hunt.services.scan as scan_mod
 
     def boom(*_a, **_k):
         raise RuntimeError("parser blew up")
 
-    original = scan_mod.scan_regional_boards
-    scan_mod.scan_regional_boards = boom
+    original = getattr(scan_mod, attr)
+    setattr(scan_mod, attr, boom)
     try:
         warnings: list[str] = []
-        jobs = scan_mod._regional_board_scanned_jobs({"enabled": True}, warnings)
+        jobs = call(scan_mod, warnings)
     finally:
-        scan_mod.scan_regional_boards = original
+        setattr(scan_mod, attr, original)
 
     assert jobs == []
     assert warnings and "parser blew up" in warnings[0]
+
+
+def test_adzuna_sweep_that_raises_is_reported_not_swallowed(monkeypatch) -> None:
+    """Same guard as above for the adzuna mapper."""
+    import job_hunt.services.scan as scan_mod
+
+    monkeypatch.setenv("ADZUNA_APP_ID", "id")
+    monkeypatch.setenv("ADZUNA_APP_KEY", "key")
+
+    class Cfg:
+        enabled = True
+
+    class Settings:
+        adzuna = Cfg()
+
+    def boom(*_a, **_k):
+        raise RuntimeError("parser blew up")
+
+    original = scan_mod.scan_adzuna
+    scan_mod.scan_adzuna = boom
+    try:
+        warnings: list[str] = []
+        jobs = scan_mod._adzuna_scanned_jobs(Settings(), ["AI Engineer"], warnings)
+    finally:
+        scan_mod.scan_adzuna = original
+
+    assert jobs == []
+    assert warnings and "parser blew up" in warnings[0]
+
+
+# ----- failure counting (2026-09-03): a 200-with-no-content board looked ----
+# ----- exactly like an empty one until these adapters started counting -----
+
+
+def test_jobbank_scan_counts_failed_requests_into_stats() -> None:
+    from job_hunt.services.jobbank import scan_jobbank
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="", request=request)
+
+    stats: dict[str, dict[str, object]] = {}
+    rows = scan_jobbank(
+        {"enabled": True, "noc_codes": ["21232"], "provinces": ["NS"]},
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        sleep=lambda s: None,
+        stats=stats,
+    )
+
+    assert rows == []
+    assert stats["21232"]["errors"] == 1
+    assert stats["21232"]["collected"] == 0
+
+
+def test_workday_scan_counts_failed_requests_into_stats() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(422, json={}, request=request)
+
+    stats: dict[str, dict[str, object]] = {}
+    rows = scan_workday(
+        {"enabled": True, "employers": [{"name": "X", "tenant": "t", "site": "s"}]},
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        sleep=lambda s: None,
+        stats=stats,
+    )
+
+    assert rows == []
+    assert stats["X"]["errors"] == 1
+    assert stats["X"]["collected"] == 0
+
+
+def test_adzuna_scan_counts_failed_requests_into_stats() -> None:
+    class Cfg:
+        enabled = True
+        country = "ca"
+        results_per_page = 50
+        max_pages = 2
+        max_days_old = 30
+        delay_s = 0
+        timeout_s = 5
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, json={}, request=request)
+
+    stats: dict[str, dict[str, object]] = {}
+    rows = scan_adzuna(
+        Cfg(),
+        ["AI Engineer"],
+        app_id="i",
+        app_key="k",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        sleep=lambda s: None,
+        stats=stats,
+    )
+
+    assert rows == []
+    assert stats["AI Engineer"]["errors"] == 1
+    assert stats["AI Engineer"]["collected"] == 0
+
+
+# ----- posted-date survival (2026-09-03): three tiers scored as permanently
+# ----- undated because scan.py never read the field the adapter emitted.
+# ----- The normalizer unit tests live in tests/test_posted_date.py, next to
+# ----- the shared job_hunt.services.posted_date module; these are the
+# ----- end-to-end checks that scan.py's mappers actually wire it in. -----
+
+
+def test_jobbank_posted_date_survives_into_scanned_job() -> None:
+    import job_hunt.services.scan as scan_mod
+
+    def fake_scan_jobbank(config, **_kwargs):
+        return [
+            {
+                "url": "https://www.jobbank.gc.ca/jobsearch/jobposting/1",
+                "title": "Data Analyst",
+                "company": "Acme",
+                "location": "Halifax (NS)",
+                "date": "August 06, 2026",
+                "noc": "21232",
+            }
+        ]
+
+    original = scan_mod.scan_jobbank
+    scan_mod.scan_jobbank = fake_scan_jobbank
+    try:
+        jobs = scan_mod._jobbank_scanned_jobs({"enabled": True})
+    finally:
+        scan_mod.scan_jobbank = original
+
+    assert jobs[0].posted == "2026-08-06"
+
+
+def test_workday_posted_date_survives_into_scanned_job() -> None:
+    import job_hunt.services.scan as scan_mod
+    import datetime as _dt
+
+    def fake_scan_workday(config, **_kwargs):
+        return [
+            {
+                "url": "https://olg.wd3.myworkdayjobs.com/en-US/Careers/job/a",
+                "title": "Analyst",
+                "company": "OLG",
+                "location": "Toronto",
+                "posted": "Posted 3 Days Ago",
+            }
+        ]
+
+    original = scan_mod.scan_workday
+    scan_mod.scan_workday = fake_scan_workday
+    try:
+        jobs = scan_mod._workday_scanned_jobs({"enabled": True})
+    finally:
+        scan_mod.scan_workday = original
+
+    expected = (_dt.date.today() - _dt.timedelta(days=3)).isoformat()
+    assert jobs[0].posted == expected
+
+
+def test_adzuna_posted_date_survives_into_scanned_job(monkeypatch) -> None:
+    import job_hunt.services.scan as scan_mod
+
+    monkeypatch.setenv("ADZUNA_APP_ID", "id")
+    monkeypatch.setenv("ADZUNA_APP_KEY", "key")
+
+    class Cfg:
+        enabled = True
+
+    class Settings:
+        adzuna = Cfg()
+
+    def fake_scan_adzuna(config, roles, **_kwargs):
+        return [
+            {
+                "url": "https://www.adzuna.ca/details/1",
+                "title": "Data Analyst",
+                "company": "Acme",
+                "location": "Halifax",
+                "created": "2026-08-01T00:00:00Z",
+                "query": "data analyst",
+            }
+        ]
+
+    original = scan_mod.scan_adzuna
+    scan_mod.scan_adzuna = fake_scan_adzuna
+    try:
+        jobs = scan_mod._adzuna_scanned_jobs(Settings(), ["data analyst"])
+    finally:
+        scan_mod.scan_adzuna = original
+
+    assert jobs[0].posted == "2026-08-01"
 
 
 # --- SuccessFactors tenants beyond the Nova Scotia public service -----------

@@ -114,11 +114,19 @@ def scan_workday(
     *,
     client: httpx.Client | None = None,
     sleep=time.sleep,
+    stats: dict[str, dict[str, Any]] | None = None,
 ) -> list[dict[str, str]]:
     """Fetch every configured Workday employer.
 
     Each entry needs ``name`` plus either a ``url`` (any posting or board URL,
     from which the triple is resolved) or explicit ``tenant`` / ``site``.
+
+    Pass ``stats`` to find out whether each employer's pages actually loaded.
+    ``fetch_workday_page`` returns ``{}`` on a transport error, a 404 or a
+    422 — the same value a real CxS response never produces (a 200 always
+    carries ``total``/``jobPostings``), so ``{}`` is counted as a failed
+    request here rather than silently read as "employer has no jobs".
+    Keyed by employer name.
     """
     if not config or not config.get("enabled", False):
         return []
@@ -169,6 +177,7 @@ def scan_workday(
                 continue
             tenant, host, site = target
             name = str(employer.get("name") or tenant)
+            entry = stats.setdefault(name, {"collected": 0, "errors": 0}) if stats is not None else None
             for page in range(max_pages):
                 if not first and delay > 0:
                     sleep(delay)
@@ -176,6 +185,8 @@ def scan_workday(
                 payload = fetch_workday_page(
                     tenant, host, site, offset=page * limit, limit=limit, client=client
                 )
+                if not payload and entry is not None:
+                    entry["errors"] += 1
                 rows = parse_workday_response(payload, tenant, host, site)
                 if not rows:
                     break
@@ -185,6 +196,8 @@ def scan_workday(
                     seen.add(row["url"])
                     row["company"] = name
                     out.append(row)
+                    if entry is not None:
+                        entry["collected"] += 1
                 if len(rows) < limit:
                     break
         return out

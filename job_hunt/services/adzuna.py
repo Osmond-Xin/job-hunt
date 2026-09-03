@@ -116,11 +116,19 @@ def scan_adzuna(
     app_key: str,
     client: httpx.Client | None = None,
     sleep=time.sleep,
+    stats: dict[str, dict[str, Any]] | None = None,
 ) -> list[dict[str, str]]:
     """Fetch ``roles`` x pages from Adzuna. De-duplicated by URL.
 
     ``config`` is the ``AdzunaConfig`` model (or anything with the same
     attributes). Missing credentials or a disabled config yield ``[]``.
+
+    Pass ``stats`` to find out whether each role's pages actually loaded.
+    ``fetch_adzuna_page`` returns ``{}`` on a transport error, a non-200
+    response or invalid JSON — a real Adzuna response always carries a
+    ``results`` key (empty list included), so ``{}`` is counted as a failed
+    request here rather than silently read as "no matches for this role".
+    Keyed by role.
     """
     if config is None or not getattr(config, "enabled", False):
         return []
@@ -142,6 +150,7 @@ def scan_adzuna(
         out: list[dict[str, str]] = []
         first = True
         for role in roles:
+            entry = stats.setdefault(role, {"collected": 0, "errors": 0}) if stats is not None else None
             for page in range(1, max_pages + 1):
                 if not first and delay > 0:
                     sleep(delay)
@@ -156,6 +165,8 @@ def scan_adzuna(
                     max_days_old=max_days_old,
                     client=client,
                 )
+                if not payload and entry is not None:
+                    entry["errors"] += 1
                 # Paginate on what the API returned, not on what survived the
                 # category screen — a fully-filtered page is not the end of
                 # the result set.
@@ -172,6 +183,8 @@ def scan_adzuna(
                     seen.add(row["url"])
                     row["query"] = role
                     out.append(row)
+                    if entry is not None:
+                        entry["collected"] += 1
         return out
     finally:
         if owns_client:

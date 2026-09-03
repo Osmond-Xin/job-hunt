@@ -20,6 +20,11 @@ from job_hunt.services.gov_boards import scan_gov_boards
 from job_hunt.services.regional_boards import scan_regional_boards
 from job_hunt.services.immigration import place_tokens as immigration_place_tokens
 from job_hunt.services.jobbank import scan_jobbank
+from job_hunt.services.posted_date import (
+    adzuna_created_to_iso,
+    jobbank_date_to_iso,
+    relative_age_to_iso,
+)
 from job_hunt.services.workday_boards import scan_workday
 from job_hunt.services.profile_loader import current_mode, discovery_context
 from job_hunt.services.web_extract import _bamboohr_slug
@@ -182,11 +187,11 @@ def scan_portals(
     # under --company, which scopes the run to one tracked employer.
     if not company:
         extra_tiers = [
-            _jobbank_scanned_jobs(config.get("jobbank_direct")),
+            _jobbank_scanned_jobs(config.get("jobbank_direct"), result.errors),
             _gov_board_scanned_jobs(config.get("gov_boards"), result.errors),
             _regional_board_scanned_jobs(config.get("regional_boards"), result.errors),
-            _workday_scanned_jobs(config.get("workday_boards")),
-            _adzuna_scanned_jobs(settings, discovery_context().get("roles", [])),
+            _workday_scanned_jobs(config.get("workday_boards"), result.errors),
+            _adzuna_scanned_jobs(settings, discovery_context().get("roles", []), result.errors),
         ]
         # All four already establish the occupation before we see the title:
         # Job Bank is queried by NOC code, Adzuna rows are filtered on their
@@ -359,12 +364,19 @@ def _gov_board_scanned_jobs(
     ]
 
 
-def _workday_scanned_jobs(workday_config: dict[str, Any] | None) -> list[ScannedJob]:
+def _workday_scanned_jobs(
+    workday_config: dict[str, Any] | None, warnings: list[str] | None = None
+) -> list[ScannedJob]:
     """Tier 6: Workday CxS JSON boards. Free, structured."""
+    stats: dict[str, dict[str, Any]] = {}
     try:
-        rows = scan_workday(workday_config)
-    except Exception:
+        rows = scan_workday(workday_config, stats=stats)
+    except Exception as exc:
+        if warnings is not None:
+            warnings.append(f"workday: sweep failed ({exc})")
         return []
+    if warnings is not None:
+        warnings.extend(_board_coverage_warnings(stats))
     return [
         ScannedJob(
             url=row.get("url", ""),
@@ -373,13 +385,16 @@ def _workday_scanned_jobs(workday_config: dict[str, Any] | None) -> list[Scanned
             location=row.get("location", ""),
             portal="workday",
             source=f"workday {row.get('company', '')}",
+            posted=relative_age_to_iso(row.get("posted", "")),
         )
         for row in rows
         if (row.get("title") or "").strip() and row.get("url")
     ]
 
 
-def _adzuna_scanned_jobs(settings, roles: list[str]) -> list[ScannedJob]:
+def _adzuna_scanned_jobs(
+    settings, roles: list[str], warnings: list[str] | None = None
+) -> list[ScannedJob]:
     """Tier 7: Adzuna aggregator API. Credentials come from the environment."""
     config = getattr(settings, "adzuna", None) if settings is not None else None
     if config is None or not getattr(config, "enabled", False):
@@ -388,10 +403,15 @@ def _adzuna_scanned_jobs(settings, roles: list[str]) -> list[ScannedJob]:
     app_key = os.getenv(getattr(config, "app_key_env", "ADZUNA_APP_KEY"), "").strip()
     if not app_id or not app_key:
         return []
+    stats: dict[str, dict[str, Any]] = {}
     try:
-        rows = scan_adzuna(config, roles, app_id=app_id, app_key=app_key)
-    except Exception:
+        rows = scan_adzuna(config, roles, app_id=app_id, app_key=app_key, stats=stats)
+    except Exception as exc:
+        if warnings is not None:
+            warnings.append(f"adzuna: sweep failed ({exc})")
         return []
+    if warnings is not None:
+        warnings.extend(_board_coverage_warnings(stats))
     return [
         ScannedJob(
             url=row.get("url", ""),
@@ -400,18 +420,26 @@ def _adzuna_scanned_jobs(settings, roles: list[str]) -> list[ScannedJob]:
             location=row.get("location", ""),
             portal="adzuna",
             source=f"adzuna {row.get('query', '')}",
+            posted=adzuna_created_to_iso(row.get("created", "")),
         )
         for row in rows
         if (row.get("title") or "").strip() and row.get("url")
     ]
 
 
-def _jobbank_scanned_jobs(jobbank_config: dict[str, Any] | None) -> list[ScannedJob]:
+def _jobbank_scanned_jobs(
+    jobbank_config: dict[str, Any] | None, warnings: list[str] | None = None
+) -> list[ScannedJob]:
     """Tier 4: Job Bank direct search rows mapped onto ``ScannedJob``."""
+    stats: dict[str, dict[str, Any]] = {}
     try:
-        rows = scan_jobbank(jobbank_config)
-    except Exception:
+        rows = scan_jobbank(jobbank_config, stats=stats)
+    except Exception as exc:
+        if warnings is not None:
+            warnings.append(f"jobbank: sweep failed ({exc})")
         return []
+    if warnings is not None:
+        warnings.extend(_board_coverage_warnings(stats))
     jobs: list[ScannedJob] = []
     for row in rows:
         title = (row.get("title") or "").strip()
@@ -425,6 +453,7 @@ def _jobbank_scanned_jobs(jobbank_config: dict[str, Any] | None) -> list[Scanned
                 location=row.get("location", ""),
                 portal="jobbank",
                 source=f"jobbank fn21={row.get('noc', '')}",
+                posted=jobbank_date_to_iso(row.get("date", "")),
             )
         )
     return jobs

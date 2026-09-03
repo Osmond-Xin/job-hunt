@@ -48,6 +48,8 @@ from urllib.parse import urljoin
 
 import httpx
 
+from job_hunt.services.posted_date import relative_age_to_iso
+
 GNWT_BASE = "https://www.gov.nt.ca"
 GNWT_SEARCH = f"{GNWT_BASE}/careers/en/search/job"
 NS_BASE = "https://jobs.novascotia.ca"
@@ -89,18 +91,13 @@ def _text(fragment: str) -> str:
 
 # GNWT prints how long ago a job was posted rather than the date ("17 hours
 # ago", "3 days ago"). Freshness is one of the four axes triage ranks on, so
-# an absent date costs the whole board its recency signal.
-_AGE_RE = re.compile(r"(\d+)\s*(min|hour|day|week|month|year)", re.I)
-_AGE_DAYS = {"min": 0, "hour": 0, "day": 1, "week": 7, "month": 30, "year": 365}
-
-
+# an absent date costs the whole board its recency signal. Workday needs the
+# same "N units ago" arithmetic for its own "Posted N Days Ago" phrasing, so
+# it lives in job_hunt.services.posted_date; this stays as a thin wrapper so
+# the call site below reads the same as it always has.
 def _age_to_iso(fragment: str, today: dt.date | None = None) -> str:
     """ISO date for a "N units ago" interval, or "" when it is not one."""
-    match = _AGE_RE.search(fragment or "")
-    if not match:
-        return ""
-    days = int(match.group(1)) * _AGE_DAYS[match.group(2).lower()]
-    return ((today or dt.date.today()) - dt.timedelta(days=days)).isoformat()
+    return relative_age_to_iso(fragment, today)
 
 
 def _field(body: str, css_class: str) -> str:
