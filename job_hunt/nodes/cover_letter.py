@@ -139,9 +139,14 @@ async def generate_cover_letter(state: JobHuntState, config: RunnableConfig) -> 
             # Same "budget never confirmed" outcome pdf.py's measure() refuses
             # to ship for the CV (see the comment there): a PDF with no
             # /Count means we cannot tell "1 page" from "over budget", which
-            # is exactly the silence CLAUDE.md §2 forbids. The letter is
-            # optional and the audited body text this rendered from is still
-            # in `body_md`, so withholding costs a retry, not the draft.
+            # is exactly the silence CLAUDE.md §2 forbids.
+            #
+            # Unlike the CV, this is not cheap to retry. `cv_tailored` lives in
+            # state, so re-running the CV render costs nothing; `body_md` is a
+            # local from generate_with_audit above — a premium call plus its
+            # audit, up to three attempts — and withholding drops it. §2 is
+            # stated as non-negotiable, so an unverified letter still must not
+            # ship; the cost is real and belongs on the record, not hidden.
             pdf_path.unlink(missing_ok=True)
             return {
                 "cover_letter_path": None,
