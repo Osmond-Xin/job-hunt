@@ -27,6 +27,24 @@ def test_real_posting_with_structure_is_active() -> None:
     assert result["errors"] == []
 
 
+def test_a_posting_that_words_its_headings_differently_is_still_active() -> None:
+    """BigGeo's Calgary Spatial AI Engineer role, dropped twice on 2026-09-04.
+
+    It heads its sections "The Role", "What You Will Build and Own" and "Who You
+    Are" — not one of the original thirteen phrases appears on the page, so a
+    live posting the operator had asked for was reported as inactive. Failing to
+    recognise a posting drops it silently; a false positive costs one
+    evaluation.
+    """
+    result = _run(
+        "About BigGeo. We are the Spatial Cloud. " * 10
+        + "The Role: the Spatial AI Engineer builds systems that reason about the "
+        "real world. What You Will Build and Own: spatially-aware models. "
+        "Who You Are: you have shipped production systems."
+    )
+    assert result["jd_active"] is True
+
+
 def test_closed_successfactors_wording_is_inactive() -> None:
     """The Nova Scotia government wording matched none of the original signals."""
     result = _run(
