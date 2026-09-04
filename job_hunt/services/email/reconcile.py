@@ -11,6 +11,7 @@ from job_hunt.repositories.review_repo import ReviewRepository
 from job_hunt.repositories.tracker_repo import TrackerEntry, TrackerRepository
 from job_hunt.services.email.message_parser import BAD_FRAGMENTS, GENERIC_COMPANIES
 from job_hunt.services.employer_match import EmployerMatcher, is_reliable_match, load_aliases
+from job_hunt.services.tracker_ops import _STATUS_RANK
 
 
 EMAIL_STATUS_MAP = {
@@ -23,20 +24,70 @@ EMAIL_STATUS_MAP = {
     "rejection": "Rejected",
 }
 
+# tracker_ops._STATUS_RANK is the one place the tracker's status order is
+# defined; reconcile reuses it rather than keeping a second, driftable copy.
+# Ranks 0/1 are its terminal states (its own comment: "Active applications
+# outrank terminal states") -- SKIP, Discarded, Rejected. "Contacted" (a real
+# status in templates/states.yml) has no entry at all, so `.get()` on it
+# returns None, not 0 -- see `_transition_kind`, which treats that as
+# "unranked" rather than silently letting it sort below SKIP/Discarded.
+_TERMINAL_STATUSES = frozenset(name for name, rank in _STATUS_RANK.items() if rank <= 1)
+
+# How much of data/email-events.jsonl to read on a plain `email reconcile`.
+# The old default (50) hid everything older than the last 50 events against
+# a 327-event log; a full scan takes seconds, so the default now covers any
+# realistic log size and `--limit` narrows it only when asked.
+_DEFAULT_LIMIT = 100_000
+
 
 class ReconcileResult(BaseModel):
     scanned: int = 0
+    total_available: int = 0
     matched: int = 0
     updated: int = 0
+    regressed: int = 0
+    unranked: int = 0
     imported: int = 0
     review_created: int = 0
     skipped: int = 0
 
 
+def _transition_kind(current_status: str, new_status: str) -> str:
+    """Classify a proposed status change using tracker_ops._STATUS_RANK.
+
+    _STATUS_RANK ranks terminal outcomes low (SKIP/Discarded=0, Rejected=1) --
+    right for its own dedup use ("an Interview duplicate beats a Rejected
+    one"), but not a temporal order by itself: Applied (3) outranks Rejected
+    (1), so a bare "new_rank > current_rank" check would wave through
+    Rejected -> Applied as an "advance". That is exactly the regression the
+    live corpus showed (5 of the 8 backwards rows). So:
+
+    - a terminal current status is a sink: once Rejected/Discarded/SKIP,
+      no mail event moves it further, regardless of the new status's rank.
+    - moving *into* a terminal status is always a legitimate advance from any
+      still-open stage, regardless of its own low rank number -- a rejection
+      ends the funnel, it doesn't demote it.
+    - otherwise, advance only if the new status outranks the current one.
+
+    Returns "advance", "backward", or "unranked" (current_status has no
+    entry in _STATUS_RANK at all, e.g. "Contacted" -- direction can't be
+    inferred, and this is never silently treated as rank 0).
+    """
+    if current_status in _TERMINAL_STATUSES:
+        return "backward"
+    current_rank = _STATUS_RANK.get(current_status)
+    if current_rank is None:
+        return "unranked"
+    if new_status in _TERMINAL_STATUSES:
+        return "advance"
+    new_rank = _STATUS_RANK[new_status]  # every EMAIL_STATUS_MAP value is ranked
+    return "advance" if new_rank > current_rank else "backward"
+
+
 def reconcile_email_events(
     *,
     apply: bool = False,
-    limit: int = 50,
+    limit: int = _DEFAULT_LIMIT,
     import_new: bool = False,
     update_existing: bool = True,
     create_review: bool = True,
@@ -49,8 +100,12 @@ def reconcile_email_events(
     tracker = tracker or TrackerRepository()
     review_repo = review_repo or ReviewRepository()
     aliases = aliases if aliases is not None else load_aliases()
-    events = event_repo.list(limit=limit)
-    result = ReconcileResult(scanned=len(events))
+    # Read the whole log regardless of `limit`, so `total_available` always
+    # reflects the true size and the report can say whether this run's
+    # window (`scanned`) covered all of it or only part.
+    all_events = event_repo.list(limit=10**9)
+    events = all_events[-limit:]
+    result = ReconcileResult(scanned=len(events), total_available=len(all_events))
     for event in events:
         status = EMAIL_STATUS_MAP.get(event.event_type)
         if not status:
@@ -69,9 +124,39 @@ def reconcile_email_events(
         # this is reconcile's policy, not something `mutate` imposes for it.
         if matched and event.role and _is_reliable_tracker_match(event, matched, match_score):
             result.matched += 1
-            if apply and update_existing and matched.status != status:
-                tracker.update_entry(matched.model_copy(update={"status": status}))
-                result.updated += 1
+            if update_existing and matched.status != status:
+                kind = _transition_kind(matched.status, status)
+                if kind == "advance":
+                    # Counted here regardless of `apply`, so a dry run reports
+                    # the same number `--apply` will actually touch.
+                    result.updated += 1
+                    if apply:
+                        tracker.update_entry(matched.model_copy(update={"status": status}))
+                else:
+                    # A backward or unranked transition is not an update — it
+                    # contradicts the row's current state, which is worth a
+                    # human's eyes rather than a silent drop. Surface it
+                    # through the same review queue low-confidence matches
+                    # already use, instead of a mutation.
+                    if kind == "backward":
+                        result.regressed += 1
+                        reason = f"row #{matched.number} is already {matched.status}; mail says {status}"
+                    else:
+                        result.unranked += 1
+                        reason = f"row #{matched.number} status {matched.status!r} has no rank to compare against"
+                    if create_review:
+                        result.review_created += 1
+                        if apply:
+                            review_repo.append(
+                                build_review_item(
+                                    event,
+                                    status=status,
+                                    match_score=match_score,
+                                    matched_id=matched.number,
+                                    item_type="status_update_conflict",
+                                    reason=reason,
+                                )
+                            )
             continue
         if import_new and _safe_import_candidate(event):
             if apply:
@@ -143,14 +228,19 @@ def build_review_item(
     status: str,
     match_score: float,
     matched_id: int | None,
+    item_type: str = "email_match_low_confidence",
+    reason: str | None = None,
 ) -> ReviewItem:
+    summary = (
+        f"Review Gmail event for {event.company or 'unknown company'} / "
+        f"{event.role or 'unknown role'} -> {status}"
+    )
+    if reason:
+        summary = f"{summary} ({reason})"
     return ReviewItem(
-        type="email_match_low_confidence",
+        type=item_type,
         priority="normal",
-        summary=(
-            f"Review Gmail event for {event.company or 'unknown company'} / "
-            f"{event.role or 'unknown role'} -> {status}"
-        ),
+        summary=summary,
         proposed_action={
             "event_id": event.id,
             "event_type": event.event_type,

@@ -249,9 +249,23 @@ def email_import_events(
         update_existing=not new_only,
         create_review=not skip_review,
     )
-    console.print(f"Scanned: {result.scanned}")
+    if result.scanned < result.total_available:
+        console.print(
+            f"[yellow]Scanned: {result.scanned} of {result.total_available} "
+            f"(partial — pass --limit to scan more)[/yellow]"
+        )
+    else:
+        console.print(f"Scanned: {result.scanned} of {result.total_available} (complete)")
     console.print(f"Matched existing: {result.matched}")
     console.print(f"Updated existing: {result.updated}")
+    if result.regressed:
+        console.print(
+            f"[yellow]Held back, would move backward: {result.regressed}[/yellow]"
+        )
+    if result.unranked:
+        console.print(
+            f"[yellow]Held back, status not ranked: {result.unranked}[/yellow]"
+        )
     console.print(f"Imported new: {result.imported}")
     console.print(f"Review created: {result.review_created}")
     console.print(f"Skipped: {result.skipped}")
@@ -260,7 +274,7 @@ def email_import_events(
 @email_app.command("reconcile")
 def email_reconcile(
     apply: bool = False,
-    limit: int = 50,
+    limit: int = 100_000,
     import_new: bool = False,
     new_only: bool = False,
     skip_review: bool = False,
