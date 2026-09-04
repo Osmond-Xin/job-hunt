@@ -102,7 +102,17 @@ def _gate_outward_artifact(
     if result.review:
         review_path = artifact_path.parent / f"{artifact_path.stem}.redteam.md"
         review_path.write_text(result.review, encoding="utf-8")
-        console.print(f"\n[{style}]RED TEAM: {result.verdict}[/{style}] — findings in {review_path}")
+        if result.verdict == "UNREVIEWED":
+            # mmx produced output but no parsable `VERDICT:` line — the raw
+            # text is worth keeping, but it is not a completed review, and
+            # "findings in <path>" would tell the operator otherwise. CLAUDE.md
+            # §1: UNREVIEWED is not a pass, and must not read like one.
+            console.print(
+                f"\n[{style}]RED TEAM: UNREVIEWED[/{style}] — reviewer produced no verdict; "
+                f"raw output saved to {review_path}, but this is not a completed review."
+            )
+        else:
+            console.print(f"\n[{style}]RED TEAM: {result.verdict}[/{style}] — findings in {review_path}")
     else:
         console.print(
             f"\n[{style}]RED TEAM: UNREVIEWED[/{style}] — not reviewed "

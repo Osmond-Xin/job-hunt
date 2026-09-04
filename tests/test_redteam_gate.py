@@ -138,9 +138,13 @@ def test_draft_answers_are_written_to_disk_and_reach_the_review(monkeypatch, tmp
     assert out["redteam_verdict"] == "SEND"
 
 
-def test_draft_answers_join_the_pipeline_review_when_a_pdf_exists(monkeypatch, tmp_path):
-    """When a templated CV is also in this run, both go through one review call
-    under the pipeline origin — one verdict, one redteam.md, same as before."""
+def test_draft_answers_get_their_own_call_when_a_pdf_exists(monkeypatch, tmp_path):
+    """When a templated CV is also in this run, the CV and the draft answers
+    go through two separate review calls under two different origins — the
+    "pipeline" exemptions (target banner, contact-line separator) are house
+    style of templates/cv.html.j2 and must not be handed to the reviewer as
+    covering the freeform draft answers too. Both reviews still land in one
+    redteam.md and one merged verdict, so the operator reads one file."""
     from job_hunt.nodes import artifact_paths as artifact_paths_module
     from job_hunt.nodes import redteam as redteam_module
 
@@ -154,7 +158,7 @@ def test_draft_answers_join_the_pipeline_review_when_a_pdf_exists(monkeypatch, t
 
     def fake_run_review(*, artifacts, jd_text, company, role, origin="hand-written"):
         calls.append({"artifacts": artifacts, "origin": origin})
-        return svc.RedTeamResult("SEND", "VERDICT: SEND — fine")
+        return svc.RedTeamResult("SEND", f"VERDICT: SEND — fine ({origin})")
 
     monkeypatch.setattr(redteam_module, "run_review", fake_run_review)
 
@@ -166,11 +170,53 @@ def test_draft_answers_join_the_pipeline_review_when_a_pdf_exists(monkeypatch, t
         "cover_letter_path": None,
         "evaluation_blocks": {"draft_answers": "answer text"},
     }
-    asyncio.run(redteam_module.redteam_review(state, None))
+    out = asyncio.run(redteam_module.redteam_review(state, None))
 
     answers_path = artifact_paths_module.run_output_dir(state) / "apply-answers.md"
-    assert set(calls[0]["artifacts"]) == {pdf_path, answers_path}
+    assert len(calls) == 2
+    assert calls[0]["artifacts"] == [pdf_path]
     assert calls[0]["origin"] == "pipeline"
+    assert calls[1]["artifacts"] == [answers_path]
+    assert calls[1]["origin"] == "hand-written"
+
+    review_path = artifact_paths_module.run_output_dir(state) / "redteam.md"
+    review = review_path.read_text(encoding="utf-8")
+    assert "(pipeline)" in review and "(hand-written)" in review
+    assert out["redteam_verdict"] == "SEND"
+
+
+def test_worse_verdict_wins_across_the_two_origin_batches(monkeypatch, tmp_path):
+    """The CV batch and the draft-answers batch are reviewed independently now,
+    so a BLOCK found only in the draft answers must not be hidden behind a
+    clean SEND on the CV — the operator gets one verdict and it has to be the
+    worst of the two."""
+    from job_hunt.nodes import artifact_paths as artifact_paths_module
+    from job_hunt.nodes import redteam as redteam_module
+
+    monkeypatch.setattr(artifact_paths_module, "_OUTPUT_DIR", tmp_path)
+
+    pdf_path = tmp_path / "resume.pdf"
+    pdf_path.parent.mkdir(parents=True, exist_ok=True)
+    pdf_path.write_bytes(b"%PDF fake")
+
+    def fake_run_review(*, artifacts, jd_text, company, role, origin="hand-written"):
+        if origin == "pipeline":
+            return svc.RedTeamResult("SEND", "VERDICT: SEND — CV is fine")
+        return svc.RedTeamResult("BLOCK", "VERDICT: BLOCK — answer contradicts a fact")
+
+    monkeypatch.setattr(redteam_module, "run_review", fake_run_review)
+
+    state = {
+        "run_id": "abc123",
+        "jd_meta": JobMeta(company="Acme", title="Engineer"),
+        "jd_text": "JD body",
+        "pdf_path": str(pdf_path),
+        "cover_letter_path": None,
+        "evaluation_blocks": {"draft_answers": "answer text"},
+    }
+    out = asyncio.run(redteam_module.redteam_review(state, None))
+
+    assert out["redteam_verdict"] == "BLOCK"
 
 
 def test_draft_answers_alone_still_go_unreviewed_when_mmx_is_unreachable(monkeypatch, tmp_path):

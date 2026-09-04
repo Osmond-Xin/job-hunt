@@ -17,7 +17,7 @@ from job_hunt.models.events import ApplicationEvent
 from job_hunt.repositories.tracker_repo import TrackerRepository
 from job_hunt.repositories.email_event_repo import EmailEventRepository
 from job_hunt.services.activity import ActivityEvent, ActivityLogger, read_activity
-from job_hunt.services.employer_match import EmployerMatcher
+from job_hunt.services.employer_match import EmployerMatcher, MATCH_THRESHOLD
 from job_hunt.services.profile_loader import (
     workday_education_entries as _load_workday_education_entries,
     workday_experience_entries as _load_workday_experience_entries,
@@ -777,7 +777,7 @@ def _infer_loop_target(*, url: str, description: str) -> dict:
     score = 0.0
     if company:
         entry, score = EmployerMatcher(tracker.parse()).raw_match(company=company, role=role)
-    if (not entry or score < 0.70) and inferred_text:
+    if (not entry or score < MATCH_THRESHOLD) and inferred_text:
         entry, score = _best_tracker_text_match(tracker.parse(), inferred_text)
     if entry and score >= 0.55:
         company = company or entry.company
@@ -788,7 +788,7 @@ def _infer_loop_target(*, url: str, description: str) -> dict:
             company = company or ats_company
     if company and role:
         role = re.sub(rf"^{re.escape(company)}\s+", "", role, flags=re.IGNORECASE).strip() or role
-    if entry and score >= 0.70:
+    if entry and score >= MATCH_THRESHOLD:
         role = entry.role
     if entry:
         pdf = _select_pdf_for_entry(entry)
@@ -4785,7 +4785,7 @@ def _load_apply_report_context(
     score = 1.0 if entry else 0.0
     if entry is None:
         entry, score = EmployerMatcher(tracker.parse()).raw_match(company=company, role=role)
-    if not entry or score < 0.70:
+    if not entry or score < MATCH_THRESHOLD:
         return None
 
     report_path = _resolve_report_path(entry.report)

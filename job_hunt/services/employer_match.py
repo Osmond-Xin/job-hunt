@@ -84,6 +84,17 @@ MUTATE_ROLE_FLOOR = 0.75
 # confirm with, so the bar is high).
 COMPANY_ONLY_THRESHOLD = 0.85
 
+# cli/evaluation.py's `_partition_already_evaluated`: is a batch target's
+# scraped (company, role) already a tracker row, so evaluate-batch can skip
+# re-running it? Numerically the same as COMPANY_ONLY_THRESHOLD above but a
+# different decision — this is checked against a role-inclusive `raw_match`
+# score, not the company-only fallback. Deliberately stricter than
+# MATCH_THRESHOLD: a false positive here silently drops a real job from the
+# batch (the 2026-08-17 SIGA/Cohere incident), while a false negative only
+# costs a duplicate evaluation — the direction this project would rather
+# fail in. Do not retune without re-reading that incident.
+ALREADY_EVALUATED_THRESHOLD = 0.85
+
 _GENERIC_COMPANY_TOKENS = {
     "software", "inc", "corp", "corporation", "ltd", "llc", "co", "company",
     "technologies", "technology", "tech", "solutions", "systems",

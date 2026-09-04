@@ -297,7 +297,7 @@ async def generate_cv_html_pdf(state: JobHuntState, config: RunnableConfig) -> d
             warnings.append(
                 f"CV trimmed to fit {MAX_CV_PAGES} pages: " + "; ".join(dropped)
             )
-        if pages is not None and pages > MAX_CV_PAGES:
+        if pages > MAX_CV_PAGES:
             warnings.append(
                 f"CV is {pages} pages after trimming everything droppable — "
                 f"budget is {MAX_CV_PAGES}. Shorten profile/cv.md or hand-render."
@@ -343,21 +343,21 @@ async def _render_within_budget(
     pdf_path: Path,
     paper_size: str,
     max_pages: int,
-) -> tuple[int | None, list[str]]:
+) -> tuple[int, list[str]]:
     """Render, and while the PDF exceeds `max_pages`, drop one block and re-render.
 
     One browser is reused across attempts; a launch per attempt would dominate the
-    runtime. Returns the final page count (None if it could not be read) and the
-    list of things that were dropped, which the caller surfaces as warnings.
+    runtime. Returns the final page count and the list of things that were dropped,
+    which the caller surfaces as warnings.
     """
     from playwright.async_api import async_playwright
 
     fmt = "Letter" if paper_size.lower() == "letter" else "A4"
     dropped: list[str] = []
 
-    def measure() -> int | None:
+    def measure() -> int:
         try:
-            return pdf_page_count(pdf_path.read_bytes())
+            pages = pdf_page_count(pdf_path.read_bytes())
         except Exception:
             # CLAUDE.md §1: page.pdf() above just wrote a complete, valid-
             # looking PDF to pdf_path. If we can't measure it, the page
@@ -370,6 +370,17 @@ async def _render_within_budget(
             # a retry re-renders it with no LLM cost.
             pdf_path.unlink(missing_ok=True)
             raise
+        if pages is None:
+            # Same "we don't know" outcome as the except block above, just
+            # signalled by pdf_page_count returning None (no /Count in the
+            # bytes) instead of raising. The page budget was never confirmed
+            # either way, so this must not be left looking like a finished,
+            # reviewed résumé — unlink and raise so it hits the same
+            # generate_cv_html_pdf except block that reports and withholds a
+            # measurement failure today.
+            pdf_path.unlink(missing_ok=True)
+            raise ValueError(f"PDF page count could not be read from {pdf_path.name}")
+        return pages
 
     async with async_playwright() as pw:
         browser = await pw.chromium.launch()
@@ -381,7 +392,7 @@ async def _render_within_budget(
                 await page.pdf(path=str(pdf_path), format=fmt, print_background=True)
 
                 pages = measure()
-                if pages is None or pages <= max_pages:
+                if pages <= max_pages:
                     return pages, dropped
 
                 step = next_trim(cv_md)

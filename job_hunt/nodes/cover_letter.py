@@ -135,7 +135,24 @@ async def generate_cover_letter(state: JobHuntState, config: RunnableConfig) -> 
         # same warnings channel the audit-failed and UNVERIFIED cases above use.
         overflow_warnings: list[str] = []
         pages = pdf_page_count(pdf_path.read_bytes())
-        if pages is not None and pages > MAX_COVER_LETTER_PAGES:
+        if pages is None:
+            # Same "budget never confirmed" outcome pdf.py's measure() refuses
+            # to ship for the CV (see the comment there): a PDF with no
+            # /Count means we cannot tell "1 page" from "over budget", which
+            # is exactly the silence CLAUDE.md §2 forbids. The letter is
+            # optional and the audited body text this rendered from is still
+            # in `body_md`, so withholding costs a retry, not the draft.
+            pdf_path.unlink(missing_ok=True)
+            return {
+                "cover_letter_path": None,
+                "errors": errors,
+                "artifact_warnings": unverified
+                + [
+                    "cover letter withheld: page count could not be measured "
+                    "(no /Count in the PDF) — the 1-page budget was never confirmed."
+                ],
+            }
+        if pages > MAX_COVER_LETTER_PAGES:
             overflow_warnings.append(
                 f"cover letter is {pages} pages — budget is {MAX_COVER_LETTER_PAGES}. "
                 "Shorten it by hand; the letter is not auto-trimmed."

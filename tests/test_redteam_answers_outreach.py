@@ -140,6 +140,36 @@ def test_outreach_draft_unreviewed_is_not_a_pass_and_names_no_file(tmp_path, mon
     assert ".redteam.md" not in out
 
 
+def test_outreach_draft_unreviewed_with_raw_output_does_not_read_like_a_completed_review(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """mmx can produce output with no parsable `VERDICT:` line — `run_review`
+    then returns UNREVIEWED with non-empty `review` text. The raw output is
+    still worth keeping on disk, but the console line must not say "findings
+    in <path>": that phrasing is what a real verdict gets, and it would send
+    the operator to a file that contains no verdict at all (CLAUDE.md §1:
+    UNREVIEWED is not a pass, and must not be handed over looking like one)."""
+    contact = _make_contact(tmp_path, monkeypatch)
+    monkeypatch.setattr("job_hunt.cli.outreach._run_one_shot_prompt", lambda **kw: "Hi Jo, here's why I'm reaching out.")
+    monkeypatch.setattr(
+        svc, "run_review", _fake_run_review("UNREVIEWED", "The model rambled and never issued a verdict line.")
+    )
+
+    _draft(contact)
+
+    draft = _drafted_message()
+    # The raw output is still worth having, so it is still written to disk...
+    review = draft.with_name(f"{draft.stem}.redteam.md")
+    assert review.read_text(encoding="utf-8") == "The model rambled and never issued a verdict line."
+    # Rich wraps the console line at test width, so compare on collapsed
+    # whitespace rather than the raw (possibly mid-phrase-wrapped) output.
+    out = " ".join(capsys.readouterr().out.split())
+    assert "RED TEAM: UNREVIEWED" in out
+    # ...but the operator-facing line must not read like a completed review.
+    assert "findings in" not in out
+    assert "not a completed review" in out
+
+
 # ----- apply-answers -----
 
 

@@ -178,6 +178,37 @@ def test_cover_letter_overflow_is_reported_not_trimmed(monkeypatch, tmp_path) ->
     assert result["evaluation_blocks"]["cover_letter"] == "Paragraph one.\n\nParagraph two."
 
 
+def _fake_html_to_pdf_unmeasurable():
+    """Stand in for Playwright: writes real bytes with no /Count anywhere,
+    the same shape pdf_page_count returns None for."""
+
+    async def fake(html_path: str, pdf_path: str, *, paper_size: str = "letter") -> None:
+        Path(pdf_path).write_bytes(b"%PDF-1.4 no page tree here")
+
+    return fake
+
+
+def test_cover_letter_unmeasurable_is_withheld_and_reported(monkeypatch, tmp_path) -> None:
+    """A PDF whose page count cannot be read is not the same thing as "1 page,
+    fits fine" — it must produce a visible, distinguishable warning, and (per
+    the same reasoning pdf.py's measure() already applies when reading raises)
+    the file is withheld rather than shipped with an unconfirmed budget."""
+    monkeypatch.setattr(artifact_paths_module, "_OUTPUT_DIR", tmp_path)
+    monkeypatch.setattr(
+        quality_module, "call_node_llm_or_fallback", _fake_llm("Paragraph one.\n")
+    )
+    monkeypatch.setattr(cover_letter_module, "_html_to_pdf", _fake_html_to_pdf_unmeasurable())
+
+    result = asyncio.run(generate_cover_letter(dict(_LETTER_STATE), None))
+
+    assert result["cover_letter_path"] is None
+    assert any(
+        "could not be measured" in w for w in result["artifact_warnings"]
+    )
+    # Distinguishable from the clean-pass case: no warning claims a page count.
+    assert not any("is 1 page" in w or "is 2 pages" in w for w in result["artifact_warnings"])
+
+
 def test_cover_letter_within_budget_has_no_warning(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(artifact_paths_module, "_OUTPUT_DIR", tmp_path)
     monkeypatch.setattr(quality_module, "call_node_llm_or_fallback", _fake_llm("Paragraph one.\n"))
@@ -257,6 +288,35 @@ def test_page_count_failure_deletes_the_stale_pdf_and_reraises(monkeypatch, tmp_
             )
         )
         raise AssertionError("expected the page-count failure to propagate")
+    except ValueError:
+        pass
+
+    assert not pdf_path.exists()
+
+
+def test_page_count_none_deletes_the_stale_pdf_and_raises(monkeypatch, tmp_path) -> None:
+    """The other shape of "could not measure": pdf_page_count returns None
+    (no /Count in the bytes) instead of raising. That is the same "budget
+    never confirmed" outcome as the raising case above and must be treated
+    the same way — the file must not survive looking like a finished,
+    reviewed résumé, and the failure must propagate rather than being read
+    as "0 or fewer pages, fine"."""
+    import playwright.async_api as pw_async_api
+
+    from job_hunt.nodes import pdf as pdf_module
+
+    monkeypatch.setattr(pw_async_api, "async_playwright", lambda: _FakeAsyncPlaywrightCM())
+
+    html_path = tmp_path / "resume.html"
+    pdf_path = tmp_path / "resume.pdf"
+
+    try:
+        asyncio.run(
+            pdf_module._render_within_budget(
+                lambda cv_md: "<html></html>", "cv body", html_path, pdf_path, "letter", 2
+            )
+        )
+        raise AssertionError("expected the unmeasurable page count to propagate")
     except ValueError:
         pass
 

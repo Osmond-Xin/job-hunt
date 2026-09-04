@@ -21,7 +21,7 @@ from job_hunt.services.usage_ledger import (
 )
 from job_hunt.repositories.tracker_repo import TrackerRepository
 from job_hunt.services import cv_sync_check
-from job_hunt.services.employer_match import EmployerMatcher
+from job_hunt.services.employer_match import ALREADY_EVALUATED_THRESHOLD, EmployerMatcher
 
 from ._render import _short, console
 from job_hunt.services.profile_loader import _apply_profile_values
@@ -320,7 +320,7 @@ def _partition_already_evaluated(targets: list[str]) -> tuple[list[str], list[tu
             role = _strip_aggregator_suffix(metadata.get("title") or "")
             if company and role:
                 entry, score = EmployerMatcher(tracker.parse()).raw_match(company=company, role=role)
-                if score < 0.85:
+                if score < ALREADY_EVALUATED_THRESHOLD:
                     entry = None
         except Exception:
             entry = None

@@ -679,3 +679,61 @@ def test_infer_loop_target_uses_url_metadata_without_description(tmp_path, monke
     assert target["role"] == "Senior Software Engineer, Security Agents"
     assert target["tracker_entry"].number == 1
     assert target["pdf"] == Path("output/cohere-security-agents-resume.pdf")
+
+
+def test_match_threshold_constant_is_read_at_call_sites(tmp_path, monkeypatch) -> None:
+    """Verify that apply.py reads MATCH_THRESHOLD from employer_match, not a local literal.
+
+    When MATCH_THRESHOLD is monkeypatched to a higher value, _infer_loop_target
+    must respect that higher threshold, proving the call sites read the constant
+    rather than a hard-coded literal. Specifically, we test that the line 791 check
+    (if entry and score >= MATCH_THRESHOLD) changes behavior.
+    """
+    tracker_path = tmp_path / "data" / "applications.md"
+    tracker_path.parent.mkdir()
+    tracker_path.write_text(TRACKER_HEADER, encoding="utf-8")
+    tracker = TrackerRepository(tracker_path)
+    # Add an entry with company/role that scores between 0.70 and 0.85 when fuzzy-matched.
+    # "Acme Inc" vs "Acme" scores around 0.76-0.78 (company weight 0.65, ~0.85 ratio).
+    tracker.append_entry(
+        TrackerEntry(
+            number=1,
+            date="2026-04-29",
+            company="Acme Inc",
+            role="Software Engineer",
+            score="4.0/5",
+            status="Evaluated",
+            pdf="✅",
+            report="reports/acme.md",
+            notes="apply",
+        )
+    )
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        "job_hunt.cli.apply._extract_loop_url_metadata",
+        lambda url: {"company": "Acme", "title": "Data Engineer", "text": ""},
+    )
+
+    # With default threshold (0.70), the moderately good company match (0.76+)
+    # should pass and entry.role should be taken (line 791).
+    target_default = _infer_loop_target(
+        url="https://example.com/jobs/1",
+        description="",
+    )
+    assert target_default["role"] == "Software Engineer", \
+        "Default threshold 0.70 should apply entry.role from line 791"
+
+    # Patch MATCH_THRESHOLD to 0.90 in the apply module's namespace.
+    # Line 791 will now require score >= 0.90 before taking entry.role.
+    monkeypatch.setattr("job_hunt.cli.apply.MATCH_THRESHOLD", 0.90)
+
+    # With inflated threshold (0.90), the 0.76 score fails line 791, so
+    # entry.role is not overridden; role remains "Data Engineer" from metadata.
+    target_inflated = _infer_loop_target(
+        url="https://example.com/jobs/1",
+        description="",
+    )
+    assert target_inflated["role"] == "Data Engineer", \
+        "Inflated threshold 0.90 should skip line 791 and keep metadata role"

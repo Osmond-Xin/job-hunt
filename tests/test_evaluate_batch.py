@@ -17,6 +17,7 @@ runner = CliRunner()
 # Captured before the autouse fixture stubs it out for the CLI-level tests.
 _REAL_PREFLIGHT = cli._batch_preflight
 _REAL_SPEND_SINCE = cli._ledger_spend_since
+_REAL_PARTITION = cli.evaluation._partition_already_evaluated
 
 
 class _FakeGraph:
@@ -355,6 +356,59 @@ def test_batch_stops_when_only_some_premium_calls_report_cost(tmp_path, monkeypa
     )
     assert len(graph.states) == 1
     assert "recorded no cost" in result.output
+
+
+def test_partition_already_evaluated_uses_the_named_threshold_not_a_literal(
+    tmp_path, monkeypatch
+) -> None:
+    """`_partition_already_evaluated` used to check `score < 0.85` as a bare
+    literal — exactly the pattern `services/employer_match.py` was written to
+    end, and a numeric collision with that module's unrelated
+    `COMPANY_ONLY_THRESHOLD`. It must read `ALREADY_EVALUATED_THRESHOLD` from
+    that module instead, and the partition's behaviour must be unchanged:
+    a score just under the threshold still runs, and a score at or above it
+    is still skipped.
+    """
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "applications.md").write_text(
+        "| # | Date | Company | Role | Score | Status | PDF | Report | Notes |\n"
+        "| 1 | 2026-05-11 | Acme | Software Engineer | 3.6/5 | Evaluated | ✅ | r.md | apply |\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        cli.evaluation, "_extract_loop_url_metadata",
+        lambda url: {"company": "Acme", "title": "Software Engineer"},
+    )
+
+    # Same threshold this module already owns, confirming the site reads it
+    # rather than a second, independently-maintained 0.85.
+    from job_hunt.services import employer_match
+
+    assert employer_match.ALREADY_EVALUATED_THRESHOLD == 0.85
+
+    url = "https://example.com/acme-software-engineer"
+    # `_REAL_PARTITION` — the autouse fixture above stubs
+    # `cli.evaluation._partition_already_evaluated` to a no-op for every other
+    # test in this file, so this test needs the function object captured
+    # before that patch landed.
+    runnable, skipped = _REAL_PARTITION([url])
+
+    # An exact company/role match scores 1.0 — well above the threshold — so
+    # it is skipped as already evaluated. This is the pre-existing, unchanged
+    # behaviour: a bare `0.85` literal would produce the same result here.
+    assert runnable == []
+    assert [entry.number for _target, entry in skipped] == [1]
+
+    # `_partition_already_evaluated` imports the name with `from ... import
+    # ALREADY_EVALUATED_THRESHOLD`, so the live call site to patch is
+    # `cli.evaluation`'s own copy of the binding, not `employer_match`'s. That
+    # this monkeypatch (rather than one on `employer_match`) is what moves the
+    # outcome proves the site reads the constant, not a frozen literal.
+    monkeypatch.setattr(cli.evaluation, "ALREADY_EVALUATED_THRESHOLD", 1.01)
+    runnable, skipped = _REAL_PARTITION([url])
+    assert runnable == [url]
+    assert skipped == []
 
 
 def test_batch_runs_on_when_every_premium_call_is_priced(tmp_path, monkeypatch) -> None:
