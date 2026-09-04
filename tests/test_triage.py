@@ -263,6 +263,19 @@ def test_a_second_role_at_an_employer_already_applied_to_is_hidden():
     assert rank([row], limit=5, seen_employers=employers) == []
 
 
+def test_a_longer_name_matches_but_a_different_company_does_not():
+    """One name may extend the other, but only at a word boundary: a character
+    prefix would hide "Citigroup Financial Advisors" *and* "Citizens Bank"."""
+    employers = submitted_employers(EMPLOYER_TRACKER)
+    longer, unrelated = parse_pipeline(
+        "- [ ] https://example.invalid/a | Procurify Technologies Inc | Data Engineer | "
+        "Vancouver | source: ashby\n"
+        "- [ ] https://example.invalid/b | Procure Ninja | Data Engineer | Vancouver | source: x\n"
+    )
+    assert applied_employer(longer, employers) == "737"
+    assert applied_employer(unrelated, employers) == ""
+
+
 def test_an_employer_only_evaluated_is_not_hidden():
     """Materials built and a decision not to send is not an application."""
     employers = submitted_employers(EMPLOYER_TRACKER)

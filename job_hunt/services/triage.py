@@ -393,18 +393,21 @@ def submitted_employers(tracker_text: str) -> dict[str, str]:
 def applied_employer(row: PipelineRow, employers: dict[str, str]) -> str:
     """The tracker row already sent to this row's employer, or ``""``.
 
-    Names are compared on a prefix, both ways, for the same reason the pair
-    rule is: the two sides never agree on wording ("PointClickCare" against
+    The two sides never agree on wording — "PointClickCare" against
     "PointClickCare Technologies", "J.D. Irving" against "J.D. Irving,
-    Limited"). It cannot catch an employer that appears under an unrelated
-    trading name — an aggregator called Connor, Clark & Lunn "FortWood Capital
-    LP" — and nothing string-shaped can.
+    Limited" — so one name may extend the other, but only at a word boundary.
+    A character prefix would be enough to hide "Citizens Bank" because "Citi"
+    is in the tracker, and this rule deletes rows the operator never sees.
+
+    It cannot catch an employer that appears under an unrelated trading name —
+    an aggregator called Connor, Clark & Lunn "FortWood Capital LP" — and
+    nothing string-shaped can.
     """
     company = _norm(row.company)
     if len(company) < 4:
         return ""
     for tracked, entry in employers.items():
-        if company.startswith(tracked[:14]) or tracked.startswith(company[:14]):
+        if company == tracked or company.startswith(tracked + " ") or tracked.startswith(company + " "):
             return entry
     return ""
 
