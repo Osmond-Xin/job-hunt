@@ -17,9 +17,13 @@ aliases:
   # Hiring platform vs the actual employer behind the posting
   Flexhire: Awear
 
-  # Public-sector employers whose mail is signed by the territory or ministry
-  # rather than by the authority that posted the competition
-  Government of the Northwest Territories: NWT Health and Social Services Authority
+  # Public-sector employers whose mail is signed by the authority that posted
+  # the competition rather than by the territory the tracker names. Written the
+  # wrong way round when it was added, so it never fired and rows #713/#714/#715
+  # kept being reported as missing applications on 2026-09-03 — mail signs
+  # itself "NWT Health and Social Services Authority", the tracker says
+  # "Government of the Northwest Territories — <department>".
+  NWT Health and Social Services Authority: Government of the Northwest Territories
   # Manitoba's SuccessFactors mail signs itself "Manitoba Government"; the
   # tracker names the department too ("Government of Manitoba — Health, Seniors
   # and Long Term Care"), and fuzzy matching alone scored under the threshold,
