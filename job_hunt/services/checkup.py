@@ -144,6 +144,8 @@ def unrecorded_artifacts(
             "If it was submitted:\n"
             "  job-hunt apply '<url>' --company '...' --role '...' --pdf '<pdf>' "
             "--no-browser --confirmed\n"
+            "The URL is optional — drop it for a referral or anything applied to "
+            "without a posting link.\n"
             "If it was not, leave it — an evaluated-but-unsent row is normal."
         ),
     )

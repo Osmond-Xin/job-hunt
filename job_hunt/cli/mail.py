@@ -177,7 +177,11 @@ def email_gaps(since: str = typer.Option("2026-08-01", help="Only look at mail o
         for gap in untracked:
             table.add_row(gap.date, gap.category, _short(gap.company, 30), _short(gap.role, 46))
         console.print(table)
-        console.print("Record one with: job-hunt apply '<url>' --company '...' --role '...' --no-browser --confirmed")
+        console.print(
+            "Record one with: job-hunt apply --company '...' --role '...' --no-browser --confirmed"
+            "\n(add the posting URL as the first argument when there is one; a row found by mail"
+            " alone often has none)"
+        )
 
     if stale:
         console.print(f"\n[yellow]{len(stale)} tracker row(s) whose mail says the application is closed:[/yellow]")
