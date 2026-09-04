@@ -9,6 +9,7 @@ from job_hunt.models.review import ReviewItem
 from job_hunt.repositories.email_event_repo import EmailEventRepository
 from job_hunt.repositories.review_repo import ReviewRepository
 from job_hunt.repositories.tracker_repo import TrackerEntry, TrackerRepository
+from job_hunt.services.email.message_parser import BAD_FRAGMENTS, GENERIC_COMPANIES
 from job_hunt.services.employer_match import EmployerMatcher, is_reliable_match, load_aliases
 
 
@@ -130,47 +131,10 @@ def _safe_import_candidate(event: ApplicationEvent) -> bool:
         return False
     if len(company.split()) > 6 or len(role.split()) > 14:
         return False
-    generic_companies = {
-        "app",
-        "ats",
-        "careers",
-        "candidates",
-        "dayforce",
-        "gem",
-        "hire",
-        "hirehive",
-        "myworkday",
-        "njoyn",
-        "pinpoint",
-        "pinpointhq",
-        "postjobfree",
-        "recruiterflowmail",
-        "shl",
-        "successfactors",
-        "vervoe",
-    }
-    if company.lower() in generic_companies:
+    if company.lower() in GENERIC_COMPANIES:
         return False
-    bad_fragments = [
-        "thank you",
-        "application",
-        "candidate",
-        "disclaimer",
-        "diversity",
-        "this time",
-        "we are",
-        "we have",
-        "your interest",
-        "your application",
-        "received your",
-        "joining our team",
-        "submission deadline",
-        "will review",
-        "job alert",
-        "unsubscribe",
-    ]
     combined = f"{company} {role}".lower()
-    return not any(fragment in combined for fragment in bad_fragments)
+    return not any(fragment in combined for fragment in BAD_FRAGMENTS)
 
 
 def build_review_item(
