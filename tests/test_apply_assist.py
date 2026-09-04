@@ -4,6 +4,8 @@ import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+import typer
 import yaml
 
 from job_hunt.cli import (
@@ -28,6 +30,7 @@ from job_hunt.cli import (
     _record_manual_submission,
     _load_saved_apply_answers,
     _resolve_report_path,
+    apply_assist,
 )
 from job_hunt.repositories.tracker_repo import TRACKER_HEADER, TrackerEntry, TrackerRepository
 
@@ -82,6 +85,92 @@ def test_record_manual_submission_imports_new_applied_row(tmp_path) -> None:
     assert entry.report.startswith("manual:")
     assert entry.pdf == "❌"  # no PDF supplied → keep historical default
     assert tracker.parse()[0].company == "New Co"
+
+
+def test_record_manual_submission_without_url_creates_row(tmp_path) -> None:
+    """Applications found without a URL (LinkedIn browsing, a referral) must
+    still land in the tracker — url is not required to record."""
+    tracker_path = tmp_path / "applications.md"
+    tracker_path.write_text(TRACKER_HEADER, encoding="utf-8")
+    tracker = TrackerRepository(tracker_path)
+
+    entry = _record_manual_submission(
+        tracker=tracker,
+        tracker_entry=None,
+        company="Referral Co",
+        role="Data Engineer",
+        url=None,
+        pdf=None,
+    )
+
+    assert entry.status == "Applied"
+    assert tracker.parse()[0].company == "Referral Co"
+    # No "url=None" text — the note should say plainly there was no URL.
+    assert "url=None" not in entry.notes
+    assert "no URL" in entry.notes
+
+
+_APPLY_ASSIST_DEFAULTS = dict(
+    tracker_id=None,
+    company=None,
+    role=None,
+    pdf=None,
+    cover_letter_pdf=None,
+    no_browser=False,
+    headless=False,
+    auto_fill=True,
+    fill_only=False,
+    confirmed=False,
+    auto_submit=False,
+    low_score_override=False,
+)
+
+
+def test_apply_assist_requires_url_without_no_browser(capsys) -> None:
+    """A missing url with no --no-browser must fail fast, naming the reason —
+    never silently skip opening the browser."""
+    with pytest.raises(typer.Exit) as excinfo:
+        apply_assist(url=None, **_APPLY_ASSIST_DEFAULTS)
+
+    assert excinfo.value.exit_code == 1
+    out = capsys.readouterr().out
+    assert "no-browser" in out
+    assert "URL" in out
+
+
+def test_apply_assist_no_browser_allows_missing_url(monkeypatch) -> None:
+    """--no-browser is the flag that makes a missing url legal; execution must
+    proceed past the gate instead of raising."""
+
+    class _GateCleared(Exception):
+        pass
+
+    def _raise(*args, **kwargs):
+        raise _GateCleared("reached load_settings — url gate did not block")
+
+    monkeypatch.setattr("job_hunt.cli.apply.load_settings", _raise)
+
+    kwargs = dict(_APPLY_ASSIST_DEFAULTS)
+    kwargs["no_browser"] = True
+    with pytest.raises(_GateCleared):
+        apply_assist(url=None, **kwargs)
+
+
+def test_apply_assist_url_provided_without_no_browser_still_passes_gate(monkeypatch) -> None:
+    """Existing with-URL behaviour is unchanged: a URL provided without
+    --no-browser must not trip the "missing url" gate."""
+
+    class _GateCleared(Exception):
+        pass
+
+    def _raise(*args, **kwargs):
+        raise _GateCleared("reached load_settings — url gate did not block")
+
+    monkeypatch.setattr("job_hunt.cli.apply.load_settings", _raise)
+
+    kwargs = dict(_APPLY_ASSIST_DEFAULTS)
+    with pytest.raises(_GateCleared):
+        apply_assist(url="https://example.com/jobs/1", **kwargs)
 
 
 def test_apply_review_json_persists_pdf_and_validation_issues(tmp_path) -> None:

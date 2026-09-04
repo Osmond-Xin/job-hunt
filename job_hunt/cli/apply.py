@@ -53,7 +53,14 @@ from . import app
 
 @app.command("apply")
 def apply_assist(
-    url: str = typer.Argument(..., help="Application or job form URL to open."),
+    url: str | None = typer.Argument(
+        None,
+        help=(
+            "Application or job form URL to open. Required unless --no-browser "
+            "is set — there is nothing to open in a browser otherwise. Recording "
+            "a submission via --no-browser never requires one."
+        ),
+    ),
     tracker_id: int | None = typer.Option(None, help="Existing tracker row number to mark Applied after confirmation."),
     company: str | None = typer.Option(None, help="Company name if no tracker row is supplied."),
     role: str | None = typer.Option(None, help="Role title if no tracker row is supplied."),
@@ -94,6 +101,15 @@ def apply_assist(
     when every safety gate passes (see flag help). Any gate failure falls back
     to the normal "user submits manually" flow without partial state.
     """
+    if url is None and not no_browser:
+        console.print(
+            "[red]URL is required unless --no-browser is set:[/red] there is "
+            "nothing to open in a browser. Pass a URL, or add --no-browser to "
+            "record an application found without one (e.g. from LinkedIn "
+            "browsing or a referral)."
+        )
+        raise typer.Exit(1)
+
     settings = load_settings()
     tracker = TrackerRepository(Path("data/applications.md"))
     existing = _tracker_entry_by_id(tracker, tracker_id) if tracker_id is not None else None
@@ -5097,7 +5113,7 @@ def _tracker_entry_by_id(tracker: TrackerRepository, tracker_id: int | None):
     raise typer.Exit(1)
 
 
-def _link_artifacts_to_row(pdf: Path | None, entry, url: str) -> Path | None:
+def _link_artifacts_to_row(pdf: Path | None, entry, url: str | None) -> Path | None:
     """Stamp the tracker row number into the directory the PDF came from.
 
     Materials and tracker rows had nothing joining them, so an agent could
@@ -5135,7 +5151,7 @@ def _record_manual_submission(
     tracker_entry,
     company: str,
     role: str,
-    url: str,
+    url: str | None,
     pdf: Path | None,
 ):
     today = datetime.now().date()
@@ -5172,6 +5188,10 @@ def _record_manual_submission(
         role=role,
         status="Applied",
         email_ref=f"manual:{today}",
-        note=f"Submitted manually via apply assist; url={url}",
+        note=(
+            f"Submitted manually via apply assist; url={url}"
+            if url
+            else "Submitted manually via apply assist; no URL (recorded without one)"
+        ),
         pdf_attached=bool(pdf),
     )
