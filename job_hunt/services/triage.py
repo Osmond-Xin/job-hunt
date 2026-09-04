@@ -92,10 +92,19 @@ AGGREGATOR_HOST_RE = re.compile(
     re.I,
 )
 # The row's "role" is a search-listing title, not one posting: a wellfound
-# category page ("Machine Learning Engineer Jobs in Canada") or a board's own
-# headline ("Symend hiring Senior Machine Learning Engineer in Calgary").
-# There is no single job behind these to evaluate.
-LISTING_TITLE_RE = re.compile(r"\bjobs in\b|\bhiring\b|\bjob posting\b", re.I)
+# category page ("Machine Learning Engineer Jobs in Canada"). There is no
+# single job behind these to evaluate. LinkedIn's "<Company> hiring <Role> in
+# <City>" is NOT one of these — it names exactly one posting, and dropping it
+# hid Symend's Senior Machine Learning Engineer, a Calgary target the operator
+# had been looking for. That title is unpacked below instead.
+LISTING_TITLE_RE = re.compile(r"\bjobs in\b|\bjob posting\b", re.I)
+# LinkedIn titles its posting pages "<Company> hiring <Role> in <City, Region,
+# Country>", and a websearch row copies the whole line into the role field. The
+# employer and the role are both in there; this takes them back out.
+# The " in <place>" tail is required, and "hiring" is matched in lower case:
+# both are part of the convention, and without them the pattern also eats a
+# real title like "Engineering Manager, Hiring Platform".
+LINKEDIN_TITLE_RE = re.compile(r"^(?P<company>.{2,60}?) hiring (?P<role>.+?) in .+$")
 # French is a hard requirement in these, and the operator has none. Only a role
 # that says so in its own title is dropped — "bilingualism an asset" in a JD
 # body is a different thing and is not read here.
@@ -194,17 +203,39 @@ def parse_pipeline(text: str) -> list[PipelineRow]:
                 posted = posted_match.group(1)
             if part.startswith("source:"):
                 source = part.removeprefix("source:").strip()
+        company, role = _unpack_board_title(
+            parts[1] if len(parts) > 1 else "",
+            parts[2] if len(parts) > 2 else "",
+        )
         rows.append(
             PipelineRow(
                 url=parts[0],
-                company=parts[1] if len(parts) > 1 else "",
-                role=parts[2] if len(parts) > 2 else "",
+                company=company,
+                role=role,
                 location=parts[3] if len(parts) > 3 else "",
                 posted=posted,
                 source=source,
             )
         )
     return rows
+
+
+def _unpack_board_title(company: str, role: str) -> tuple[str, str]:
+    """Recover (company, role) when the role field is a board's page title.
+
+    A websearch row copies the search result's whole title line, so LinkedIn's
+    "Symend hiring Senior Machine Learning Engineer in Calgary, Alberta,
+    Canada" arrives as the role. Both halves are in there. The company found
+    this way only fills an empty or parenthesised company field — the row's own
+    company is better evidence when it has one.
+    """
+    match = LINKEDIN_TITLE_RE.match(role)
+    if not match:
+        return company, role
+    found = match.group("company").strip()
+    if not company or _norm(found).startswith(_norm(company).split(" ")[0]):
+        company = found
+    return company, match.group("role").strip()
 
 
 def excluded(row: PipelineRow) -> str:

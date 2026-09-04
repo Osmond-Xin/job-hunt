@@ -334,6 +334,32 @@ def test_the_public_sector_point_does_not_rescue_an_off_target_role():
     assert score(gov_ai, today=today)[0] > score(service_desk, today=today)[0]
 
 
+def test_a_linkedin_page_title_is_unpacked_into_company_and_role():
+    """A websearch row copies the search result's whole title line.
+
+    "Symend (Calgary) | Symend hiring Senior Machine Learning Engineer in
+    Calgary, Alberta, Canada" is one posting, not a listing page, and reading
+    it as a role hid a Calgary target the operator had been looking for.
+    """
+    row = parse_pipeline(
+        "- [ ] https://ca.linkedin.com/jobs/view/1 | Symend (Calgary) | "
+        "Symend hiring Senior Machine Learning Engineer in Calgary, Alberta, Canada | "
+        "source: websearch\n"
+    )[0]
+    assert row.company == "Symend"
+    assert row.role == "Senior Machine Learning Engineer"
+    assert excluded(row) == ""
+
+
+def test_a_role_that_merely_contains_hiring_keeps_its_own_company():
+    row = parse_pipeline(
+        "- [ ] https://x.invalid/1 | Acme Robotics | Engineering Manager, Hiring Platform | "
+        "Toronto | source: ashby\n"
+    )[0]
+    assert row.company == "Acme Robotics"
+    assert row.role == "Engineering Manager, Hiring Platform"
+
+
 def test_the_direct_employer_bonus_reads_the_url_not_the_source_label():
     """"websearch" is not a source, it is a way of finding one.
 
