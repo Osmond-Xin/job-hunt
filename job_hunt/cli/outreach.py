@@ -148,7 +148,6 @@ def outreach_draft(
         jd_text=jd_text,
         cv_excerpt=_load_cv_excerpt(),
     )
-    console.print(body)
     message_path = output
     if message_path is None:
         company_slug = re.sub(r"[^a-z0-9]+", "-", target_company.lower()).strip("-")
@@ -164,6 +163,11 @@ def outreach_draft(
     _gate_outward_artifact(
         artifact_path=message_path, jd_text=jd_text, company=target_company, role=role
     )
+    # CLAUDE.md §1: printing the body *is* delivery — an earlier version of
+    # this command printed it before the gate above, which meant the
+    # operator could read (and paste) the draft before any verdict existed.
+    # Presence of the gate was verified three times over; order never was.
+    console.print(body)
     event = add_event(
         OutreachEvent(
             contact_id=contact.id,
@@ -422,8 +426,6 @@ def linkedin_outreach(
         cv_excerpt=_load_cv_excerpt(),
         research_context=research_context,
     )
-    console.print(body)
-
     # CLAUDE.md §1 names outreach emails alongside résumés and cover letters
     # as requiring red team before delivery. `outreach draft` got this gate;
     # this command builds the same artifact class from the same prompt and
@@ -438,7 +440,6 @@ def linkedin_outreach(
         message_path = Path("output") / f"{company_slug}-{role_slug}-linkedin.md"
     message_path.parent.mkdir(parents=True, exist_ok=True)
     message_path.write_text(body, encoding="utf-8")
-    console.print(f"\n[green]Wrote[/green] {message_path}")
 
     if not jd_text:
         # Without a JD the review's TARGETING pass (CLAUDE.md §1) has nothing
@@ -449,6 +450,13 @@ def linkedin_outreach(
             "has nothing to compare against.[/yellow]"
         )
     _gate_outward_artifact(artifact_path=message_path, jd_text=jd_text, company=company, role=role)
+
+    # CLAUDE.md §1: printing the body and announcing its path *is* delivery
+    # — this command used to do both before the gate above, so the operator
+    # could read and paste the message before any verdict existed. Presence
+    # of the gate was verified three times over; order never was.
+    console.print(body)
+    console.print(f"\n[green]Wrote[/green] {message_path}")
 
 
 @app.command("research")

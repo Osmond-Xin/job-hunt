@@ -438,7 +438,6 @@ def apply_answers(
             report_full=report_full,
             cv_md=cv_md,
         )
-        console.print(result.content)
         for error in result.errors:
             console.print(f"[yellow]warning:[/yellow] {error}")
 
@@ -459,7 +458,6 @@ def apply_answers(
             answers_path = Path("output") / f"{company_slug}-{role_slug}-apply-answers.md"
         answers_path.parent.mkdir(parents=True, exist_ok=True)
         answers_path.write_text(result.content + "\n", encoding="utf-8")
-        console.print(f"\n[green]Wrote answers to[/green] {answers_path}")
 
         if not jd_text:
             # Without a JD the review's TARGETING pass (CLAUDE.md §1) has nothing
@@ -470,6 +468,14 @@ def apply_answers(
                 "has nothing to compare against.[/yellow]"
             )
         _gate_outward_artifact(artifact_path=answers_path, jd_text=jd_text, company=company, role=role)
+
+        # CLAUDE.md §1: printing the answers and announcing their path *is*
+        # delivery — this command used to do both before the gate above, so
+        # the operator could read and paste the answers into an employer's
+        # form before any verdict existed. Presence of the gate was verified
+        # three times over; order never was.
+        console.print(result.content)
+        console.print(f"\n[green]Wrote answers to[/green] {answers_path}")
 
     asyncio.run(run())
 
