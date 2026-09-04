@@ -120,9 +120,13 @@ def test_screened_sort_is_fit_then_score_not_either_alone(tmp_path) -> None:
     """
     rows = [
         _row("https://example.invalid/alpha", "Alpha", "AI Engineer", "Remote"),
+        # Ten days older than Charlie, which is what keeps Charlie's
+        # deterministic score strictly the highest: role shape is a tier, not a
+        # tally, so "Founding Engineer AI" and "AI Engineer" score the same for
+        # role and freshness has to separate them.
         _row(
             "https://example.invalid/bravo", "Government of Manitoba", "AI Engineer",
-            "Winnipeg, MB", posted="2026-08-30", source="mb_gov",
+            "Winnipeg, MB", posted="2026-08-20", source="mb_gov",
         ),
         _row(
             "https://example.invalid/charlie", "Yukon Government", "Founding Engineer AI",

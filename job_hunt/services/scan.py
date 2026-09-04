@@ -1112,6 +1112,17 @@ _SEARCH_RESULT_RE = re.compile(
     r"^\s*(.+?)(?:\s*[@|—–\-]\s*|\s+at\s+)(.+?)\s*$",
     re.IGNORECASE,
 )
+# Aggregators title their pages "<role> - <city, province> - <site>", so the
+# half after the separator is a location and the employer is not in the line at
+# all. Writing it into the company field produced pipeline rows whose employer
+# was "Greater Sudbury, ON P3A 5N8 - Indeed.com"; two of them ranked in triage's
+# top ten on 2026-09-04, and no résumé can be tailored to a postal code.
+_NOT_AN_EMPLOYER_RE = re.compile(
+    r"(indeed\.com|glassdoor|ziprecruiter|jooble|talent\.com|simplyhired|neuvoo|"
+    r"jobillico|job posting|job bank|linkedin)|"
+    r"^[^,]+,\s*(AB|BC|MB|NB|NL|NS|NT|NU|ON|PE|QC|SK|YT)\b",
+    re.I,
+)
 
 
 def parse_search_result_title(text: str) -> tuple[str | None, str | None]:
@@ -1119,7 +1130,9 @@ def parse_search_result_title(text: str) -> tuple[str | None, str | None]:
 
     Returns (None, None) when the line has no recognizable separator. Conservative
     by design — returns parsed values only when both halves are non-empty after
-    stripping whitespace.
+    stripping whitespace, and the company half is only returned when it names an
+    employer: an aggregator's own title puts a city and its site name there, and
+    "Unknown" is a truthful company field where a postal code is not.
     """
     if not text:
         return None, None
@@ -1129,6 +1142,8 @@ def parse_search_result_title(text: str) -> tuple[str | None, str | None]:
         return None, None
     title = match.group(1).strip()
     company = match.group(2).strip()
+    if company and _NOT_AN_EMPLOYER_RE.search(company):
+        company = ""
     return (title or None), (company or None)
 
 

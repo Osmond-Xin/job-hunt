@@ -22,7 +22,15 @@ from typing import Callable
 
 from job_hunt.services.link_check import SKIPPED, Verdict, annotate_pipeline, check_urls
 from job_hunt.services.screen import Screened, screen
-from job_hunt.services.triage import Ranked, excluded, parse_pipeline, rank, tracker_seen
+from job_hunt.services.triage import (
+    Ranked,
+    applied_employer,
+    excluded,
+    parse_pipeline,
+    rank,
+    submitted_employers,
+    tracker_seen,
+)
 
 # How many shortlist slots are reserved for this exploration budget.
 #
@@ -114,9 +122,9 @@ def build_shortlist(
     they are enforced below — they were each written after a real incident.
     """
     rows = parse_pipeline(pipeline.read_text(encoding="utf-8"))
-    seen_urls, seen_pairs = (
-        tracker_seen(tracker.read_text(encoding="utf-8")) if tracker.exists() else (set(), set())
-    )
+    tracker_text = tracker.read_text(encoding="utf-8") if tracker.exists() else ""
+    seen_urls, seen_pairs = tracker_seen(tracker_text)
+    seen_employers = submitted_employers(tracker_text)
 
     limit = options.limit
     # With screening on, rank a wider pool and let the model do the cutting:
@@ -125,7 +133,14 @@ def build_shortlist(
     # Verification drops rows, so it needs spare candidates to backfill with —
     # otherwise asking for 10 and losing 6 to dead links returns 4.
     ranked_limit = options.pool if options.screen else (max(limit * 4, 40) if options.verify else limit)
-    best = rank(rows, limit=ranked_limit, seen_urls=seen_urls, seen_pairs=seen_pairs, today=today)
+    best = rank(
+        rows,
+        limit=ranked_limit,
+        seen_urls=seen_urls,
+        seen_pairs=seen_pairs,
+        seen_employers=seen_employers,
+        today=today,
+    )
 
     fits: dict[int, float] = {}
     reasons: dict[int, str] = {}
@@ -214,6 +229,13 @@ def build_shortlist(
     ]
 
     dropped = Counter(reason for row in rows if (reason := excluded(row)))
+    # One role per employer is a deletion like any other here, so it is counted
+    # where `--show-excluded` will print it rather than happening silently.
+    hidden = sum(
+        1 for row in rows if not excluded(row) and applied_employer(row, seen_employers)
+    )
+    if hidden:
+        dropped["already applied to this employer"] = hidden
 
     return Shortlist(
         entries=entries,
