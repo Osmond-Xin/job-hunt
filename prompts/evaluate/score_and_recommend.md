@@ -11,18 +11,18 @@ Apply the weight table and thresholds for this mode only. Do not second-guess
 the mode; the operator already decided which kind of role they are hunting.
 
 {% if immigration_context %}
-## Immigration-pathway priority (adjusts fit calibration for this JD)
+## Immigration-pathway context (informational only — no effect on scoring)
 
 {{ immigration_context }}
 
-For this JD only:
-- Treat the location as a strong positive when scoring Company fit.
-- Accept a weaker Domain fit than usual when the fundamentals (Python, data,
-  LLM adjacency) are within reach — the strategic value of the location
-  compensates for up to one point of domain-fit shortfall.
-- Apply the recommendation thresholds 0.5 lower than the active mode's table.
-- State the immigration-pathway relevance explicitly in
-  `recommendation_rationale`.
+This is background the operator wants to see, not a scoring input. Score
+every dimension, compute the weighted total, and apply the recommendation
+threshold exactly as you would for an identical JD outside a priority
+region — the location does not raise a dimension score, does not forgive a
+shortfall in any dimension, and does not move the threshold. If it is worth
+noting, state the region's immigration relevance as a fact in
+`recommendation_rationale`, separate from and after the fit assessment —
+never as a reason a score or the gate moved.
 {% endif %}
 
 ## Evaluation inputs
@@ -84,6 +84,11 @@ below for the active mode.
 | Growth / trajectory | 15% | Is the career arc pointing toward this role? |
 | Company / culture fit | 20% | Do values, stage, work style align? |
 {% endif %}
+
+`weighted_total` is exactly `sum(dimension.score * dimension.weight)` over the
+five dimensions above — nothing else. Never adjust it up or down for
+location, immigration relevance, or any factor outside the five dimension
+scores; the number the operator reads must be the number the table produced.
 
 Output a JSON object with this exact schema — no prose outside the JSON:
 

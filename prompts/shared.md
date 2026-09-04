@@ -128,7 +128,8 @@ applications.
     address is where the candidate lives today, not a constraint. Do not deduct
     for it, and never write "no relocation signal" — the signal is in
     `profile.yml`, and it says yes.
-  - On-site in a priority immigration region is a **positive**, not a cost.
+  - A priority immigration region is not a scoring positive. Fit is scored on
+    fit alone; the region does not raise a dimension score.
   - Outside Canada: hybrid scores **3.0** (not 1.0). Score 1.0 only for a role
     outside Canada that says "must be on-site 4–5 days/week, no exceptions."
 

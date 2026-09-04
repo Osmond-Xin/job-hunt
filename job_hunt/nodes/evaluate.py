@@ -138,9 +138,20 @@ def _parse_scores(content: str) -> EvaluationScores:
                 raw_dim["rationale"] = raw_dim.get("rationale") or ""
                 dims.append(DimensionScore(**raw_dim))
             pdf_raw = data.get("pdf_content", {})
+            # Recompute rather than trust the model's own top-level field: a
+            # 2026-09-03 live run reported "Score: 3.88" in the header while
+            # the dimension breakdown summed to 3.38 — the model had applied
+            # an out-of-band adjustment to weighted_total that never touched
+            # a dimension score. Deriving it here guarantees the number the
+            # operator reads is always the number the weight table produced.
+            weighted_total = (
+                sum(d.score * d.weight for d in dims)
+                if dims
+                else float(data.get("weighted_total", 0.0))
+            )
             return EvaluationScores(
                 dimensions=dims,
-                weighted_total=float(data.get("weighted_total", 0.0)),
+                weighted_total=weighted_total,
                 recommendation=data.get("recommendation", "skip"),
                 recommendation_rationale=data.get("recommendation_rationale", ""),
                 generate_pdf=_coerce_bool(data.get("generate_pdf", False)),
