@@ -49,6 +49,11 @@ fail for minor style preferences.
 7. Projects pruned to the 2–3 most relevant to this JD (not the full list), most relevant
    first, GitHub URLs preserved.
 8. Section order: {% if mode == "student" %}Education → Projects → Experience{% else %}Experience → Projects → Education{% endif %} → Skills → Certifications.
+9. **Attribution match**: for every experience bullet, the achievement it describes must
+   sit under the same employer and dated period it occupies in the master CV above. A
+   bullet that is accurate on its own but printed under a different role, project, or
+   period — including one merged or echoed into another entry — is a fail, even when
+   every fact inside it is independently true.
 {% else %}
 ### Cover letter rules
 5. Under 280 words, 3–4 paragraphs, no salutation, no signature, no headings, no bullets.

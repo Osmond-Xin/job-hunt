@@ -110,6 +110,11 @@ If any answer is no, cut before answering — not after.
 
 - **Never invent** employers, dates, titles, metrics, tools, or outcomes. Every line must
   be traceable to the master CV. Rewording is allowed; new claims are not.
+- **Never relocate a bullet.** Every achievement belongs to the employer, project, or
+  period it sits under in the master CV — rewording it for this JD is allowed, moving it
+  to another employer, project, or period is not, even when every fact inside it is true
+  on its own. The AWS case-study bullet lives under Iqidao; it may not resurface, merged
+  or echoed, under Freelance or any other entry.
 - **Never state the kind of work the candidate is looking for.** No job-title or
   role-scope headline, no objective line, no "seeking a role in X". A CV circulates
   inside a company, and a stated scope tells every reader which roles *not* to

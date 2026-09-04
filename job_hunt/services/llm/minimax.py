@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import os
+import random
 from typing import Literal
 
 import httpx
@@ -18,6 +20,61 @@ _REASONING_MODEL_PREFIXES = ("MiniMax-M3",)
 # emitting any visible content. 8000 + the doubled-budget retry gives complex
 # generation tasks up to ~2x(task+8000) before we fail loudly.
 _REASONING_HEADROOM_TOKENS = 8000
+
+# Transient-failure retry (distinct from the truncation retry below): a 529
+# "overloaded, try again" or a dropped connection is not a reason to fall
+# back to degraded content, it is a reason to ask again. Statuses that mean
+# "retry shortly" — never 4xx auth/shape errors, those will never succeed.
+_RETRYABLE_STATUS_CODES = frozenset({429, 500, 502, 503, 504, 529})
+# httpx's transient transport failures: connect/read/write/pool timeouts,
+# connection refused/reset, and a connection dropped mid-response. Not
+# ProxyError/UnsupportedProtocol/LocalProtocolError — those are configuration
+# problems that a retry cannot fix.
+_RETRYABLE_TRANSPORT_EXCEPTIONS = (
+    httpx.TimeoutException,
+    httpx.ConnectError,
+    httpx.RemoteProtocolError,
+)
+# Bounded so one node call cannot blow the pipeline's latency budget: 3 total
+# attempts (1 + 2 retries), each wait capped at 8s, cumulative wait per call
+# capped at 20s. Worst case adds ~16s to one call; across a ~12-call
+# `evaluate` run that is ~3 minutes added, not the "seven minutes a call /
+# an hour a run" a naive retry could cause.
+_MAX_TRANSIENT_ATTEMPTS = 3
+_BASE_BACKOFF_SECONDS = 1.0
+_BACKOFF_MULTIPLIER = 2.0
+_MAX_BACKOFF_SECONDS = 8.0
+_RETRY_BUDGET_SECONDS = 20.0
+
+
+async def _sleep(seconds: float) -> None:
+    """Indirection so tests can inject a non-sleeping stand-in."""
+    await asyncio.sleep(seconds)
+
+
+def _parse_retry_after(value: str | None) -> float | None:
+    if not value:
+        return None
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        return None
+
+
+def _backoff_delay(attempt: int, retry_after: float | None) -> float:
+    """Delay before the next attempt, after the given attempt number failed.
+
+    Honours a server-provided Retry-After when present; otherwise exponential
+    backoff. Either way it is capped, then jittered (equal jitter: half fixed,
+    half random) so concurrent callers don't retry in lockstep against an
+    upstream that is already overloaded.
+    """
+    if retry_after is not None:
+        base = retry_after
+    else:
+        base = _BASE_BACKOFF_SECONDS * (_BACKOFF_MULTIPLIER ** (attempt - 1))
+    base = min(base, _MAX_BACKOFF_SECONDS)
+    return base / 2 + random.uniform(0, base / 2)
 
 
 class MinimaxProvider:
@@ -62,6 +119,12 @@ class MinimaxProvider:
         # A "length" finish means the answer (or its hidden reasoning) was cut
         # off — structured outputs are unusable when truncated. Retry once with
         # a doubled budget, then fail loudly instead of degrading silently.
+        # This is orthogonal to the transient-failure retry inside
+        # _post_with_retry: that one re-sends the *same* request after a
+        # 429/5xx/529 or dropped connection got no usable response at all;
+        # this one re-sends a *bigger* request after a response that arrived
+        # but was cut off.
+        transient_attempts_total = 0
         for attempt in range(2):
             if self.endpoint_style == "anthropic":
                 url, headers, payload = self._build_anthropic_request(messages, model, temperature, max_tokens)
@@ -69,10 +132,8 @@ class MinimaxProvider:
                 url, headers, payload = self._build_openai_request(messages, model, temperature, max_tokens)
             else:
                 url, headers, payload = self._build_minimax_request(messages, model, temperature, max_tokens)
-            async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
-                response = await client.post(url, headers=headers, json=payload)
-                response.raise_for_status()
-            raw = response.json()
+            raw, transient_attempts = await self._post_with_retry(url, headers, payload)
+            transient_attempts_total += transient_attempts
             if _finish_reason(raw) == "length" and max_tokens is not None and attempt == 0:
                 max_tokens *= 2
                 continue
@@ -85,6 +146,13 @@ class MinimaxProvider:
                 + ("; no visible content returned" if not content else "")
             )
         input_tokens, output_tokens, total_tokens = extract_usage(raw)
+        # Visible signal that this call needed a transient-failure retry (a
+        # 529/5xx/429 or dropped connection before eventually getting a good
+        # response), distinct from succeeding cleanly on the first attempt.
+        # `raw` is already the free-form per-call metadata carrier on
+        # ChatResult; there is no dedicated retry field to populate instead.
+        if transient_attempts_total > 1:
+            raw = {**raw, "_retry_attempts": transient_attempts_total}
         return ChatResult(
             content=content,
             model=model,
@@ -97,6 +165,46 @@ class MinimaxProvider:
             usage_estimated=total_tokens == 0,
             raw=raw,
         )
+
+    async def _post_with_retry(self, url: str, headers: dict, payload: dict) -> tuple[dict, int]:
+        """POST with backoff retry on transient failures.
+
+        Retries a 429/500/502/503/504/529 response or a transient transport
+        failure (connect/read timeout, dropped connection) up to
+        `_MAX_TRANSIENT_ATTEMPTS` times, honouring `Retry-After` when the
+        server sends one. Any other status (4xx auth/shape errors) or
+        transport failure is raised immediately — retrying it would waste
+        quota on a request that can never succeed.
+
+        Returns the parsed response JSON and the number of attempts made (1
+        means it succeeded on the first try).
+        """
+        attempt = 0
+        elapsed_backoff = 0.0
+        while True:
+            attempt += 1
+            retry_after: float | None = None
+            last_exc: Exception
+            try:
+                async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+                    response = await client.post(url, headers=headers, json=payload)
+                    response.raise_for_status()
+                return response.json(), attempt
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code not in _RETRYABLE_STATUS_CODES:
+                    raise
+                retry_after = _parse_retry_after(exc.response.headers.get("Retry-After"))
+                last_exc = exc
+            except _RETRYABLE_TRANSPORT_EXCEPTIONS as exc:
+                last_exc = exc
+
+            if attempt >= _MAX_TRANSIENT_ATTEMPTS:
+                raise last_exc
+            delay = _backoff_delay(attempt, retry_after)
+            if elapsed_backoff + delay > _RETRY_BUDGET_SECONDS:
+                raise last_exc
+            elapsed_backoff += delay
+            await _sleep(delay)
 
     def _base_headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}

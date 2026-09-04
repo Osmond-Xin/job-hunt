@@ -19,6 +19,30 @@ def test_tenure_regex_flags_self_labels() -> None:
     assert TENURE_SELF_LABEL_RE.search("Two decades of shipping production systems")
 
 
+def test_tailor_cv_prompt_forbids_relocating_a_bullet() -> None:
+    """A bullet's achievement is pinned to its source employer/project/period.
+
+    2026-08-19-class bug: the model moved a true AWS case-study bullet from
+    Iqidao onto Freelance. Every fact in the sentence was true; the
+    attribution was not. The prompt must say this is not allowed even when
+    each individual fact checks out.
+    """
+    from job_hunt.services.prompts import render
+
+    out = render(
+        "evaluate/tailor_cv.md",
+        cv="CV",
+        jd_text="JD",
+        article_digest="",
+        jd_meta=None,
+        archetype=None,
+        evaluation_blocks={"cv_match": "M", "personalization": "P"},
+        mode="full",
+    )
+    assert "Never relocate a bullet" in out
+    assert "even when every fact inside it is true" in out
+
+
 def test_tenure_regex_allows_role_scoped_facts() -> None:
     # Dated, role-scoped statements are fine; only advertised totals are flagged.
     assert not TENURE_SELF_LABEL_RE.search("across the 7-year tenure — defined product requirements")

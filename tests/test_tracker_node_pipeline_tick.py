@@ -13,11 +13,25 @@ from pathlib import Path
 
 import pytest
 
+from job_hunt.models.evaluation import EvaluationScores
 from job_hunt.models.job import JobMeta
-from job_hunt.nodes.tracker import merge_or_update_tracker, write_tracker_addition
+from job_hunt.nodes.tracker import NEEDS_RERUN_NOTE, merge_or_update_tracker, write_tracker_addition
 from job_hunt.repositories.tracker_repo import TrackerEntry, TrackerRepository
 from job_hunt.services import pipeline_inbox
+from job_hunt.services.llm.call import LLM_FAILURE_MARKER
 from job_hunt.services.triage import parse_pipeline
+
+
+def _score_failure_error(node_name: str) -> str:
+    return f"{node_name} {LLM_FAILURE_MARKER}; using fallback content: TimeoutError: 529"
+
+
+def _fallback_scores() -> EvaluationScores:
+    return EvaluationScores(
+        weighted_total=0.0,
+        recommendation="skip",
+        recommendation_rationale="Scoring unavailable because the LLM provider failed.",
+    )
 
 _URL = "https://www.adzuna.ca/details/5833584853"
 _ROW = f"- [ ] {_URL} | CSC Generation | AI Solutions Engineer | Canada | source: adzuna\n"
@@ -153,3 +167,108 @@ def test_merge_or_update_tracker_does_not_overwrite_a_distinct_microsoft_posting
     assert entries[0].score == "3.5/5"
     assert entries[0].report == "run-original"
     assert entries[0].pdf == "❌"
+
+
+# ----- score_and_recommend failure: no row may assert a score that never happened -----
+
+
+def test_a_scoring_failure_does_not_assert_a_score(repo: Path) -> None:
+    """The bug this guards: a provider outage that returns 529 on every LLM
+    call still let score_and_recommend's fallback ('0.0/5, skip') through to
+    the tracker unmarked — row #867 read exactly like a completed, low-score
+    evaluation. It was never assessed."""
+    state = {
+        "url": "https://example.invalid/outage",
+        "jd_meta": JobMeta(company="Feathery", title="Senior Software Engineer - Applied AI"),
+        "scores": _fallback_scores(),
+        "recommendation": "skip",
+        "run_id": "outage01",
+        "errors": [_score_failure_error("score_and_recommend")],
+    }
+
+    result = asyncio.run(write_tracker_addition(state, None))
+
+    entry = result["tracker_entry"]
+    assert entry.score == "N/A"
+    assert entry.notes == NEEDS_RERUN_NOTE
+    assert entry.status == "Evaluated"
+    assert entry.company == "Feathery"
+    assert entry.role == "Senior Software Engineer - Applied AI"
+
+
+def test_a_successful_run_writes_the_real_score_unchanged(repo: Path) -> None:
+    state = {
+        "url": "https://example.invalid/clean",
+        "jd_meta": JobMeta(company="Acme", title="Engineer"),
+        "scores": EvaluationScores(weighted_total=4.2, recommendation="apply"),
+        "recommendation": "apply",
+        "run_id": "clean001",
+        "errors": [],
+    }
+
+    result = asyncio.run(write_tracker_addition(state, None))
+
+    entry = result["tracker_entry"]
+    assert entry.score == "4.2/5"
+    assert entry.notes == "apply"
+
+
+def test_a_partially_degraded_run_still_writes_the_real_score(repo: Path) -> None:
+    """interview_prep falling back to its own fallback content is a different
+    failure than score_and_recommend's — the number it produced is real and
+    must not be discarded because some other node had a provider hiccup."""
+    state = {
+        "url": "https://example.invalid/partial",
+        "jd_meta": JobMeta(company="Acme", title="Engineer"),
+        "scores": EvaluationScores(weighted_total=3.7, recommendation="maybe"),
+        "recommendation": "maybe",
+        "run_id": "partial01",
+        "errors": [_score_failure_error("interview_prep")],
+    }
+
+    result = asyncio.run(write_tracker_addition(state, None))
+
+    entry = result["tracker_entry"]
+    assert entry.score == "3.7/5"
+    assert entry.notes == "maybe"
+
+
+def test_merge_or_update_tracker_keeps_the_existing_score_when_scoring_failed(repo: Path) -> None:
+    """A re-run's score_and_recommend failure must not clobber a real score a
+    previous run already wrote for this row."""
+    TrackerRepository(repo / "data" / "applications.md").append_entry(
+        _existing_entry(1, "Acme", "Engineer")
+    )
+    state = {
+        "url": "https://example.invalid/acme-retry",
+        "jd_meta": JobMeta(company="Acme", title="Engineer"),
+        "scores": _fallback_scores(),
+        "recommendation": "skip",
+        "errors": [_score_failure_error("score_and_recommend")],
+    }
+
+    result = asyncio.run(merge_or_update_tracker(state, None))
+
+    assert result["tracker_entry"].score == "3.5/5"
+
+
+def test_unrecoverable_identity_falls_back_to_the_url(repo: Path) -> None:
+    """extract_jd already ran every identity-recovery trick it has
+    (_strip_board_suffix, _identity_from_pipeline) before jd_meta got here —
+    a blank/blank row is what tracker verify's (company, role) dedupe key
+    treats as identical to every other blank/blank row. The URL keeps the
+    row distinguishable from its siblings."""
+    state = {
+        "url": "https://example.invalid/mystery-posting",
+        "jd_meta": JobMeta(company="", title=""),
+        "scores": EvaluationScores(weighted_total=2.0, recommendation="skip"),
+        "recommendation": "skip",
+        "run_id": "mystery1",
+        "errors": [],
+    }
+
+    result = asyncio.run(write_tracker_addition(state, None))
+
+    entry = result["tracker_entry"]
+    assert entry.company == "Unknown"
+    assert entry.role == "https://example.invalid/mystery-posting"

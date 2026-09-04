@@ -9,6 +9,7 @@ from langchain_core.runnables import RunnableConfig
 
 from job_hunt.models.state import JobHuntState
 from job_hunt.nodes.artifact_paths import run_output_dir, run_stem
+from job_hunt.nodes.tracker import NEEDS_RERUN_NOTE, scoring_failed
 
 _REPORTS_DIR = Path("reports")
 
@@ -17,20 +18,25 @@ async def write_report(state: JobHuntState, config: RunnableConfig) -> dict:
     jd_meta = state.get("jd_meta")
     scores = state.get("scores")
     blocks = state.get("evaluation_blocks", {})
+    # Keep this report consistent with what write_tracker_addition writes for
+    # the same run (job_hunt/nodes/tracker.py): a run whose score_and_recommend
+    # call fell back must not have its header assert the fallback's "0.0/5,
+    # skip" as if it were a real assessment.
+    score_failed = scoring_failed(state.get("errors"))
 
     company = jd_meta.company if jd_meta else "Unknown"
     role = jd_meta.title if jd_meta else "Unknown"
     date = datetime.date.today().isoformat()
 
-    recommendation = state.get("recommendation", "skip")
-    score_str = f"{scores.weighted_total:.1f}/5.0" if scores else "N/A"
+    recommendation = "NEEDS RE-RUN" if score_failed else state.get("recommendation", "skip").upper()
+    score_str = "N/A" if score_failed else (f"{scores.weighted_total:.1f}/5.0" if scores else "N/A")
     archetype = state.get("archetype")
     archetype_label = archetype.archetype if archetype else "unknown"
     url = state.get("url") or ""
 
     lines = [
         f"# Evaluation Report: {company} — {role}",
-        f"**Date**: {date}  |  **Score**: {score_str}  |  **Recommendation**: {recommendation.upper()}",
+        f"**Date**: {date}  |  **Score**: {score_str}  |  **Recommendation**: {recommendation}",
         f"**Archetype**: {archetype_label}",
     ]
     if url:
@@ -74,7 +80,12 @@ async def write_report(state: JobHuntState, config: RunnableConfig) -> dict:
         lines += [f"- {warning}" for warning in artifact_warnings]
         lines += ["", "Do not send these without reading them first.", ""]
 
-    if scores:
+    if score_failed:
+        # scores still holds evaluate.py's fallback object ("0.0/5, skip") —
+        # rendering its dimensions/weighted_total here would print exactly
+        # the false assessment the header above just declined to show.
+        lines += ["## Score Breakdown", "", NEEDS_RERUN_NOTE, ""]
+    elif scores:
         lines += ["## Score Breakdown", ""]
         for dim in scores.dimensions:
             lines.append(f"- **{dim.dimension}** ({dim.weight*100:.0f}%): {dim.score:.1f}/5 — {dim.rationale}")

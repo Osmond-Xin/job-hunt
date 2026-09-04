@@ -45,6 +45,54 @@ def _run(llm):
     )
 
 
+def test_audit_prompt_carries_attribution_rule_and_source_cv() -> None:
+    """The auditor can only catch a relocated bullet if the source CV is in
+    its prompt and the rule tells it to compare against it.
+
+    2026-08-19-class bug: an AWS case-study bullet true under Iqidao was
+    re-attributed to Freelance; every fact in it was true, so the old rules
+    (invented facts, tenure labels, corporate-speak) never caught it.
+    """
+    from job_hunt.services.prompts import render
+
+    out = render(
+        "evaluate/quality_audit.md",
+        artifact_type="tailored CV",
+        draft="draft",
+        cv="## Freelance\n\n- some bullet\n\n## Technical Director — Iqidao\n\n- AWS case study",
+        article_digest="",
+        jd_text="JD",
+        mode="full",
+    )
+    assert "Attribution match" in out
+    assert "same employer and dated period it occupies in the master CV" in out
+    # The rule is only checkable if the auditor's prompt actually contains
+    # the source CV to compare the draft against.
+    assert "Technical Director — Iqidao" in out
+
+
+def test_attribution_failure_is_rejected_through_the_audit_loop(monkeypatch) -> None:
+    """A draft that relocated a bullet to the wrong employer never ships.
+
+    Simulates an auditor applying the new attribution-match rule on every
+    attempt: the draft is withheld with status "failed", never "passed".
+    """
+    fail = (
+        '{"verdict": "fail", "issues": '
+        '["AWS case-study bullet appears under Freelance but belongs to Iqidao"]}'
+    )
+    bad_draft = (
+        "## Freelance\n\n- Architected AWS cloud solutions featured as a case "
+        "study on the AWS website; freelance delivery of Python/Node.js APIs.\n"
+    )
+    llm = _ScriptedLLM([bad_draft, fail, bad_draft, fail, bad_draft, fail])
+    monkeypatch.setattr(quality_module, "call_node_llm_or_fallback", llm)
+    audited = _run(llm)
+    assert audited.status == "failed"
+    assert audited.verified is False
+    assert any("belongs to Iqidao" in issue for issue in audited.issues)
+
+
 def test_pass_on_first_attempt(monkeypatch) -> None:
     llm = _ScriptedLLM(["## Experience\n- Shipped X", _PASS])
     monkeypatch.setattr(quality_module, "call_node_llm_or_fallback", llm)
