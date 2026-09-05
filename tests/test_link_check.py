@@ -137,6 +137,52 @@ def test_live_verdicts_are_rechecked_rather_than_trusted(tmp_path) -> None:
     assert len(calls) == 2, "a live posting can close tomorrow"
 
 
+def test_a_server_error_is_asked_again_before_it_becomes_unverifiable(monkeypatch) -> None:
+    """One bad response must not be the last word on a posting.
+
+    Manitoba's board answered HTTP 500 once during the 2026-09-04 verification
+    pass. BLOCKED is correctly never treated as dead, so the row rode through
+    the whole pass and onto the shortlist — and the page it was hiding said, in
+    its first line, that the competition was open only to existing employees.
+    """
+    monkeypatch.setattr(
+        lc, "_curl_probe",
+        lambda url, timeout=25: (200, url, "OPEN ONLY TO EMPLOYEES OF THE PUBLIC SERVICE" + PADDING),
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="Internal Server Error", request=request)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=True)
+    verdict, _body = lc.check_url("https://jobs.test/job/1", client)
+    assert verdict.status == lc.INELIGIBLE
+
+
+def test_a_transport_failure_is_asked_again_too(monkeypatch) -> None:
+    monkeypatch.setattr(
+        lc, "_curl_probe", lambda url, timeout=25: (404, url, "Not found"),
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("boom", request=request)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=True)
+    verdict, _body = lc.check_url("https://jobs.test/job/2", client)
+    assert verdict.status == lc.DEAD
+
+
+def test_a_transport_failure_with_no_curl_is_still_blocked(monkeypatch) -> None:
+    """Blocked is not dead: without a second answer the posting stays."""
+    monkeypatch.setattr(lc, "_curl_probe", lambda url, timeout=25: (0, "", ""))
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("boom", request=request)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=True)
+    verdict, _body = lc.check_url("https://jobs.test/job/3", client)
+    assert verdict.status == lc.BLOCKED and not verdict.rejects
+
+
 def test_requests_are_spaced_out() -> None:
     slept: list[float] = []
 

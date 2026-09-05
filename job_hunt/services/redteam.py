@@ -19,6 +19,8 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from job_hunt.services.pdf import pdf_page_count
+
 FACTS_PATH = Path("profile/redteam-facts.md")
 DEFAULT_MODEL = "MiniMax-M3"
 # M3 is a reasoning model: hidden reasoning is charged against this budget before
@@ -94,8 +96,6 @@ def artifact_text(path: Path) -> str:
     )
     if out.returncode != 0:
         raise RuntimeError(f"pdftotext failed on {path}: {out.stderr.strip()}")
-    from job_hunt.nodes._cv_fit import pdf_page_count
-
     pages = pdf_page_count(path.read_bytes())
     return f"[{path.name} — {pages if pages is not None else 'unknown'} page(s)]\n\n{out.stdout}"
 

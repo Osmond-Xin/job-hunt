@@ -11,7 +11,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from job_hunt.nodes._prompts import render
+from job_hunt.services.prompts import render
 from job_hunt.repositories.tracker_repo import TrackerEntry, TrackerRepository
 
 

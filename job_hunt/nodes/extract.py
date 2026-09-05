@@ -19,11 +19,21 @@ _JDS_DIR = Path("jds")
 _MIN_JD_CHARS = 200
 
 # Signals that a page is still active (checked case-insensitively).
+# A posting is recognised by its own structure. The list is deliberately wide:
+# failing to recognise a live posting drops it silently, which is the expensive
+# error here, while a false positive only costs one evaluation. BigGeo's
+# Calgary Spatial AI Engineer role was dropped twice on 2026-09-04 — it heads
+# its sections "The Role", "What You Will Build and Own" and "Who You Are", and
+# not one of the original thirteen phrases appears anywhere on the page.
 _ACTIVE_SIGNALS = [
     "apply now", "apply for this job", "apply for this position",
     "submit application", "apply online", "apply here",
     "job description", "responsibilities", "requirements", "qualifications",
-    "what you'll do", "about the role", "about this role",
+    "what you'll do", "what you will do", "about the role", "about this role",
+    "the role", "role overview", "the opportunity", "about the job",
+    "what you will build", "what you'll build", "what you bring",
+    "what you'll bring", "who you are", "what we're looking for",
+    "what we are looking for", "skills and experience", "what you'll own",
 ]
 
 # Signals that a posting has closed. Boards phrase this differently enough that

@@ -16,10 +16,11 @@ import re
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from pathlib import Path
+from typing import Mapping
 
 from job_hunt.repositories.email_event_repo import EmailEventRepository
 from job_hunt.repositories.tracker_repo import TrackerRepository
-from job_hunt.services.email.gaps import _distinctive_tokens
+from job_hunt.services.employer_match import EmployerMatcher, load_aliases
 
 # Statuses that mean the application was actually sent.
 _SENT_STATUSES = {"Applied", "Rejected", "Interview", "Responded", "Offer"}
@@ -76,46 +77,58 @@ def unrecorded_artifacts(
     since: date,
     output_dir: Path = Path("output"),
     tracker: TrackerRepository | None = None,
+    aliases: Mapping[str, str] | None = None,
 ) -> Check:
     """Directories holding a rendered PDF whose employer has no tracker row.
 
     This is the check that would have caught the 2026-08-19/20 batch: the
     materials existed on disk for ten days with nothing pointing at them.
     """
+    # If output/ doesn't exist, this is a failure to look, not a successful
+    # empty scan. Return a distinct failing check so the operator knows the
+    # check was unable to run, not that it found nothing.
+    if not output_dir.exists():
+        return Check(
+            name="artifacts without a tracker row",
+            ok=False,
+            detail=f"output/ directory not found at {output_dir.resolve()}",
+            items=[],
+            fix=(
+                "Ensure output/ directory exists and that this command is run "
+                "from the correct working directory (the repo root)."
+            ),
+        )
+
     tracker = tracker or TrackerRepository(Path("data/applications.md"))
-    entries = tracker.parse()
-    known: list[tuple[set[str], str]] = [
-        (set(_distinctive_tokens(entry.company)), entry.status) for entry in entries
-    ]
+    matcher = EmployerMatcher(tracker.parse(), aliases=aliases if aliases is not None else load_aliases())
 
     missing: list[str] = []
     unsent: list[str] = []
-    if output_dir.exists():
-        for child in sorted(output_dir.iterdir()):
-            if not child.is_dir():
-                continue
-            when = _dir_date(child.name)
-            if when is None or when < since:
-                continue
-            if not any(child.glob("*.pdf")):
-                continue
-            linked = _linked_row(child)
-            if linked is not None:
-                # Recorded through `apply --confirmed`, which stamped the row
-                # number in. No guessing needed, and no false positive when the
-                # directory slug abbreviates the employer ("ccl" vs
-                # "Connor, Clark & Lunn Financial Group").
-                if linked not in _SENT_STATUSES:
-                    unsent.append(f"{child.name} (row exists, status {linked})")
-                continue
-            tokens = _slug_tokens(child.name)
-            if not tokens:
-                continue
-            hits = [status for company, status in known if company & tokens]
-            if not hits:
-                missing.append(child.name)
-            elif not any(status in _SENT_STATUSES for status in hits):
-                unsent.append(f"{child.name} (rows exist, none marked as sent)")
+    for child in sorted(output_dir.iterdir()):
+        if not child.is_dir():
+            continue
+        when = _dir_date(child.name)
+        if when is None or when < since:
+            continue
+        if not any(child.glob("*.pdf")):
+            continue
+        linked = _linked_row(child)
+        if linked is not None:
+            # Recorded through `apply --confirmed`, which stamped the row
+            # number in. No guessing needed, and no false positive when the
+            # directory slug abbreviates the employer ("ccl" vs
+            # "Connor, Clark & Lunn Financial Group").
+            if linked not in _SENT_STATUSES:
+                unsent.append(f"{child.name} (row exists, status {linked})")
+            continue
+        tokens = _slug_tokens(child.name)
+        if not tokens:
+            continue
+        hits = [match.entry.status for match in matcher.any_employer(tokens)]
+        if not hits:
+            missing.append(child.name)
+        elif not any(status in _SENT_STATUSES for status in hits):
+            unsent.append(f"{child.name} (rows exist, none marked as sent)")
 
     items = missing + unsent
     return Check(
@@ -131,6 +144,8 @@ def unrecorded_artifacts(
             "If it was submitted:\n"
             "  job-hunt apply '<url>' --company '...' --role '...' --pdf '<pdf>' "
             "--no-browser --confirmed\n"
+            "The URL is optional — drop it for a referral or anything applied to "
+            "without a posting link.\n"
             "If it was not, leave it — an evaluated-but-unsent row is normal."
         ),
     )
@@ -185,11 +200,33 @@ def outreach_followups() -> Check:
 
 
 def run_checkup(*, days: int = 30, today: date | None = None) -> list[Check]:
-    today = today or date.today()
-    since_date = today - timedelta(days=days)
+    # Compute the date range inside the safety net so a bad `days` argument
+    # produces a Check instead of raising and killing the whole command.
+    try:
+        today = today or date.today()
+        since_date = today - timedelta(days=days)
+    except Exception as e:
+        return [Check(
+            name="date range computation",
+            ok=False,
+            detail=f"{type(e).__name__}: {str(e)}",
+            fix="Check that days is a valid integer and today is a valid date",
+        )]
+
+    def safe_run_check(check_name: str, check_fn) -> Check:
+        try:
+            return check_fn()
+        except Exception as e:
+            return Check(
+                name=check_name,
+                ok=False,
+                detail=f"{type(e).__name__}: {str(e)}",
+                fix=f"Check job_hunt/services/checkup.py for {check_name}",
+            )
+
     return [
-        event_log_readable(),
-        unrecorded_artifacts(since=since_date),
-        mailbox_gaps(since=since_date.isoformat()),
-        outreach_followups(),
+        safe_run_check("event log readable", event_log_readable),
+        safe_run_check("artifacts without a tracker row", lambda: unrecorded_artifacts(since=since_date)),
+        safe_run_check("mailbox agrees with the tracker", lambda: mailbox_gaps(since=since_date.isoformat())),
+        safe_run_check("outreach follow-ups", outreach_followups),
     ]

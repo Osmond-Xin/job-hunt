@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from job_hunt.nodes._prompts import render
+from job_hunt.services.prompts import render
 from job_hunt.services.web_search import SearchHit, format_search_hits
 
 

@@ -5,12 +5,14 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from job_hunt.services.adzuna import parse_adzuna_results, scan_adzuna
+from job_hunt.models.posting import JobPosting, SourceHealth, SourceResult, from_row
+from job_hunt.services.adzuna import parse_adzuna_results, scan_adzuna, scan_adzuna_source
 from job_hunt.services.gov_boards import parse_gnwt, parse_ns_gov
 from job_hunt.services.workday_boards import (
     parse_workday_response,
     resolve_workday_target,
     scan_workday,
+    scan_workday_source,
 )
 
 GNWT_HTML = """
@@ -451,23 +453,268 @@ def test_an_incomplete_board_sweep_becomes_an_operator_warning() -> None:
     assert "mb_gov" not in joined
 
 
-def test_a_board_sweep_that_raises_is_reported_not_swallowed() -> None:
-    """`except Exception: return []` made a broken tier look like an empty one."""
+@pytest.mark.parametrize(
+    "attr, call",
+    [
+        (
+            "scan_jobbank",
+            lambda scan_mod, warnings: scan_mod._jobbank_scanned_jobs(
+                {"enabled": True}, warnings
+            ),
+        ),
+        (
+            "scan_gov_boards",
+            lambda scan_mod, warnings: scan_mod._gov_board_scanned_jobs(
+                {"enabled": True}, warnings
+            ),
+        ),
+        (
+            "scan_regional_boards",
+            lambda scan_mod, warnings: scan_mod._regional_board_scanned_jobs(
+                {"enabled": True}, warnings
+            ),
+        ),
+        (
+            "scan_workday_source",
+            lambda scan_mod, warnings: scan_mod._workday_scanned_jobs(
+                {"enabled": True}, warnings
+            ),
+        ),
+    ],
+)
+def test_a_board_sweep_that_raises_is_reported_not_swallowed(attr, call) -> None:
+    """`except Exception: return []` made a broken tier look like an empty one.
+
+    Covers all five tier mappers except adzuna, which needs credentials wired
+    first — see ``test_adzuna_sweep_that_raises_is_reported_not_swallowed``.
+    """
     import job_hunt.services.scan as scan_mod
 
     def boom(*_a, **_k):
         raise RuntimeError("parser blew up")
 
-    original = scan_mod.scan_regional_boards
-    scan_mod.scan_regional_boards = boom
+    original = getattr(scan_mod, attr)
+    setattr(scan_mod, attr, boom)
     try:
         warnings: list[str] = []
-        jobs = scan_mod._regional_board_scanned_jobs({"enabled": True}, warnings)
+        jobs = call(scan_mod, warnings)
     finally:
-        scan_mod.scan_regional_boards = original
+        setattr(scan_mod, attr, original)
 
     assert jobs == []
     assert warnings and "parser blew up" in warnings[0]
+
+
+def test_adzuna_sweep_that_raises_is_reported_not_swallowed(monkeypatch) -> None:
+    """Same guard as above for the adzuna mapper."""
+    import job_hunt.services.scan as scan_mod
+
+    monkeypatch.setenv("ADZUNA_APP_ID", "id")
+    monkeypatch.setenv("ADZUNA_APP_KEY", "key")
+
+    class Cfg:
+        enabled = True
+
+    class Settings:
+        adzuna = Cfg()
+
+    def boom(*_a, **_k):
+        raise RuntimeError("parser blew up")
+
+    original = scan_mod.scan_adzuna_source
+    scan_mod.scan_adzuna_source = boom
+    try:
+        warnings: list[str] = []
+        jobs = scan_mod._adzuna_scanned_jobs(Settings(), ["AI Engineer"], warnings)
+    finally:
+        scan_mod.scan_adzuna_source = original
+
+    assert jobs == []
+    assert warnings and "parser blew up" in warnings[0]
+
+
+# ----- failure counting (2026-09-03): a 200-with-no-content board looked ----
+# ----- exactly like an empty one until these adapters started counting -----
+
+
+def test_jobbank_scan_counts_failed_requests_into_stats() -> None:
+    from job_hunt.services.jobbank import scan_jobbank
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="", request=request)
+
+    stats: dict[str, dict[str, object]] = {}
+    rows = scan_jobbank(
+        {"enabled": True, "noc_codes": ["21232"], "provinces": ["NS"]},
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        sleep=lambda s: None,
+        stats=stats,
+    )
+
+    assert rows == []
+    assert stats["21232"]["errors"] == 1
+    assert stats["21232"]["collected"] == 0
+
+
+def test_workday_scan_counts_failed_requests_into_stats() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(422, json={}, request=request)
+
+    stats: dict[str, dict[str, object]] = {}
+    rows = scan_workday(
+        {"enabled": True, "employers": [{"name": "X", "tenant": "t", "site": "s"}]},
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        sleep=lambda s: None,
+        stats=stats,
+    )
+
+    assert rows == []
+    assert stats["X"]["errors"] == 1
+    assert stats["X"]["collected"] == 0
+
+
+def test_adzuna_scan_counts_failed_requests_into_stats() -> None:
+    class Cfg:
+        enabled = True
+        country = "ca"
+        results_per_page = 50
+        max_pages = 2
+        max_days_old = 30
+        delay_s = 0
+        timeout_s = 5
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, json={}, request=request)
+
+    stats: dict[str, dict[str, object]] = {}
+    rows = scan_adzuna(
+        Cfg(),
+        ["AI Engineer"],
+        app_id="i",
+        app_key="k",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        sleep=lambda s: None,
+        stats=stats,
+    )
+
+    assert rows == []
+    assert stats["AI Engineer"]["errors"] == 1
+    assert stats["AI Engineer"]["collected"] == 0
+
+
+# ----- posted-date survival (2026-09-03): three tiers scored as permanently
+# ----- undated because scan.py never read the field the adapter emitted.
+# ----- The normalizer unit tests live in tests/test_posted_date.py, next to
+# ----- the shared job_hunt.services.posted_date module; these are the
+# ----- end-to-end checks that scan.py's mappers actually wire it in. -----
+
+
+def test_jobbank_posted_date_survives_into_scanned_job() -> None:
+    import job_hunt.services.scan as scan_mod
+
+    def fake_scan_jobbank(config, **_kwargs):
+        return [
+            {
+                "url": "https://www.jobbank.gc.ca/jobsearch/jobposting/1",
+                "title": "Data Analyst",
+                "company": "Acme",
+                "location": "Halifax (NS)",
+                "date": "August 06, 2026",
+                "noc": "21232",
+            }
+        ]
+
+    original = scan_mod.scan_jobbank
+    scan_mod.scan_jobbank = fake_scan_jobbank
+    try:
+        jobs = scan_mod._jobbank_scanned_jobs({"enabled": True})
+    finally:
+        scan_mod.scan_jobbank = original
+
+    assert jobs[0].posted == "2026-08-06"
+
+
+def test_workday_posted_date_survives_into_scanned_job() -> None:
+    """The date normalisation itself is covered end-to-end (real HTTP mock)
+    by ``test_workday_source_returns_postings_and_health`` above; this checks
+    the other half — that ``_workday_scanned_jobs`` unwraps the
+    ``SourceResult`` from ``scan_workday_source`` without dropping the field
+    on the way into ``ScannedJob``.
+    """
+    import job_hunt.services.scan as scan_mod
+    import datetime as _dt
+
+    expected = (_dt.date.today() - _dt.timedelta(days=3)).isoformat()
+
+    def fake_scan_workday_source(config, **_kwargs):
+        return SourceResult(
+            postings=[
+                JobPosting(
+                    url="https://olg.wd3.myworkdayjobs.com/en-US/Careers/job/a",
+                    title="Analyst",
+                    company="OLG",
+                    location="Toronto",
+                    portal="workday",
+                    source="workday OLG",
+                    source_id="workday",
+                    posted=expected,
+                )
+            ],
+            health=SourceHealth(source_id="workday", ok=True, collected=1),
+        )
+
+    original = scan_mod.scan_workday_source
+    scan_mod.scan_workday_source = fake_scan_workday_source
+    try:
+        jobs = scan_mod._workday_scanned_jobs({"enabled": True})
+    finally:
+        scan_mod.scan_workday_source = original
+
+    assert jobs[0].posted == expected
+
+
+def test_adzuna_posted_date_survives_into_scanned_job(monkeypatch) -> None:
+    """See the docstring on the Workday version above: date normalisation
+    itself is covered end-to-end by ``test_adzuna_source_returns_postings_and_health``;
+    this checks that ``_adzuna_scanned_jobs`` preserves the field when
+    unwrapping the ``SourceResult``.
+    """
+    import job_hunt.services.scan as scan_mod
+
+    monkeypatch.setenv("ADZUNA_APP_ID", "id")
+    monkeypatch.setenv("ADZUNA_APP_KEY", "key")
+
+    class Cfg:
+        enabled = True
+
+    class Settings:
+        adzuna = Cfg()
+
+    def fake_scan_adzuna_source(config, roles, **_kwargs):
+        return SourceResult(
+            postings=[
+                JobPosting(
+                    url="https://www.adzuna.ca/details/1",
+                    title="Data Analyst",
+                    company="Acme",
+                    location="Halifax",
+                    portal="adzuna",
+                    source="adzuna data analyst",
+                    source_id="adzuna",
+                    posted="2026-08-01",
+                )
+            ],
+            health=SourceHealth(source_id="adzuna", ok=True, collected=1),
+        )
+
+    original = scan_mod.scan_adzuna_source
+    scan_mod.scan_adzuna_source = fake_scan_adzuna_source
+    try:
+        jobs = scan_mod._adzuna_scanned_jobs(Settings(), ["data analyst"])
+    finally:
+        scan_mod.scan_adzuna_source = original
+
+    assert jobs[0].posted == "2026-08-01"
 
 
 # --- SuccessFactors tenants beyond the Nova Scotia public service -----------
@@ -610,3 +857,449 @@ def test_title_screen_drops_what_the_model_rejects() -> None:
     assert [r["title"] for r in rows] == ["Systems Analyst - Information Management"]
     assert stats["nsha"]["title_screen"] == "model"
     assert stats["nsha"]["title_filtered"] == 1
+
+
+# ----- JobPosting.from_row (2026-09-03): the empty-title/missing-URL guard --
+# ----- used to be copy-pasted at four call sites in scan.py, with a fifth ---
+# ----- variant (jobbank's) that checked only the title. One function now. --
+
+
+def test_from_row_drops_a_row_with_no_title() -> None:
+    row = {"url": "https://example.com/job/1", "title": "  "}
+    assert from_row(row, source_id="workday", portal="workday") is None
+
+
+def test_from_row_drops_a_row_with_no_url() -> None:
+    row = {"url": "", "title": "Data Analyst"}
+    assert from_row(row, source_id="workday", portal="workday") is None
+    assert from_row({"title": "Data Analyst"}, source_id="workday", portal="workday") is None
+
+
+def test_from_row_builds_a_posting() -> None:
+    row = {
+        "url": "https://example.com/job/1",
+        "title": "Data Analyst",
+        "company": "Acme",
+        "location": "Halifax, NS",
+        "source": "workday Acme",
+        "closes": "2026-09-30",
+        "posted": "2026-08-06",
+    }
+    posting = from_row(row, source_id="workday", portal="workday")
+    assert posting == JobPosting(
+        url="https://example.com/job/1",
+        title="Data Analyst",
+        company="Acme",
+        location="Halifax, NS",
+        portal="workday",
+        source="workday Acme",
+        source_id="workday",
+        closes="2026-09-30",
+        posted="2026-08-06",
+    )
+
+
+def test_from_row_defaults_a_blank_company_to_unknown() -> None:
+    posting = from_row(
+        {"url": "https://example.com/job/1", "title": "Data Analyst", "company": "  "},
+        source_id="jobbank",
+        portal="jobbank",
+    )
+    assert posting is not None
+    assert posting.company == "Unknown"
+
+
+def test_from_row_leaves_a_source_specific_company_fallback_alone() -> None:
+    """Regional boards default a missing company to a different message than
+    the generic "Unknown" — the caller pre-fills the row, so ``from_row``'s
+    own fallback never fires."""
+    posting = from_row(
+        {
+            "url": "https://example.com/job/1",
+            "title": "Data Analyst",
+            "company": "Unknown (see posting)",
+        },
+        source_id="regional:digital_nova_scotia",
+        portal="digital_nova_scotia",
+    )
+    assert posting is not None
+    assert posting.company == "Unknown (see posting)"
+
+
+# ----- SourceHealth.warnings() -----------------------------------------
+
+
+def test_source_health_reports_failed_requests() -> None:
+    health = SourceHealth(source_id="workday", ok=False, collected=3, errors=2)
+    assert health.warnings() == [
+        "workday: 2 failed request(s) — 3 postings may be an undercount, not a quiet source"
+    ]
+
+
+def test_source_health_reports_truncation_with_advertised_total() -> None:
+    health = SourceHealth(
+        source_id="gnwt", ok=True, collected=40, advertised=92, truncated=True
+    )
+    warnings = health.warnings()
+    assert len(warnings) == 1
+    assert "raise max_pages" in warnings[0]
+    assert "source advertises 92" in warnings[0]
+
+
+def test_source_health_silent_when_healthy() -> None:
+    health = SourceHealth(source_id="mb_gov", ok=True, collected=59)
+    assert health.warnings() == []
+
+
+# ----- the two converted adapters: scan_workday_source / scan_adzuna_source -
+
+
+def test_workday_source_returns_postings_and_health() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "total": 1,
+                "jobPostings": [
+                    {
+                        "title": "Analyst",
+                        "externalPath": "/job/a",
+                        "postedOn": "Posted Today",
+                    }
+                ],
+            },
+            request=request,
+        )
+
+    result = scan_workday_source(
+        {
+            "enabled": True,
+            "employers": [
+                {"name": "OLG", "url": "https://olg.wd3.myworkdayjobs.com/en-US/Careers"}
+            ],
+        },
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        sleep=lambda s: None,
+    )
+
+    assert isinstance(result, SourceResult)
+    assert len(result.postings) == 1
+    posting = result.postings[0]
+    assert isinstance(posting, JobPosting)
+    assert posting.portal == "workday"
+    assert posting.source_id == "workday"
+    assert posting.source == "workday OLG"
+    assert posting.company == "OLG"
+    assert posting.posted  # "Posted Today" normalised to an ISO date
+    assert result.health == SourceHealth(
+        source_id="workday", ok=True, collected=1, advertised=1, errors=0
+    )
+
+
+def test_workday_source_health_counts_errors_across_employers() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(422, json={}, request=request)
+
+    result = scan_workday_source(
+        {"enabled": True, "employers": [{"name": "X", "tenant": "t", "site": "s"}]},
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        sleep=lambda s: None,
+    )
+
+    assert result.postings == []
+    assert result.health.ok is False
+    assert result.health.collected == 0
+    assert result.health.errors == 1
+
+
+def test_adzuna_source_returns_postings_and_health() -> None:
+    class Cfg:
+        enabled = True
+        country = "ca"
+        results_per_page = 50
+        max_pages = 1
+        max_days_old = 30
+        delay_s = 0
+        timeout_s = 5
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "results": [
+                    {
+                        "title": "Data Analyst",
+                        "redirect_url": "https://www.adzuna.ca/details/1",
+                        "company": {"display_name": "Acme"},
+                        "location": {"display_name": "Halifax"},
+                        "created": "2026-08-01T00:00:00Z",
+                    }
+                ]
+            },
+            request=request,
+        )
+
+    result = scan_adzuna_source(
+        Cfg(),
+        ["data analyst"],
+        app_id="i",
+        app_key="k",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        sleep=lambda s: None,
+    )
+
+    assert isinstance(result, SourceResult)
+    assert len(result.postings) == 1
+    posting = result.postings[0]
+    assert posting.portal == "adzuna"
+    assert posting.source_id == "adzuna"
+    assert posting.source == "adzuna data analyst"
+    assert posting.posted == "2026-08-01"
+    assert result.health == SourceHealth(
+        source_id="adzuna", ok=True, collected=1, errors=0
+    )
+
+
+def test_adzuna_source_health_counts_errors_across_roles() -> None:
+    class Cfg:
+        enabled = True
+        country = "ca"
+        results_per_page = 50
+        max_pages = 2
+        max_days_old = 30
+        delay_s = 0
+        timeout_s = 5
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, json={}, request=request)
+
+    result = scan_adzuna_source(
+        Cfg(),
+        ["AI Engineer"],
+        app_id="i",
+        app_key="k",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        sleep=lambda s: None,
+    )
+
+    assert result.postings == []
+    assert result.health.ok is False
+    assert result.health.collected == 0
+    assert result.health.errors == 1
+
+
+# ----- advertised/truncated (2026-09-03): both adapters measured the page --
+# ----- budget running out but never reported it, so the design's own -------
+# ----- truncation warning could never fire for these two sources. ----------
+
+
+def test_workday_truncated_sweep_reports_advertised_and_warns() -> None:
+    """Page budget (max_pages=1) runs out with more rows advertised than the
+    single full page collected — must be flagged, not read as "done"."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        postings = [
+            {"title": f"Analyst {i}", "externalPath": f"/job/{i}"} for i in range(20)
+        ]
+        return httpx.Response(200, json={"total": 50, "jobPostings": postings}, request=request)
+
+    stats: dict[str, dict[str, object]] = {}
+    rows = scan_workday(
+        {
+            "enabled": True,
+            "max_pages": 1,
+            "employers": [{"name": "OLG", "tenant": "olg", "site": "Careers"}],
+        },
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        sleep=lambda s: None,
+        stats=stats,
+    )
+
+    assert len(rows) == 20
+    assert stats["OLG"]["collected"] == 20
+    assert stats["OLG"]["advertised"] == 50
+    assert stats["OLG"]["truncated"] is True
+
+    result = scan_workday_source(
+        {
+            "enabled": True,
+            "max_pages": 1,
+            "employers": [{"name": "OLG", "tenant": "olg", "site": "Careers"}],
+        },
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        sleep=lambda s: None,
+    )
+    assert result.health.truncated is True
+    assert result.health.advertised == 50
+    warnings = result.health.warnings()
+    assert any("raise max_pages" in w and "advertises 50" in w for w in warnings)
+
+
+def test_workday_malformed_200_counts_as_error_not_empty() -> None:
+    """A 200 whose body has no ``jobPostings`` key is truthy — it must not be
+    read as "this employer has no openings"."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"total": 5, "postings": []}, request=request)
+
+    stats: dict[str, dict[str, object]] = {}
+    rows = scan_workday(
+        {"enabled": True, "employers": [{"name": "X", "tenant": "t", "site": "s"}]},
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        sleep=lambda s: None,
+        stats=stats,
+    )
+
+    assert rows == []
+    assert stats["X"]["errors"] == 1
+    assert stats["X"]["collected"] == 0
+
+
+def test_workday_genuinely_empty_board_stays_ok() -> None:
+    """A 200 with a real, empty ``jobPostings`` list is not an error."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"total": 0, "jobPostings": []}, request=request)
+
+    stats: dict[str, dict[str, object]] = {}
+    rows = scan_workday(
+        {"enabled": True, "employers": [{"name": "X", "tenant": "t", "site": "s"}]},
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        sleep=lambda s: None,
+        stats=stats,
+    )
+
+    assert rows == []
+    assert stats["X"]["errors"] == 0
+    assert stats["X"]["truncated"] is False
+
+    result = scan_workday_source(
+        {"enabled": True, "employers": [{"name": "X", "tenant": "t", "site": "s"}]},
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        sleep=lambda s: None,
+    )
+    assert result.health.ok is True
+    assert result.health.warnings() == []
+
+
+def test_adzuna_truncated_sweep_reports_advertised_and_warns() -> None:
+    """Page budget (max_pages=1) runs out with more rows advertised than the
+    single full page collected — must be flagged, not read as "done"."""
+
+    class Cfg:
+        enabled = True
+        country = "ca"
+        results_per_page = 50
+        max_pages = 1
+        max_days_old = 30
+        delay_s = 0
+        timeout_s = 5
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        results = [
+            {"title": f"Role {i}", "redirect_url": f"https://a/{i}"} for i in range(50)
+        ]
+        return httpx.Response(200, json={"results": results, "count": 100}, request=request)
+
+    stats: dict[str, dict[str, object]] = {}
+    rows = scan_adzuna(
+        Cfg(),
+        ["AI Engineer"],
+        app_id="i",
+        app_key="k",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        sleep=lambda s: None,
+        stats=stats,
+    )
+
+    assert len(rows) == 50
+    assert stats["AI Engineer"]["collected"] == 50
+    assert stats["AI Engineer"]["advertised"] == 100
+    assert stats["AI Engineer"]["truncated"] is True
+
+    result = scan_adzuna_source(
+        Cfg(),
+        ["AI Engineer"],
+        app_id="i",
+        app_key="k",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        sleep=lambda s: None,
+    )
+    assert result.health.truncated is True
+    assert result.health.advertised == 100
+    warnings = result.health.warnings()
+    assert any("raise max_pages" in w and "advertises 100" in w for w in warnings)
+
+
+def test_adzuna_malformed_200_counts_as_error_not_empty() -> None:
+    """A 200 whose body has no ``results`` key is truthy — it must not be
+    read as "no matches for this role"."""
+
+    class Cfg:
+        enabled = True
+        country = "ca"
+        results_per_page = 50
+        max_pages = 2
+        max_days_old = 30
+        delay_s = 0
+        timeout_s = 5
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"count": 5, "matches": []}, request=request)
+
+    stats: dict[str, dict[str, object]] = {}
+    rows = scan_adzuna(
+        Cfg(),
+        ["AI Engineer"],
+        app_id="i",
+        app_key="k",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        sleep=lambda s: None,
+        stats=stats,
+    )
+
+    assert rows == []
+    assert stats["AI Engineer"]["errors"] == 1
+    assert stats["AI Engineer"]["collected"] == 0
+
+
+def test_adzuna_genuinely_empty_role_stays_ok() -> None:
+    """A 200 with a real, empty ``results`` list is not an error."""
+
+    class Cfg:
+        enabled = True
+        country = "ca"
+        results_per_page = 50
+        max_pages = 2
+        max_days_old = 30
+        delay_s = 0
+        timeout_s = 5
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"results": [], "count": 0}, request=request)
+
+    stats: dict[str, dict[str, object]] = {}
+    rows = scan_adzuna(
+        Cfg(),
+        ["AI Engineer"],
+        app_id="i",
+        app_key="k",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        sleep=lambda s: None,
+        stats=stats,
+    )
+
+    assert rows == []
+    assert stats["AI Engineer"]["errors"] == 0
+    assert stats["AI Engineer"]["truncated"] is False
+
+    result = scan_adzuna_source(
+        Cfg(),
+        ["AI Engineer"],
+        app_id="i",
+        app_key="k",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        sleep=lambda s: None,
+    )
+    assert result.health.ok is True
+    assert result.health.warnings() == []

@@ -10,8 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from job_hunt.nodes._llm import call_node_llm_or_fallback
-from job_hunt.nodes._prompts import render
+from job_hunt.services.llm.call import call_node_llm_or_fallback
+from job_hunt.services.prompts import render
 from job_hunt.services.llm.base import ChatResult
 
 

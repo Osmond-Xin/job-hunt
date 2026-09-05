@@ -248,8 +248,15 @@ def classify(
     return Verdict(url, LIVE, "", http_status)
 
 
-# Statuses that may be a bot wall rather than the site's real answer.
-_TLS_BLOCK_CODES = frozenset({403, 429})
+# Statuses worth a second opinion from curl before they are believed: a bot
+# wall fingerprinting httpx's TLS handshake (403/429), or a server error that
+# is often a single bad response rather than the site's real answer. Manitoba's
+# board answered 500 once on 2026-09-04 and the row it was hiding — an
+# internal-only competition — rode through the whole verification pass as
+# BLOCKED and into the shortlist. BLOCKED is correctly not treated as dead, so
+# one flaky response is enough to make a posting unverifiable; asking twice
+# costs one request.
+_TLS_BLOCK_CODES = frozenset({403, 429, 500, 502, 503, 504})
 _CURL_TRAILER = "\n__curl_status__ "
 
 
@@ -295,9 +302,16 @@ def check_url(url: str, client: httpx.Client) -> tuple[Verdict, str]:
     try:
         response = client.get(url)
     except httpx.HTTPError as exc:
-        return Verdict(url, BLOCKED, f"request failed: {type(exc).__name__}", 0), ""
+        # Same second chance as a bot wall gets below: a transport failure is
+        # not the site's answer either, and without one it becomes a permanent
+        # BLOCKED for that run.
+        curl_status, curl_final, curl_body = _curl_probe(url)
+        if not curl_status:
+            return Verdict(url, BLOCKED, f"request failed: {type(exc).__name__}", 0), ""
+        status, final_url, body = curl_status, curl_final or url, curl_body
+    else:
+        status, final_url, body = response.status_code, str(response.url), response.text
 
-    status, final_url, body = response.status_code, str(response.url), response.text
     if status in _TLS_BLOCK_CODES:
         # A 403 here is usually not the site saying no — it is an edge
         # fingerprinting httpx's TLS handshake, which no header set can

@@ -150,11 +150,20 @@ def scan_jobbank(
     *,
     client: httpx.Client | None = None,
     sleep=time.sleep,
+    stats: dict[str, dict[str, Any]] | None = None,
 ) -> list[dict[str, str]]:
     """Fetch postings for every ``noc_codes`` x ``provinces`` pair.
 
     Returns de-duplicated rows (a posting can surface under more than one
     code). Disabled or empty config yields ``[]``.
+
+    Pass ``stats`` to find out whether the sweep actually completed.
+    ``fetch_jobbank_page`` returns ``""`` on any transport error or
+    non-200 response — indistinguishable, until counted here, from a
+    NOC code that genuinely has zero postings in a province. This is the
+    highest-volume tier (9 NOC codes x 13 provinces = 117 requests per
+    run), so a quiet failure here is the biggest undercount risk of the
+    five. Keyed by NOC code, same as ``row["noc"]`` below.
     """
     if not config or not config.get("enabled", False):
         return []
@@ -181,17 +190,22 @@ def scan_jobbank(
         out: list[dict[str, str]] = []
         first = True
         for code in codes:
+            entry = stats.setdefault(code, {"collected": 0, "errors": 0}) if stats is not None else None
             for province in targets:
                 if not first and delay > 0:
                     sleep(delay)
                 first = False
                 page = fetch_jobbank_page(code, province, client=client)
+                if page == "" and entry is not None:
+                    entry["errors"] += 1
                 for row in parse_jobbank_results(page):
                     if row["url"] in seen:
                         continue
                     seen.add(row["url"])
                     row["noc"] = code
                     out.append(row)
+                    if entry is not None:
+                        entry["collected"] += 1
         return out
     finally:
         if owns_client:

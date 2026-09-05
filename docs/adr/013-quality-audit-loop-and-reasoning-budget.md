@@ -1,6 +1,6 @@
 # ADR-013: Quality-audit regeneration loop + reasoning-model token budget
 
-**Status:** Accepted
+**Status:** Accepted (amended 2026-07-27 — see Amendment below)
 **Date:** 2026-06-12
 
 ## Context
@@ -63,3 +63,43 @@ take an optional Article Digest block.
 - Future work should keep this bias: prefer extra LLM passes / retries over
   cheaper-but-worse output. See `docs/design-notes.md` §O for the broader
   artifact-quality review that produced these changes.
+
+## Amendment (2026-07-27)
+
+Commit `ff31a17` reversed the "Final failure" line under Decision §2 above.
+That line is left as originally written for the record; this is what
+replaced it.
+
+**What changed.** `generate_with_audit` used to return `(artifact, errors)`,
+so "the auditor approved this" and "the auditor never answered" collapsed
+into the same value, and an unverified draft could ship silently. It now
+returns an `AuditedArtifact` with an explicit `status`
+(`ok` / `failed` / `unavailable`). On `status == "failed"`:
+
+- `nodes/pdf.py::tailor_cv` withholds the tailored draft. The tailored CV is
+  not written to state at all, and the run falls back to rendering the
+  hand-written master CV instead — known-good, not tailored to the JD.
+- `nodes/cover_letter.py`'s cover-letter path withholds the draft outright:
+  `cover_letter_path` is set to `None`, so no PDF is produced for that
+  artifact.
+
+Both cases record `artifact_warnings` (`"... withheld (audit failed): ..."`)
+that flow into the report the operator reads, so the withholding is visible,
+not silent.
+
+**Why.** The original decision treated a stubborn auditor as the failure
+mode to guard against — hence "never blocks the run." Living with it showed
+the asymmetry was backwards: a resume or cover letter that reaches an
+employer without ever having passed review is worse than a run that
+produces nothing for that artifact. Regenerating (or falling back to the
+untailored master CV) costs tokens and, in the cover-letter case, an
+otherwise-complete application; shipping an artifact three audit passes
+rejected costs the interview. The audit is also asymmetric on purpose in
+the same commit: a rejection is honoured from anywhere in the auditor's
+reply, an approval only when the whole reply is the clean verdict object
+with no issues — being wrong toward "regenerate" is the cheap direction to
+be wrong in.
+
+The bounded-retry shape from the original decision (3 attempts, auditor
+issues fed back as guidance) is unchanged; only what happens after the
+third failure changed.

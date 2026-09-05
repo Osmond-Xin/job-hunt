@@ -9,8 +9,8 @@ from pathlib import Path
 from langchain_core.runnables import RunnableConfig
 
 from job_hunt.models.state import JobHuntState
-from job_hunt.nodes._llm import call_node_llm_or_fallback
-from job_hunt.nodes._prompts import render
+from job_hunt.services.llm.call import call_node_llm_or_fallback
+from job_hunt.services.prompts import render
 
 _STORY_BANK_PATH = Path("interview-prep/story-bank.md")
 # Aligned with the "apply" band in prompts/evaluate/score_and_recommend.md.

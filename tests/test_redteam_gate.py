@@ -7,7 +7,11 @@ could not be reached is UNREVIEWED, never a pass.
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
+import pytest
+
+from job_hunt.models.job import JobMeta
 from job_hunt.services import redteam as svc
 
 
@@ -90,3 +94,244 @@ def test_node_is_a_no_op_without_artifacts():
     out = asyncio.run(redteam_review({"pdf_path": None, "cover_letter_path": None}, None))
     assert out == {"errors": []}
     assert "redteam_verdict" not in out
+
+
+# ----- draft_application_answers text reaching the review (CLAUDE.md §1) -----
+
+
+def test_draft_answers_are_written_to_disk_and_reach_the_review(monkeypatch, tmp_path):
+    """draft_application_answers (nodes/personalize.py) only ever puts its text
+    into evaluation_blocks for report.md — it never touches disk, so run_review
+    (which reads artifacts off disk) never saw it. With no PDF and no cover
+    letter, this used to be the no-op path above; it must not be any more."""
+    from job_hunt.nodes import artifact_paths as artifact_paths_module
+    from job_hunt.nodes import redteam as redteam_module
+
+    monkeypatch.setattr(artifact_paths_module, "_OUTPUT_DIR", tmp_path)
+
+    calls = []
+
+    def fake_run_review(*, artifacts, jd_text, company, role, origin="hand-written"):
+        calls.append({"artifacts": artifacts, "origin": origin})
+        return svc.RedTeamResult("SEND", "VERDICT: SEND — fine")
+
+    monkeypatch.setattr(redteam_module, "run_review", fake_run_review)
+
+    state = {
+        "run_id": "abc123",
+        "jd_meta": JobMeta(company="Acme", title="Engineer"),
+        "jd_text": "JD body",
+        "pdf_path": None,
+        "cover_letter_path": None,
+        "evaluation_blocks": {"draft_answers": "Q: Why us?\nA: Because."},
+    }
+    out = asyncio.run(redteam_module.redteam_review(state, None))
+
+    answers_path = artifact_paths_module.run_output_dir(state) / "apply-answers.md"
+    assert answers_path.exists()
+    assert answers_path.read_text(encoding="utf-8") == "Q: Why us?\nA: Because."
+    assert len(calls) == 1
+    assert calls[0]["artifacts"] == [answers_path]
+    # No templated CV/cover-letter in this batch, so the pipeline template's
+    # exemptions (target banner, contact-line separator) must not apply.
+    assert calls[0]["origin"] == "hand-written"
+    assert out["redteam_verdict"] == "SEND"
+
+
+def test_draft_answers_get_their_own_call_when_a_pdf_exists(monkeypatch, tmp_path):
+    """When a templated CV is also in this run, the CV and the draft answers
+    go through two separate review calls under two different origins — the
+    "pipeline" exemptions (target banner, contact-line separator) are house
+    style of templates/cv.html.j2 and must not be handed to the reviewer as
+    covering the freeform draft answers too. Both reviews still land in one
+    redteam.md and one merged verdict, so the operator reads one file."""
+    from job_hunt.nodes import artifact_paths as artifact_paths_module
+    from job_hunt.nodes import redteam as redteam_module
+
+    monkeypatch.setattr(artifact_paths_module, "_OUTPUT_DIR", tmp_path)
+
+    pdf_path = tmp_path / "resume.pdf"
+    pdf_path.parent.mkdir(parents=True, exist_ok=True)
+    pdf_path.write_bytes(b"%PDF fake")
+
+    calls = []
+
+    def fake_run_review(*, artifacts, jd_text, company, role, origin="hand-written"):
+        calls.append({"artifacts": artifacts, "origin": origin})
+        return svc.RedTeamResult("SEND", f"VERDICT: SEND — fine ({origin})")
+
+    monkeypatch.setattr(redteam_module, "run_review", fake_run_review)
+
+    state = {
+        "run_id": "abc123",
+        "jd_meta": JobMeta(company="Acme", title="Engineer"),
+        "jd_text": "JD body",
+        "pdf_path": str(pdf_path),
+        "cover_letter_path": None,
+        "evaluation_blocks": {"draft_answers": "answer text"},
+    }
+    out = asyncio.run(redteam_module.redteam_review(state, None))
+
+    answers_path = artifact_paths_module.run_output_dir(state) / "apply-answers.md"
+    assert len(calls) == 2
+    assert calls[0]["artifacts"] == [pdf_path]
+    assert calls[0]["origin"] == "pipeline"
+    assert calls[1]["artifacts"] == [answers_path]
+    assert calls[1]["origin"] == "hand-written"
+
+    review_path = artifact_paths_module.run_output_dir(state) / "redteam.md"
+    review = review_path.read_text(encoding="utf-8")
+    assert "(pipeline)" in review and "(hand-written)" in review
+    assert out["redteam_verdict"] == "SEND"
+
+
+def test_worse_verdict_wins_across_the_two_origin_batches(monkeypatch, tmp_path):
+    """The CV batch and the draft-answers batch are reviewed independently now,
+    so a BLOCK found only in the draft answers must not be hidden behind a
+    clean SEND on the CV — the operator gets one verdict and it has to be the
+    worst of the two."""
+    from job_hunt.nodes import artifact_paths as artifact_paths_module
+    from job_hunt.nodes import redteam as redteam_module
+
+    monkeypatch.setattr(artifact_paths_module, "_OUTPUT_DIR", tmp_path)
+
+    pdf_path = tmp_path / "resume.pdf"
+    pdf_path.parent.mkdir(parents=True, exist_ok=True)
+    pdf_path.write_bytes(b"%PDF fake")
+
+    def fake_run_review(*, artifacts, jd_text, company, role, origin="hand-written"):
+        if origin == "pipeline":
+            return svc.RedTeamResult("SEND", "VERDICT: SEND — CV is fine")
+        return svc.RedTeamResult("BLOCK", "VERDICT: BLOCK — answer contradicts a fact")
+
+    monkeypatch.setattr(redteam_module, "run_review", fake_run_review)
+
+    state = {
+        "run_id": "abc123",
+        "jd_meta": JobMeta(company="Acme", title="Engineer"),
+        "jd_text": "JD body",
+        "pdf_path": str(pdf_path),
+        "cover_letter_path": None,
+        "evaluation_blocks": {"draft_answers": "answer text"},
+    }
+    out = asyncio.run(redteam_module.redteam_review(state, None))
+
+    assert out["redteam_verdict"] == "BLOCK"
+
+
+def test_draft_answers_alone_still_go_unreviewed_when_mmx_is_unreachable(monkeypatch, tmp_path):
+    """The other side of the same fix: an answers-only run must still fail
+    closed, exactly like the existing pdf/cover-letter path."""
+    from job_hunt.nodes import artifact_paths as artifact_paths_module
+    from job_hunt.nodes import redteam as redteam_module
+
+    monkeypatch.setattr(artifact_paths_module, "_OUTPUT_DIR", tmp_path)
+    monkeypatch.setattr(svc.shutil, "which", lambda name: None)
+
+    state = {
+        "run_id": "abc123",
+        "jd_meta": JobMeta(company="Acme", title="Engineer"),
+        "jd_text": "JD body",
+        "pdf_path": None,
+        "cover_letter_path": None,
+        "evaluation_blocks": {"draft_answers": "Q: Why us?\nA: Because."},
+    }
+    out = asyncio.run(redteam_module.redteam_review(state, None))
+
+    assert out["redteam_verdict"] == "UNREVIEWED"
+    assert not (artifact_paths_module.run_output_dir(state) / "redteam.md").exists()
+
+
+# ----- write_report: must not point at a redteam.md that redteam_review never wrote -----
+
+
+def _report_state(verdict: str) -> dict:
+    return {
+        "run_id": "abc123",
+        "jd_meta": JobMeta(company="Acme", title="Engineer"),
+        "evaluation_blocks": {},
+        "redteam_verdict": verdict,
+        "errors": [],
+    }
+
+
+def test_unreviewed_report_does_not_point_at_a_file_that_was_never_written(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CLAUDE.md §1: UNREVIEWED is not a pass. redteam_review only writes
+    redteam.md when a review actually came back — on the mmx-unreachable /
+    timeout / non-zero-exit paths, no file exists, so the report must not send
+    the operator to look for one."""
+    from job_hunt.nodes.report import write_report
+
+    monkeypatch.chdir(tmp_path)  # write_report writes a relative reports/ dir
+    result = asyncio.run(write_report(_report_state("UNREVIEWED"), None))
+    report = result["report_md"]
+
+    assert "RED TEAM: UNREVIEWED" in report
+    assert "not reviewed" in report.lower()
+    assert "See `redteam.md`" not in report
+
+
+def test_reviewed_block_report_points_at_the_file_that_was_written(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The other side of the same fix: when redteam_review did write the file,
+    the report must still send the operator to it."""
+    from job_hunt.nodes.artifact_paths import run_output_dir
+    from job_hunt.nodes.report import write_report
+
+    monkeypatch.chdir(tmp_path)
+    state = _report_state("BLOCK")
+    out_dir = run_output_dir(state)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "redteam.md").write_text("VERDICT: BLOCK — wrong email", encoding="utf-8")
+
+    result = asyncio.run(write_report(state, None))
+    report = result["report_md"]
+
+    assert "RED TEAM: BLOCK" in report
+    assert "See `redteam.md`" in report
+
+
+def test_missing_verdict_with_a_pdf_on_disk_reads_as_unreviewed_not_silence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A generated PDF with no redteam_verdict at all (redteam_review skipped
+    or crashed before setting one) must not render identically to a clean
+    SEND — that is the same silent gap as an absent verdict, just from a
+    different cause than the two in CLAUDE.md §1."""
+    from job_hunt.nodes.report import write_report
+
+    monkeypatch.chdir(tmp_path)
+    state = {
+        "run_id": "abc123",
+        "jd_meta": JobMeta(company="Acme", title="Engineer"),
+        "evaluation_blocks": {},
+        "pdf_path": "output/whatever/resume.pdf",
+        "errors": [],
+    }
+    result = asyncio.run(write_report(state, None))
+    report = result["report_md"]
+
+    assert "RED TEAM: UNREVIEWED" in report
+    assert "not reviewed" in report.lower()
+
+
+def test_missing_verdict_with_no_artifact_stays_silent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The other side: a run that produced nothing outward-facing has nothing
+    to review, so the missing-verdict guard must not manufacture a banner."""
+    from job_hunt.nodes.report import write_report
+
+    monkeypatch.chdir(tmp_path)
+    state = {
+        "run_id": "abc123",
+        "jd_meta": JobMeta(company="Acme", title="Engineer"),
+        "evaluation_blocks": {},
+        "errors": [],
+    }
+    result = asyncio.run(write_report(state, None))
+
+    assert "RED TEAM" not in result["report_md"]

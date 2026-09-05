@@ -5,7 +5,7 @@ from typing import Annotated, Any, Literal, TypedDict
 
 from job_hunt.models.evaluation import EvaluationScores
 from job_hunt.models.job import ArchetypeResult, CandidateProfile, JobMeta
-from job_hunt.repositories.tracker_repo import TrackerEntry
+from job_hunt.models.tracker import TrackerEntry
 
 
 def _merge_dicts(a: dict, b: dict) -> dict:
@@ -36,6 +36,9 @@ class JobHuntState(TypedDict, total=False):
     # JD classification produced by the gate; pure-heuristic. Default
     # "unknown" passes through to scoring; mode mismatch routes to SKIP.
     jd_eligibility: Literal["student", "full", "unknown"]
+    # Set by verify_active() to indicate whether the JD text represents an
+    # active posting. Routes to mark_unavailable if False.
+    jd_active: bool
 
     # --- analysis outputs (parallel fan-in via reducer) ---
     archetype: ArchetypeResult

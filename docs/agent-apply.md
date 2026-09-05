@@ -30,7 +30,7 @@ This document is the stable handoff contract for application automation. If anot
 
 ## Current Implementation Contract
 
-The current CLI implementation lives in `job_hunt/cli.py`.
+The current CLI implementation lives in `job_hunt/cli/apply.py`.
 
 - `apply_assist`: public `job-hunt apply` command. Key flags:
   - `--fill-only`: fills form, keeps browser open via a heartbeat loop. Idle exit after 60 minutes with no IPC command / refill (heartbeat alone does not count as activity). Refreshes `.session.json` heartbeat every 5 s.

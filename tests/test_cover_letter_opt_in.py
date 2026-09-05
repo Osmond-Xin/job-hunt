@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from job_hunt.nodes._prompts import render
+from job_hunt.services.prompts import render
 
 BLOCKS = {
     "role_summary": "",
