@@ -263,6 +263,33 @@ def test_a_second_role_at_an_employer_already_applied_to_is_hidden():
     assert rank([row], limit=5, seen_employers=employers) == []
 
 
+def test_a_public_employer_is_exempt_under_the_name_the_tracker_uses():
+    """The exemption has to survive the naming variant, or it isn't an exemption.
+
+    Measured 2026-09-04: the tracker calls the employer "Nova Scotia Health", not
+    "Nova Scotia Health Authority", so it missed the `health authority` pattern and one
+    application hid nine other NSHA postings — one of them a Senior Systems Analyst
+    role squarely in the target. "Town of Whitby" and "Acadia University" failed the
+    same way.
+    """
+    tracker = (
+        "| # | Date | Company | Role | Score | Status | PDF | Notes |\n"
+        "| 726 | 2026-08-13 | Nova Scotia Health | Systems Analyst, IM&T | 3.5/5 | Applied | y | s |\n"
+        "| 747 | 2026-08-16 | Town of Whitby | AI Solutions Architect | 3.7/5 | Applied | y | s |\n"
+        "| 738 | 2026-08-15 | Acadia University | Systems Analyst, Data | 3.6/5 | Applied | y | s |\n"
+    )
+    employers = submitted_employers(tracker)
+    assert employers == {}, "no public employer should be able to hide its own siblings"
+    for company, role in [
+        ("Nova Scotia Health", "Senior Systems Analyst - One Person One Record"),
+        ("Nova Scotia Health Authority", "Senior Systems Analyst"),
+        ("Town of Whitby", "Business Systems Analyst"),
+        ("Acadia University", "Data Engineer"),
+    ]:
+        row = parse_pipeline(f"- [ ] https://x.invalid/1 | {company} | {role} | NS | source: x\n")[0]
+        assert applied_employer(row, employers) == "", company
+
+
 def test_a_longer_name_matches_but_a_different_company_does_not():
     """One name may extend the other, but only at a word boundary: a character
     prefix would hide "Citigroup Financial Advisors" *and* "Citizens Bank"."""

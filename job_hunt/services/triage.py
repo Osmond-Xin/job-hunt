@@ -126,9 +126,22 @@ BIG_EMPLOYER_RE = re.compile(
     re.I,
 )
 
+# Public-sector employers, which the one-role-per-employer rule exempts: a public
+# competition is scored against stated qualifications, so one application is no
+# reason to hide the rest of the postings.
+#
+# The list is wider than "government" because the exemption was being defeated by
+# naming variants. Measured 2026-09-04: the tracker calls Nova Scotia Health exactly
+# that, without "Authority", so it missed `health authority` and one application was
+# hiding nine other NSHA postings — including a Senior Systems Analyst role squarely
+# in the operator's target. "Town of Whitby" and "Acadia University" failed the same
+# way. Universities and colleges are here for the same reason as a municipality:
+# they post continuously and hire against published qualifications.
 GOVERNMENT_RE = re.compile(
-    r"\b(government|gouvernement|province of|city of|municipality|public service|"
-    r"health authority|school district|crown corporation)\b",
+    r"\b(government|gouvernement|province of|city of|town of|village of|township of|"
+    r"municipality|regional municipality|public service|health authority|"
+    r"nova scotia health|regional health|health services|school district|"
+    r"school board|university|college|crown corporation)\b",
     re.I,
 )
 AI_ROLE_RE = re.compile(
