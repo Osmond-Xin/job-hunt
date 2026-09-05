@@ -15,11 +15,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from job_hunt.config.models import Settings
-from job_hunt.nodes._prompts import render
+from job_hunt.services.prompts import render
 from job_hunt.services.email.gmail_client import GmailClient
 from job_hunt.services.email.message_parser import clean_email_text
 from job_hunt.services.llm.base import ChatMessage
+from job_hunt.services.llm.content import extract_json_object
 from job_hunt.services.llm.factory import build_cheap_provider
+from job_hunt.services.llm.traced import traced_chat
 
 SUMMARY_PATH = Path("data/email-summaries.jsonl")
 
@@ -74,20 +76,17 @@ def summarized_ids(path: Path = SUMMARY_PATH) -> set[str]:
 
 def parse_llm_json(content: str) -> dict:
     """Parse the model's JSON verdict, tolerating code fences and stray prose."""
-    text = content.strip()
-    fence = re.search(r"```(?:json)?\s*(.*?)```", text, flags=re.DOTALL)
-    if fence:
-        text = fence.group(1).strip()
-    candidates = [text]
-    brace = re.search(r"\{.*\}", text, flags=re.DOTALL)
-    if brace:
-        candidates.append(brace.group(0))
-    for candidate in candidates:
-        for attempt in (candidate, _escape_invalid_backslashes(candidate)):
-            try:
-                return json.loads(attempt)
-            except json.JSONDecodeError:
-                continue
+    # Try the shared extractor first, which handles code fences, prose, and thinking tags
+    result = extract_json_object(content)
+    if result is not None:
+        return result
+
+    # If that fails, try escaping invalid backslashes (e.g., \_ in text)
+    escaped = _escape_invalid_backslashes(content)
+    result = extract_json_object(escaped)
+    if result is not None:
+        return result
+
     raise ValueError(f"no JSON object in LLM output: {content[:200]!r}")
 
 
@@ -150,12 +149,17 @@ async def summarize_mailbox(
                     date=parsed.date.isoformat(),
                     body=clean_email_text(parsed.body or parsed.snippet)[:_BODY_CHAR_LIMIT],
                 )
-                chat = await provider.chat(
+                chat = await traced_chat(
+                    provider,
+                    settings=settings,
                     messages=[ChatMessage(role="user", content=prompt)],
                     model=model,
+                    node_name="summarize_message",
+                    graph_name="mailbox_summarize_graph",
+                    model_tier="cheap",
                     temperature=0.0,
                     max_tokens=_MAX_TOKENS,
-                    trace_name="email.summarize",
+                    metadata={"message_id": message_id},
                 )
                 verdict = normalize_verdict(parse_llm_json(chat.content))
                 record = {

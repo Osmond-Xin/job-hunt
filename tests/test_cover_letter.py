@@ -4,16 +4,14 @@ from __future__ import annotations
 
 import asyncio
 
-from jinja2 import Environment, FileSystemLoader
-
 from job_hunt.models.evaluation import EvaluationScores
 from job_hunt.models.job import CandidateProfile
 from job_hunt.nodes.cover_letter import _split_paragraphs, generate_cover_letter
+from job_hunt.nodes.pdf import artifact_template_env
 
 
 def test_cover_letter_template_renders_paragraphs_and_contact() -> None:
-    env = Environment(loader=FileSystemLoader("templates"), autoescape=True)
-    template = env.get_template("cover-letter.html.j2")
+    template = artifact_template_env().get_template("cover-letter.html.j2")
 
     html = template.render(
         profile=CandidateProfile(

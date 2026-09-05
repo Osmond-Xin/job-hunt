@@ -18,7 +18,9 @@ You are a rigorous technical recruiter matching a candidate's CV against a job d
 **Company**: {{ jd_meta.company }}
 **Title**: {{ jd_meta.title }}
 
+<<<JD_TEXT_BEGIN>>>
 {{ jd_text }}
+<<<JD_TEXT_END>>>
 
 ## Archetype detected
 {{ archetype.archetype }} (confidence {{ archetype.confidence }})

@@ -18,11 +18,136 @@ The application submit button is never clicked by automation.
 
 For a complete executable runbook that another agent can follow end to end, read `docs/full-loop-execution.md`.
 
+## Before You Finish: `job-hunt checkup`
+
+**Run this at the end of every session that produced or sent anything.**
+
+```bash
+.venv/bin/job-hunt checkup            # --strict to exit non-zero when work is outstanding
+```
+
+Building a résumé and submitting it are two steps; writing the tracker row is a
+third, and nothing forces it. `checkup` looks for the evidence that the third
+step was skipped:
+
+- **artifacts without a tracker row** — a directory under `output/` holding a
+  rendered PDF that no tracker row accounts for. This is the check that would
+  have caught the 2026-08-19/20 batch, where thirty-five applications were
+  built, sent, and never recorded.
+- **event log readable** — see the inbound-mail section below.
+- **mailbox agrees with the tracker** — acknowledgements with no row, rows whose
+  mail says they are closed, and rows an interview invitation has moved past.
+- **outreach follow-ups** — what is due to be chased.
+
+Every check is read-only and prints the command that fixes what it found.
+
+`apply --confirmed --pdf <file under output/>` writes a `.tracker-row` marker
+into that directory recording the row number. Once a directory has a marker the
+check is exact rather than a guess at the employer's name, so **always pass
+`--pdf` when recording** — a slug like `ccl-…` shares no word with "Connor,
+Clark & Lunn Financial Group" and will otherwise be reported as unrecorded.
+
+When a check reports something you have confirmed is not a real gap — a brand
+name, a hiring platform, a parent company — add the pair to
+`config/company-aliases.yml` rather than ignoring the output. A check nobody
+trusts is a check nobody runs.
+
+## Inbound Mail: Two Tracks, and How They Fail
+
+Step 7 above has two separate readers of the same mailbox. Know which one you
+are using — they do not share data.
+
+| | `email poll` → `data/email-events.jsonl` | `email summarize` → `data/email-summaries.jsonl` |
+|---|---|---|
+| classifier | regex rules | MiniMax |
+| accuracy | noisy; company often `?` | good |
+| feeds | `email reconcile`, `review-candidates`, `approve-event` | nothing automatic |
+
+`summarize` output is deliberately **not** wired to auto-update the tracker: an
+email body is untrusted input (`docs/design-notes.md`, P1). Use
+`email gaps` to read it — a report of applications the mailbox has
+acknowledged that have no tracker row, plus rows still marked `Applied` whose
+mail says they are closed. It mutates nothing; you record what it finds.
+
+```bash
+.venv/bin/job-hunt email summarize --since 21d --concurrency 3 --live  # keep concurrency <= 3
+.venv/bin/job-hunt email gaps --since 2026-08-01
+.venv/bin/job-hunt email verify     # is the event log readable at all?
+```
+
+**The failure that cost 19 days (2026-08-10 → 2026-08-29).** A hand-written row
+in `email-events.jsonl` used `source: "email"` and
+`event_type: "application_acknowledged"` — neither is in the schema
+(`job_hunt/models/events.py`). The reader validated every row eagerly, so that
+one line raised a raw pydantic traceback out of *every* inbound command: `poll`,
+`events`, `reconcile`, `review-candidates`, `approve-event`, `ignore-event`.
+The whole inbound half of the system was dead and nothing said so. Meanwhile
+`summarize` kept working, because it does not touch the event log — so the
+mailbox looked fine while ~30 applications and ~19 rejections went unrecorded.
+
+The reader now skips unreadable rows instead of dying, warns when it did, and
+`email verify` prints the offending line numbers. **Do not hand-edit
+`email-events.jsonl`.** If you must, run `email verify` afterwards.
+
+## Outbound Mail Is Invisible To This System
+
+The polled mailbox is a Gmail account with **zero sent messages** — the user
+replies to employers from a different mailbox. So no recruiter reply the user
+sends will ever appear in `email poll`, `email summarize` or `email gaps`, and
+an application can sit at `Applied` in the tracker while a conversation is
+already several messages deep. Nothing detects this; you have to be told.
+
+When the user says they replied to someone, record it:
+
+```bash
+.venv/bin/job-hunt contacts add --company '<employer>' --name '<person>' \
+    --email '<addr>' --relationship recruiter --source email
+.venv/bin/job-hunt outreach log <contact-id> --role '<role>' --application-id <row> \
+    --channel email --follow-up-at YYYY-MM-DD --notes 'what was sent'
+.venv/bin/job-hunt outreach due    # what needs chasing
+```
+
+`outreach draft` also creates an event, but it calls the LLM to write a message
+first — no use for a reply that has already gone out. Prefer `outreach log`.
+
+## Recording Work Done Outside the Pipeline
+
+If the user submitted an application by hand, do not append to
+`data/applications.md` yourself — that skips the event log, the activity log and
+the Slack notification, and it is how rows drift out of sync:
+
+```bash
+.venv/bin/job-hunt apply '<application-url>' --company '<company>' --role '<role>' \
+    --pdf '<resume.pdf>' --no-browser --confirmed
+```
+
+`url` is only required to open a browser. When the application has no URL —
+something found while browsing LinkedIn, or a referral into a role with no
+posting to link — omit it and pass `--no-browser`; leaving `--no-browser` off
+with no URL fails with a message naming the reason instead of silently
+skipping the browser:
+
+```bash
+.venv/bin/job-hunt apply --company '<company>' --role '<role>' \
+    --pdf '<resume.pdf>' --no-browser --confirmed
+```
+
+Pass `--pdf` even when the form took the file by hand: it is what links the
+`output/` directory to the row, and `job-hunt checkup` relies on that link.
+Then write the real detail into the row's notes — verdicts, dates, stated
+timelines, what must not be contradicted at interview. The command can only
+write a generic note; the row is only as useful as what you add to it.
+
+Finish with `job-hunt checkup` and `job-hunt tracker verify`.
+
 ## Important Commands
 
 ```bash
 .venv/bin/job-hunt config doctor
 .venv/bin/job-hunt evaluate '<job-url-or-text>'
+
+# Bulk: evaluate a list of URLs, one summary table
+.venv/bin/job-hunt evaluate-batch urls.txt --concurrency 3
 
 # Minimal entry: user only gives URL
 .venv/bin/job-hunt loop '<job-or-application-url>'
@@ -45,6 +170,10 @@ For a complete executable runbook that another agent can follow end to end, read
 # Step 4: after user confirms submit, record the application
 .venv/bin/job-hunt apply '<application-url>' --company '<company>' --role '<role>' --pdf '<resume.pdf>' --no-browser --confirmed
 
+# Step 5: before you finish — what got done but never recorded?
+.venv/bin/job-hunt checkup
+.venv/bin/job-hunt tracker verify
+
 .venv/bin/job-hunt activity slack-test
 .venv/bin/job-hunt activity list --since 1d
 .venv/bin/pytest
@@ -64,8 +193,14 @@ Use `.venv/bin/job-hunt ...` instead of assuming `job-hunt` is on PATH.
 7. User clicks Submit Application in browser
 8. User tells agent "submitted"
 9. Run apply-capture-page → captures thank-you/current page
-10. Run apply --no-browser --confirmed → records tracker, activity log, Slack
+10. Run apply --no-browser --confirmed --pdf <pdf> → records tracker, activity log, Slack
+11. Write the real detail into the row's notes (verdicts, dates, gaps named)
+12. Run job-hunt checkup → confirms nothing was left unrecorded
 ```
+
+Steps 10-12 are the ones that get skipped, and nothing else notices. When the
+materials were hand-built with no browser session at all, step 10 is still how
+they get recorded — there is no separate path for hand-built work.
 
 Never click the Submit button yourself. Never record before user confirms.
 
@@ -83,14 +218,19 @@ Never click the Submit button yourself. Never record before user confirms.
 
 ## Stable Apply Implementation
 
-- `job_hunt/cli.py::apply_assist` — the `job-hunt apply` command. Key flags:
+- `job_hunt/cli/apply.py::apply_assist` — the `job-hunt apply` command. `url` is
+  an optional positional argument: required to open a browser, not required to
+  record. Omitting it without `--no-browser` fails fast with an explanatory
+  message rather than opening a browser with nothing to navigate to. Key flags:
   - `--fill-only`: opens visible browser, fills form, keeps open with heartbeat-driven loop. Idle timeout is 60 minutes (no command/refill); not a hard 30-min deadline anymore.
   - `--confirmed`: skips browser and confirmation, records directly as Applied
-  - `--no-browser`: skips Playwright, prompts for confirmation via stdin
+  - `--no-browser`: skips Playwright, prompts for confirmation via stdin; also what allows `url` to be omitted (e.g. a LinkedIn-browsed or referral application with no URL)
   - `--headless`: runs Chromium headless (smoke tests only)
-- `apply-replace-pdf` / `apply-capture-page` / `apply-refill-current-page` / `apply-close-session` write per-command `.cmd-<uuid>.json` sentinels (race-free). They also drop compatibility sentinels for already-running fill loops. Each subcommand warns when the heartbeat is >30s stale ("session likely dead, restart with apply --fill-only").
-- `job_hunt/cli.py::_open_apply_page` — opens Playwright with a persistent browser profile (`storage/browser-profile/`), navigates to the URL, runs auto-fill, then attaches the PDF.
-- `job_hunt/cli.py::_attach_resume` — attaches PDF using file chooser (clicking the exact-name "Upload File"/"Replace" button) before falling back to `set_input_files`. Auto-fill runs before PDF attachment so React components are fully initialized.
+- `apply-replace-pdf` / `apply-capture-page` / `apply-refill-current-page` / `apply-close-session` write per-command `.cmd-<uuid>.json` sentinels (race-free). Each subcommand warns when the heartbeat is >30s stale ("session likely dead, restart with apply --fill-only").
+- `apply-status [--controls]` / `apply-do --click/--fill/--select/--check` are request/response commands: sentinel in, `.res-<uuid>.json` out (30 s poll). They are the token-cheap replacement for reading screenshots or driving a browser MCP; `apply-do` rejects submit-like click labels at both ends.
+- Verification order for agents: `apply-review.json` → `apply-status` → screenshot image only when the JSON shows a problem. Never drive application pages through a browser MCP.
+- `job_hunt/cli/apply.py::_open_apply_page` — opens Playwright with a persistent browser profile (`storage/browser-profile/`), navigates to the URL, runs auto-fill, then attaches the PDF.
+- `job_hunt/cli/apply.py::_attach_resume` — attaches PDF using file chooser (clicking the exact-name "Upload File"/"Replace" button) before falling back to `set_input_files`. Auto-fill runs before PDF attachment so React components are fully initialized.
 - `_record_manual_submission` is the only helper that mutates tracker state for manual submissions.
 - Application events use source `system_apply` and activity type `apply.submitted`.
 - Slack notifications are emitted through `ActivityLogger`; do not call Slack directly from apply code.
@@ -115,15 +255,17 @@ Each apply session writes to a per-application directory:
 
 ```
 artifacts/apply/{YYYY-MM-DD}-{company-slug}-{role-slug}/
-  apply-review-{hash}.png    ← screenshot taken after fill (and after each PDF replacement)
-  apply-page-{hash}.png      ← screenshot taken after manual submit / capture request
+  apply-review-{hash}.jpg    ← screenshot taken after fill (and after each PDF replacement)
+  apply-page-{hash}.jpg      ← screenshot taken after manual submit / capture request
   apply-review.md            ← review log and drafted answers
   apply-review.json          ← machine-readable review state, incl. validation_issues[]
+  apply-controls.json        ← form-control summary, written when fill left problems
   apply-run.jsonl            ← structured event log (one JSON per line)
   {resume-filename}.pdf      ← copy of the PDF submitted
   .cdp                       ← compatibility sentinel present while fill-only session is active
   .session.json              ← heartbeat (pid + last_heartbeat)
   .cmd-<uuid>.json           ← per-command sentinel (transient)
+  .res-<uuid>.json           ← per-command response (transient)
   login-modal-unknown.png    ← only present when login modal misbehaves
   login-modal-unknown.html   ← DOM dump matching the screenshot above
 ```

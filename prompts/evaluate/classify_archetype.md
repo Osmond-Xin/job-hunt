@@ -6,7 +6,9 @@ You are a technical recruiter classifying a job posting into a role archetype.
 **Company**: {{ jd_meta.company }}
 **Title**: {{ jd_meta.title }}
 
+<<<JD_TEXT_BEGIN>>>
 {{ jd_text }}
+<<<JD_TEXT_END>>>
 
 ## Task
 Classify this role into one of the following archetypes:

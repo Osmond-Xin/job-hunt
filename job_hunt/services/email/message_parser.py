@@ -9,6 +9,135 @@ from html import unescape
 
 from job_hunt.models.events import ApplicationEvent
 
+# Prose fragments that show up when a regex grabs the wrong span of an email
+# body instead of a company or role name. Substring match, case-insensitive.
+# Shared with reconcile._safe_import_candidate so there is one definition of
+# "this is garbage", not two that can drift apart.
+BAD_FRAGMENTS: tuple[str, ...] = (
+    "thank you",
+    "application",
+    "candidate",
+    "disclaimer",
+    "diversity",
+    "this time",
+    "we are",
+    "we have",
+    "your interest",
+    "your application",
+    "received your",
+    "joining our team",
+    "submission deadline",
+    "will review",
+    "job alert",
+    "unsubscribe",
+    "and for",
+)
+
+# ATS platforms, assessment vendors, and job-alert senders that show up as
+# the "company" in a parsed email but are never themselves the employer.
+GENERIC_COMPANIES: frozenset[str] = frozenset(
+    {
+        "app",
+        "ats",
+        "careers",
+        "candidates",
+        "dayforce",
+        "gem",
+        "hire",
+        "hirehive",
+        "myworkday",
+        "njoyn",
+        "pinpoint",
+        "pinpointhq",
+        "postjobfree",
+        "recruiterflowmail",
+        "shl",
+        "successfactors",
+        "vervoe",
+        "adp",
+        "codesignal",
+        "jobalert",
+        "flexhire",
+        "recruitee-mailbox",
+    }
+)
+
+# First word signals prose rather than a name: a lowercase connective/pronoun
+# that a real company or role name would not open with ("your application,
+# Yi Disclaimer...", "this time, we are not moving forward...").
+_PROSE_LEAD_WORDS = {
+    "and",
+    "for",
+    "the",
+    "with",
+    "to",
+    "we",
+    "our",
+    "your",
+    "this",
+    "that",
+    "who",
+    "which",
+    "an",
+    "on",
+    "at",
+    "in",
+    "of",
+    "so",
+    "but",
+    "or",
+}
+
+# A comma followed by a lowercase article/pronoun/conjunction is a sentence
+# continuing, not a name continuing ("RBC, a global leader in...",
+# "Mastercard, our people open new doors...").
+_PROSE_COMMA_RE = re.compile(
+    r",\s+(a|an|the|and|but|so|we|our|your|which|who|that|this|it|there)\b",
+    re.IGNORECASE,
+)
+
+# A sentence boundary sitting inside the value: a period followed by a
+# capitalized word that commonly opens a sentence ("work with CIBC. This
+# video was created..."). Deliberately narrow — real abbreviations like
+# "St. John's" or "Inc." are not in this word list, so they survive.
+_PROSE_SENTENCE_BREAK_RE = re.compile(
+    r"\.\s+(This|We|Our|Your|Thank|Please|After|While|You|It|The|If|Should|I)\b"
+)
+
+
+def _looks_like_prose(value: str) -> bool:
+    """True when `value` reads as a fragment of a sentence rather than a
+    name: a lowercase connective leading the string, a comma followed by a
+    lowercase connective, or a sentence boundary embedded in the middle."""
+    stripped = value.strip()
+    if not stripped:
+        return False
+    first_word = re.split(r"[\s,]+", stripped, maxsplit=1)[0]
+    if first_word and first_word[0].islower() and first_word.lower() in _PROSE_LEAD_WORDS:
+        return True
+    if _PROSE_COMMA_RE.search(stripped):
+        return True
+    if _PROSE_SENTENCE_BREAK_RE.search(stripped):
+        return True
+    return False
+
+
+def is_valid_company_role_field(value: str, *, is_company: bool = False) -> bool:
+    """Gate applied to an extracted company or role candidate. Rejects a
+    known-bad prose fragment, a known ATS/assessment vendor masquerading as
+    the employer (company only), or a value that otherwise reads as prose.
+    Used both by `extract_company_role` at parse time and by
+    `reconcile._safe_import_candidate`, so both sites agree on what "garbage"
+    means."""
+    lowered = value.lower()
+    if any(fragment in lowered for fragment in BAD_FRAGMENTS):
+        return False
+    if is_company and value.strip().lower() in GENERIC_COMPANIES:
+        return False
+    if _looks_like_prose(value):
+        return False
+    return True
+
 
 @dataclass(frozen=True)
 class ParsedEmail:
@@ -178,6 +307,10 @@ def extract_company_role(parsed: ParsedEmail) -> tuple[str | None, str | None]:
                 role = clean_extracted_phrase(match.group(1))
                 break
     if role and company and role.lower() == company.lower():
+        role = None
+    if company and not is_valid_company_role_field(company, is_company=True):
+        company = None
+    if role and not is_valid_company_role_field(role, is_company=False):
         role = None
     return company, role
 

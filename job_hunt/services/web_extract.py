@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import re
 from html import unescape
 from pathlib import Path
@@ -25,6 +26,8 @@ async def extract_url_text(url: str, *, min_chars: int = 200) -> WebExtractResul
     # Useful for off-line evaluation, screenshots saved as text, or pasted JDs.
     if url.startswith("local:"):
         return _extract_local_file(url)
+
+    _guard_proxy_only_host(url)
 
     ats_result = await _try_ats_api(url)
     if ats_result and len(ats_result.text) >= min_chars:
@@ -150,18 +153,61 @@ async def _try_ats_api(url: str) -> WebExtractResult | None:
                         ats="ashby",
                     )
 
+    bamboo = _bamboohr_detail_api_url(url)
+    if bamboo:
+        async with _client() as client:
+            response = await client.get(bamboo)
+            if response.status_code < 400:
+                job = ((response.json() or {}).get("result") or {}).get("jobOpening") or {}
+                location = job.get("location")
+                if not isinstance(location, dict):
+                    location = {}
+                where = ", ".join(
+                    part for part in (location.get("city"), location.get("state")) if part
+                )
+                if job.get("jobOpeningName"):
+                    return WebExtractResult(
+                        url=url,
+                        text=clean_web_text(
+                            "\n\n".join(
+                                [job.get("jobOpeningName") or "", where, job.get("description") or ""]
+                            )
+                        ),
+                        adapter="ats_api",
+                        title=job.get("jobOpeningName") or "",
+                        company=_bamboohr_company(url),
+                        location=where,
+                        ats="bamboohr",
+                    )
+
     return None
 
 
 async def _http_extract(url: str) -> WebExtractResult:
-    async with _client() as client:
-        response = await client.get(url)
-        response.raise_for_status()
-    html = response.text
+    proxy = scrape_proxy() if _is_proxy_only_host(url) else ""
+    try:
+        async with _client(proxy=proxy) as client:
+            response = await client.get(url)
+            response.raise_for_status()
+        html = response.text
+        final_url = str(response.url)
+    except httpx.HTTPStatusError as exc:
+        # Some hosts fingerprint the TLS handshake rather than the User-Agent,
+        # and httpx's ClientHello is not a browser's. Measured 2026-08-16 on
+        # digitalnovascotia.com: httpx gets 403 with no headers, with a Chrome
+        # UA, and with a full Chrome header set alike, while plain `curl` gets
+        # 200 on the same URL over the same HTTP version. That cost a whole
+        # batch of Halifax postings, so fall back to curl before giving up.
+        if exc.response.status_code not in _TLS_BLOCK_CODES:
+            raise
+        html = _curl_get(url, proxy=proxy)
+        if not html:
+            raise
+        final_url = url
     title = extract_html_title(html)
     body = extract_html_body(html)
     return WebExtractResult(
-        url=str(response.url),
+        url=final_url,
         text=clean_web_text("\n\n".join(part for part in [title, body] if part)),
         adapter="http_extract",
         title=title,
@@ -174,9 +220,12 @@ async def _try_playwright_extract(url: str) -> WebExtractResult | None:
     except Exception:
         return None
 
+    proxy = scrape_proxy() if _is_proxy_only_host(url) else ""
     try:
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
+            browser = await p.chromium.launch(
+                headless=True, **({"proxy": {"server": proxy}} if proxy else {})
+            )
             page = await browser.new_page()
             await page.goto(url, wait_until="domcontentloaded", timeout=30000)
             await page.wait_for_timeout(5000)
@@ -197,17 +246,116 @@ async def _try_playwright_extract(url: str) -> WebExtractResult | None:
     )
 
 
-def _client() -> httpx.AsyncClient:
-    return httpx.AsyncClient(
-        follow_redirects=True,
-        timeout=30,
-        headers={
+# Status codes worth a second attempt through curl. A 404 is an answer; a 403
+# or a 429 from a bot-protection edge is not.
+_TLS_BLOCK_CODES = frozenset({403, 429})
+
+# Hosts this module must never fetch from the operator's own address.
+#
+# LinkedIn bans the *account* whose network it associates with scraping, not
+# just the request, and the operator's account is the one his applications and
+# outreach run through — losing it costs far more than any single JD is worth.
+# `link_check` has refused to fetch linkedin.com since it was written; this
+# module did not, so `evaluate <a linkedin URL>` still reached out directly.
+# Closed 2026-08-16 on the operator's instruction.
+#
+# Note this is about *fetching a posting page*. Discovery's `site:linkedin.com`
+# queries are answered out of the search provider's index and never touch
+# LinkedIn, so they are unaffected.
+_PROXY_ONLY_HOSTS = ("linkedin.com",)
+_PROXY_ENV_VAR = "JOB_HUNT_SCRAPE_PROXY"
+
+
+def scrape_proxy() -> str:
+    """The configured egress proxy for hosts that must not see our own IP.
+
+    Environment first so a one-off run can override, then `network.scrape_proxy`
+    in profile.yml. Must be a proxy endpoint httpx/curl/Playwright can speak:
+    `socks5://host:port` or `http://host:port`. A Shadowsocks subscription URL
+    is not one — a local client has to terminate it and expose a port.
+    """
+    import os
+
+    from_env = (os.environ.get(_PROXY_ENV_VAR) or "").strip()
+    return from_env or _proxy_from_profile()
+
+
+def _proxy_from_profile() -> str:
+    """`network.scrape_proxy` from profile.yml, or "" if absent/unreadable.
+
+    Split out so a test can isolate the guard from whatever the operator
+    happens to have configured locally.
+    """
+    try:
+        import yaml
+
+        raw = yaml.safe_load(Path("profile/profile.yml").read_text(encoding="utf-8")) or {}
+        network = raw.get("network") if isinstance(raw, dict) else None
+        if isinstance(network, dict):
+            return str(network.get("scrape_proxy") or "").strip()
+    except Exception:
+        pass
+    return ""
+
+
+def _is_proxy_only_host(url: str) -> bool:
+    host = (urlparse(url or "").netloc or "").lower().split(":")[0]
+    bare = host[4:] if host.startswith("www.") else host
+    return any(bare == h or bare.endswith("." + h) for h in _PROXY_ONLY_HOSTS)
+
+
+def _guard_proxy_only_host(url: str) -> None:
+    """Refuse to fetch a proxy-only host directly. Raises, so callers stop early."""
+    if _is_proxy_only_host(url) and not scrape_proxy():
+        raise ProxyRequiredError(
+            f"Refusing to fetch {urlparse(url).netloc} directly: scraping it from this "
+            f"address risks the operator's own account. Set {_PROXY_ENV_VAR} to an egress "
+            "proxy to allow it, or find the employer's own posting URL instead — most "
+            "employers' ATS (Greenhouse / Lever / Workday / BambooHR) serve the same JD."
+        )
+
+
+class ProxyRequiredError(RuntimeError):
+    """Raised when a host may only be fetched through a configured proxy."""
+
+
+def _curl_get(url: str, *, timeout: int = 30, proxy: str = "") -> str:
+    """Fetch `url` with the system curl. Returns "" if curl is missing or fails."""
+    import shutil
+    import subprocess
+
+    curl = shutil.which("curl")
+    if not curl:
+        return ""
+    args = [curl, "-sSL", "--compressed", "--max-time", str(timeout)]
+    if proxy:
+        args += ["--proxy", proxy]
+    try:
+        done = subprocess.run(
+            [*args, url],
+            capture_output=True,
+            text=True,
+            timeout=timeout + 5,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return ""
+    return done.stdout if done.returncode == 0 else ""
+
+
+def _client(*, proxy: str = "") -> httpx.AsyncClient:
+    kwargs: dict[str, object] = {
+        "follow_redirects": True,
+        "timeout": 30,
+        "headers": {
             "User-Agent": (
                 "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125 Safari/537.36"
             )
         },
-    )
+    }
+    if proxy:
+        kwargs["proxy"] = proxy
+    return httpx.AsyncClient(**kwargs)  # type: ignore[arg-type]
 
 
 def _is_workday_url(url: str) -> bool:
@@ -277,6 +425,43 @@ def _ashby_board_api_url(url: str) -> str:
     return ""
 
 
+def _bamboohr_slug(host: str) -> str:
+    """The employer subdomain of a BambooHR board, or "" for any other host.
+
+    `vendasta.bamboohr.com` -> `vendasta`. The bare apex and `www` are the
+    product's own marketing site, not an employer board. Lives here rather than
+    in the scanner because extraction is the lower-level module of the two.
+    """
+    host = (host or "").lower()
+    if not host.endswith(".bamboohr.com"):
+        return ""
+    slug = host[: -len(".bamboohr.com")]
+    return "" if slug in {"", "www"} else slug
+
+
+def _bamboohr_detail_api_url(url: str) -> str:
+    """`…/careers/829` -> `…/careers/829/detail`.
+
+    The human page is a JavaScript shell — its <title> is the literal string
+    "BambooHR" and its body carries no posting text — so without this the JD
+    reaches the scorer empty and the job comes back 0.0/SKIP, indistinguishable
+    from a genuinely bad posting. The detail feed is the same JSON the page
+    fetches for itself.
+    """
+    parsed = urlparse(url)
+    if not _bamboohr_slug(parsed.netloc):
+        return ""
+    parts = [part for part in parsed.path.split("/") if part]
+    if len(parts) >= 2 and parts[0] == "careers" and parts[1].isdigit():
+        return f"https://{parsed.netloc}/careers/{parts[1]}/detail"
+    return ""
+
+
+def _bamboohr_company(url: str) -> str:
+    slug = _bamboohr_slug(urlparse(url).netloc)
+    return re.sub(r"[-_]+", " ", slug).title() if slug else ""
+
+
 def _find_ashby_job(raw: dict, url: str) -> dict | None:
     parts = [part for part in urlparse(url).path.rstrip("/").split("/") if part]
     target_id = parts[-2] if len(parts) >= 2 and parts[-1] == "application" else (parts[-1] if parts else "")
@@ -311,3 +496,18 @@ def clean_web_text(value: str) -> str:
     text = re.sub(r"\n[ \t]+", "\n", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
+
+
+def _extract_loop_url_metadata(url: str) -> dict[str, str]:
+    try:
+        result = asyncio.run(extract_url_text(url, min_chars=50))
+    except Exception:
+        return {}
+    return {
+        "title": result.title.strip(),
+        "company": result.company.strip(),
+        "location": result.location.strip(),
+        "ats": result.ats.strip(),
+        "adapter": result.adapter,
+        "text": result.text.strip(),
+    }

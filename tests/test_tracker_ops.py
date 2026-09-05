@@ -276,6 +276,27 @@ def test_verify_flags_row_with_extra_column(tmp_path: Path) -> None:
     assert "10 columns" in errs and "expected 9" in errs
 
 
+def test_verify_accepts_an_escaped_pipe_inside_a_cell(tmp_path: Path) -> None:
+    """`_cell` writes a scraped `|` as `\\|`; that is one cell, not two.
+
+    Real rows: WRHA and Nova Scotia postings whose page titles end in
+    "Job Details | <employer>". The writer escaped them correctly and the
+    parser read them correctly, but verify counted 10 columns and reported
+    four healthy rows as corrupt.
+    """
+    apps = tmp_path / "applications.md"
+    _write_apps(
+        apps,
+        [
+            "| 1 | 2026-04-01 |  | Digital Systems Analyst Job Details \\| WRHA "
+            "| 2.5/5 | Evaluated | ❌ | reports/0001.md | skip |",
+        ],
+    )
+    result = tracker_ops.verify_pipeline(applications_md=apps)
+    assert result.errors == []
+    assert result.entries == 1
+
+
 def test_verify_clean_table_with_empty_notes_does_not_false_positive(
     tmp_path: Path,
 ) -> None:
@@ -373,3 +394,40 @@ def test_format_tracker_entry_escapes_pipes():
     parsed = parse_tracker_line(row)
     assert parsed.company == "Acme | Corp"
     assert parsed.role == "AI Engineer | Remote"
+
+
+def test_find_match_rejects_generic_token_company_collision(tmp_path: Path) -> None:
+    """Regression (2026-07-09): 'CoLab Software' must not match 'Jonas Software'.
+
+    The shared generic token "Software" pushed the raw company ratio to 0.79
+    and the combined score past the 0.70 caller threshold, flipping the wrong
+    tracker row to Applied on a real submission.
+    """
+    from job_hunt.repositories.tracker_repo import TrackerRepository
+    from job_hunt.services.employer_match import EmployerMatcher
+
+    apps = tmp_path / "applications.md"
+    _write_apps(apps, [
+        "| 126 | 2026-04-26 | Jonas Software | Junior AI Software Engineer "
+        "| 3.6/5 | Evaluated | ✅ | — | note |",
+    ])
+    tracker = TrackerRepository(apps)
+    entry, score = EmployerMatcher(tracker.parse()).raw_match(
+        company="CoLab Software", role="Forward Deployed Engineer"
+    )
+    assert entry is None or score < 0.70
+
+
+def test_find_match_still_matches_suffix_variants(tmp_path: Path) -> None:
+    from job_hunt.repositories.tracker_repo import TrackerRepository
+    from job_hunt.services.employer_match import EmployerMatcher
+
+    apps = tmp_path / "applications.md"
+    _write_apps(apps, [
+        "| 1 | 2026-07-01 | Mariner Partners Inc. | AI Engineer - Healthcare "
+        "| 3.3/5 | Evaluated | ✅ | — | note |",
+    ])
+    tracker = TrackerRepository(apps)
+    entry, score = EmployerMatcher(tracker.parse()).raw_match(company="Mariner", role="AI Engineer - Healthcare")
+    assert entry is not None
+    assert score >= 0.70

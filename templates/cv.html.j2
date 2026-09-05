@@ -37,18 +37,21 @@
   html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   body {
     font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    font-size: 11px;
+    font-size: 12px;
     line-height: 1.5;
     color: #1a1a2e;
     background: #ffffff;
   }
-  @page { size: {{ paper_size | default('letter') }}; margin: 0.6in; }
+  {# Tightened from 0.6in to pay for the larger type: at 0.6in the CV spilled a
+     handful of orphaned lines onto an extra page. 0.45in is about the floor —
+     going tighter starts to read as cramped. #}
+  @page { size: {{ paper_size | default('letter') }}; margin: 0.45in; }
 
   /* === HEADER === */
   .header { margin-bottom: 16px; }
   .header h1 {
     font-family: 'Space Grotesk', sans-serif;
-    font-size: 24px;
+    font-size: 26px;
     font-weight: 700;
     letter-spacing: -0.02em;
     margin-bottom: 4px;
@@ -64,17 +67,22 @@
     display: flex;
     flex-wrap: wrap;
     gap: 6px 16px;
-    font-size: 10px;
+    font-size: 11px;
     color: #555;
   }
   .contact-row a { color: #555; text-decoration: none; white-space: nowrap; }
   .contact-row .separator { color: #ccc; }
+  .work-auth {
+    margin-top: 4px;
+    font-size: 11px;
+    color: #555;
+  }
 
   /* === SECTIONS === */
   .section { margin-bottom: 14px; }
   .section-title {
     font-family: 'Space Grotesk', sans-serif;
-    font-size: 13px;
+    font-size: 14px;
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.05em;
@@ -90,7 +98,7 @@
     border-left: 3px solid hsl(187, 74%, 32%);
     padding: 8px 10px;
     margin-bottom: 14px;
-    font-size: 11px;
+    font-size: 12px;
   }
   .target strong {
     font-family: 'Space Grotesk', sans-serif;
@@ -99,13 +107,16 @@
   }
 
   /* === SUMMARY === */
-  .summary-text { font-size: 11px; line-height: 1.6; color: #333; }
-  a { white-space: nowrap; }
+  .summary-text { font-size: 12px; line-height: 1.6; color: #333; }
+  /* Content links (autolinked repo URLs, project-name mentions) in the accent
+     colour so they read as clickable without the default browser blue fighting
+     the palette. The more specific .contact-row a rule below keeps its own grey. */
+  a { white-space: nowrap; color: hsl(187, 74%, 32%); text-decoration: none; }
 
   /* === CORE COMPETENCIES === */
   .competencies-grid { display: flex; flex-wrap: wrap; gap: 6px; }
   .competency-tag {
-    font-size: 10px;
+    font-size: 11px;
     font-weight: 500;
     color: hsl(187, 74%, 28%);
     background: hsl(187, 40%, 95%);
@@ -116,13 +127,13 @@
 
   /* === HIGHLIGHTS / BULLETS === */
   ul { padding-left: 18px; margin-top: 4px; }
-  li { font-size: 10.5px; line-height: 1.5; color: #333; margin-bottom: 3px; }
+  li { font-size: 11.5px; line-height: 1.5; color: #333; margin-bottom: 3px; }
 
   /* === RESUME BODY === */
-  .cv { font-size: 11px; line-height: 1.55; color: #2a2a3a; }
+  .cv { font-size: 12px; line-height: 1.55; color: #2a2a3a; }
   .cv h2 {
     font-family: 'Space Grotesk', sans-serif;
-    font-size: 12px;
+    font-size: 13px;
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.05em;
@@ -133,23 +144,37 @@
   }
   .cv h3 {
     font-family: 'Space Grotesk', sans-serif;
-    font-size: 11.5px;
+    font-size: 12.5px;
     font-weight: 600;
     color: #1a1a2e;
     margin: 8px 0 1px;
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 12px;
   }
-  .cv h4 { font-size: 11px; font-weight: 600; color: #1a1a2e; margin: 6px 0 1px; }
+  .cv .role-date {
+    font-family: 'DM Sans', sans-serif;
+    font-size: 10.5px;
+    font-weight: 400;
+    color: #555;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  .cv h4 { font-size: 12px; font-weight: 600; color: #1a1a2e; margin: 6px 0 1px; }
   .cv p { margin: 0 0 5px; }
   .cv ul { padding-left: 18px; margin: 3px 0 6px; }
-  .cv li { font-size: 10.5px; line-height: 1.5; color: #333; margin-bottom: 2px; }
+  .cv li { font-size: 11.5px; line-height: 1.5; color: #333; margin-bottom: 2px; }
   .cv strong { color: #1a1a2e; }
+  /* Emphasis carries the numbers and outcomes, not the employer name. */
+  .cv li strong { color: hsl(187, 74%, 32%); font-weight: 700; }
   .cv em { color: #555; }
   .cv hr { border: 0; border-top: 1px solid #e5e5e5; margin: 10px 0; }
   /* Raw-text fallback for legacy renders that still pass cv_raw without cv_html. */
-  .cv.cv-raw { white-space: pre-wrap; font-size: 10.5px; }
+  .cv.cv-raw { white-space: pre-wrap; font-size: 11.5px; }
 
   /* === COVER LETTER === */
-  .cover-letter p { margin-bottom: 8px; font-size: 10.5px; line-height: 1.6; color: #333; }
+  .cover-letter p { margin-bottom: 8px; font-size: 11.5px; line-height: 1.6; color: #333; }
 
   .avoid-break { break-inside: avoid; }
 </style>
@@ -168,11 +193,12 @@
       {% if profile.github %}<span><a href="{{ profile.github }}">{{ profile.github | replace("https://", "") | replace("http://", "") | trim("/") }}</a></span><span class="separator">|</span>{% endif %}
       {% if profile.website %}<span><a href="{{ profile.website }}">{{ profile.website | replace("https://", "") | replace("http://", "") | trim("/") }}</a></span>{% endif %}
     </div>
+    {% if profile.work_auth_line %}<div class="work-auth">{{ profile.work_auth_line }}</div>{% endif %}
   </div>
 
   <div class="target">
     <strong>{{ company }}</strong>{% if role %} — {{ role }}{% endif %}<br>
-    {{ summary_angle }}
+    {{ summary_angle | project_links }}
   </div>
 
   {% if top_bullets %}
@@ -180,7 +206,7 @@
     <div class="section-title">Relevant Highlights</div>
     <ul>
       {% for bullet in top_bullets %}
-      <li>{{ bullet }}</li>
+      <li>{{ bullet | project_links }}</li>
       {% endfor %}
     </ul>
   </div>

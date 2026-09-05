@@ -215,6 +215,40 @@ def mark_processed(
     return True
 
 
+def mark_evaluated(
+    url: str, *, tracker_id: int, score: str, path: Path | None = None
+) -> bool:
+    """Tick a pending row off where it sits, whatever section it is under.
+
+    `mark_processed` moves the row into `## Processed`, which assumes the two
+    sections still describe the file. They do not: discovery appends to the end
+    of the file, so 3,355 of 3,385 pending rows currently sit *below* the
+    Processed heading and a section-scoped search finds almost none of them.
+    Triage has always read the markers and ignored the headings, so this marks
+    in place and matches what the reader actually does.
+
+    Returns False when no pending row carries this URL.
+    """
+    p = ensure_exists(path)
+    lines = p.read_text(encoding="utf-8").splitlines()
+    for idx, line in enumerate(lines):
+        entry = parse_entry(line)
+        if entry is None or entry.url != url or entry.status is not EntryStatus.PENDING:
+            continue
+        # Rebuild in the processed layout parse_entry expects — id, url,
+        # company, role, score — and keep the row's own tail (location, posted
+        # date, source) after it, since that is what makes a processed row
+        # worth reading later.
+        parts = [p.strip() for p in line.strip()[6:].split("|")]
+        head = [f"#{tracker_id}", entry.url, entry.company, entry.role, score]
+        lines[idx] = "- [x] " + " | ".join(
+            part for part in [*head, *parts[3:]] if part
+        )
+        p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return True
+    return False
+
+
 def mark_error(url: str, *, note: str, path: Path | None = None) -> bool:
     """Mark a Pending entry as error in place. Returns False when URL not Pending."""
     p = ensure_exists(path)

@@ -37,14 +37,21 @@ credentials.json
 profile/*
 !profile/.gitkeep
 interview-prep/
-data/*.json
-data/*.jsonl
-data/*.md
-data/*.tsv
-data/*.sqlite
-data/*.db
-data/*-state.json
-data/tracker-additions/
+# data/ is private state end to end — the tracker, the pipeline inbox, the
+# event logs. Exactly one file in it belongs to the repo, so deny the whole
+# directory and allow that one back below, the same shape as profile/ above.
+#
+# This replaces an extension-by-extension list (data/*.md, data/*.tsv, ...).
+# That list is why applications.md.bak2.123434 — 172KB of the whole tracker —
+# sat un-ignored in a PUBLIC repo: a backup's name ends in a timestamp, not in
+# the extension the list was written against, and every fix that added one
+# more suffix pattern was overtaken by the next suffix shape. Deny-by-default
+# is the only version of this rule that a new file cannot walk around.
+data/*
+
+# Backups written beside the file they copy, anywhere else in the tree.
+*.bak*
+
 data/locks/
 memory/
 cache/

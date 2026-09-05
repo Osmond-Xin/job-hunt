@@ -22,7 +22,9 @@ choosing this company. The tone is confident but not arrogant; selective but not
 {{ evaluation_blocks.personalization }}
 
 ## JD Text
+<<<JD_TEXT_BEGIN>>>
 {{ jd_text }}
+<<<JD_TEXT_END>>>
 
 ## Task
 

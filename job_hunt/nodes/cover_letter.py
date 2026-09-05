@@ -9,11 +9,17 @@ from pathlib import Path
 from langchain_core.runnables import RunnableConfig
 
 from job_hunt.models.state import JobHuntState
-from job_hunt.nodes._prompts import render
+from job_hunt.services.prompts import render
 from job_hunt.nodes._quality import generate_with_audit
-from job_hunt.nodes.pdf import detect_paper_size
+from job_hunt.nodes.artifact_paths import artifact_filename, run_output_dir
+from job_hunt.nodes.pdf import (
+    MAX_COVER_LETTER_PAGES,
+    _html_to_pdf,
+    artifact_template_env,
+    detect_paper_size,
+)
+from job_hunt.services.pdf import pdf_page_count
 
-_OUTPUT_DIR = Path("output")
 _TEMPLATES_DIR = Path("templates")
 _FONTS_DIR = (_TEMPLATES_DIR / "fonts").resolve()
 _TEMPLATE_NAME = "cover-letter.html.j2"
@@ -59,7 +65,7 @@ async def generate_cover_letter(state: JobHuntState, config: RunnableConfig) -> 
         mode=state.get("mode", "full"),
     )
 
-    body_md, errors = await generate_with_audit(
+    audited = await generate_with_audit(
         state,
         node_name="generate_cover_letter",
         prompt=prompt,
@@ -69,25 +75,39 @@ async def generate_cover_letter(state: JobHuntState, config: RunnableConfig) -> 
         max_tokens=900,
         tier="premium",
     )
+    errors = audited.errors
+    if audited.status == "failed":
+        # No PDF at all beats a PDF the auditor rejected. Unlike the CV there
+        # is no known-good fallback to fall back to, and the cover letter is
+        # optional — so withhold it and say so.
+        return {
+            "errors": errors,
+            "cover_letter_path": None,
+            "artifact_warnings": [
+                f"cover letter withheld (audit failed): {'; '.join(audited.issues)}"
+            ],
+        }
+    body_md = audited.content
     if not body_md:
         return {"errors": errors}
+    unverified = (
+        ["cover letter is UNVERIFIED (auditor unavailable)"]
+        if audited.status == "unavailable"
+        else []
+    )
 
     paragraphs = _split_paragraphs(body_md)
 
     try:
-        from jinja2 import Environment, FileSystemLoader
-
         if not (_TEMPLATES_DIR / _TEMPLATE_NAME).exists():
             return {
                 "errors": errors + [f"{_TEMPLATE_NAME} template not found; skipping cover letter."],
             }
 
-        run_id = state.get("run_id", "unknown")
-        out_dir = _OUTPUT_DIR / run_id
+        out_dir = run_output_dir(state)
         out_dir.mkdir(parents=True, exist_ok=True)
 
-        env = Environment(loader=FileSystemLoader(str(_TEMPLATES_DIR)), autoescape=True)
-        template = env.get_template(_TEMPLATE_NAME)
+        template = artifact_template_env().get_template(_TEMPLATE_NAME)
         paper_size = detect_paper_size(jd_meta)
         html = template.render(
             profile=profile,
@@ -101,16 +121,53 @@ async def generate_cover_letter(state: JobHuntState, config: RunnableConfig) -> 
             paper_size=paper_size,
         )
 
-        html_path = out_dir / "cover-letter.html"
+        stem = artifact_filename(state, kind="Cover_Letter", suffix="")
+        html_path = out_dir / f"{stem}.html"
         html_path.write_text(html, encoding="utf-8")
 
-        pdf_path = out_dir / "cover-letter.pdf"
+        pdf_path = out_dir / f"{stem}.pdf"
         await _html_to_pdf(str(html_path), str(pdf_path), paper_size=paper_size)
+
+        # CLAUDE.md §2: "Cover letter: 1 page. Enforced, not aspirational." The
+        # résumé has a trim order (`_cv_fit.next_trim`) that decides which block
+        # to drop; a cover letter's paragraphs have no such order, so dropping
+        # one silently would change the argument. Measure and report instead —
+        # same warnings channel the audit-failed and UNVERIFIED cases above use.
+        overflow_warnings: list[str] = []
+        pages = pdf_page_count(pdf_path.read_bytes())
+        if pages is None:
+            # Same "budget never confirmed" outcome pdf.py's measure() refuses
+            # to ship for the CV (see the comment there): a PDF with no
+            # /Count means we cannot tell "1 page" from "over budget", which
+            # is exactly the silence CLAUDE.md §2 forbids.
+            #
+            # Unlike the CV, this is not cheap to retry. `cv_tailored` lives in
+            # state, so re-running the CV render costs nothing; `body_md` is a
+            # local from generate_with_audit above — a premium call plus its
+            # audit, up to three attempts — and withholding drops it. §2 is
+            # stated as non-negotiable, so an unverified letter still must not
+            # ship; the cost is real and belongs on the record, not hidden.
+            pdf_path.unlink(missing_ok=True)
+            return {
+                "cover_letter_path": None,
+                "errors": errors,
+                "artifact_warnings": unverified
+                + [
+                    "cover letter withheld: page count could not be measured "
+                    "(no /Count in the PDF) — the 1-page budget was never confirmed."
+                ],
+            }
+        if pages > MAX_COVER_LETTER_PAGES:
+            overflow_warnings.append(
+                f"cover letter is {pages} pages — budget is {MAX_COVER_LETTER_PAGES}. "
+                "Shorten it by hand; the letter is not auto-trimmed."
+            )
 
         return {
             "cover_letter_path": str(pdf_path),
             "evaluation_blocks": {"cover_letter": body_md},
             "errors": errors,
+            "artifact_warnings": unverified + overflow_warnings,
         }
 
     except Exception as exc:
@@ -131,15 +188,3 @@ def _split_paragraphs(markdown: str) -> list[str]:
     cleaned = re.sub(r"\*{1,2}([^*\n]+)\*{1,2}", r"\1", cleaned)
     chunks = [chunk.strip() for chunk in re.split(r"\n\s*\n", cleaned) if chunk.strip()]
     return [re.sub(r"\s+", " ", chunk) for chunk in chunks]
-
-
-async def _html_to_pdf(html_path: str, pdf_path: str, *, paper_size: str = "letter") -> None:
-    from playwright.async_api import async_playwright
-
-    fmt = "Letter" if paper_size.lower() == "letter" else "A4"
-    async with async_playwright() as pw:
-        browser = await pw.chromium.launch()
-        page = await browser.new_page()
-        await page.goto(Path(html_path).resolve().as_uri())
-        await page.pdf(path=pdf_path, format=fmt, print_background=True)
-        await browser.close()

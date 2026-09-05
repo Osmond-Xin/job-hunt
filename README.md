@@ -107,7 +107,7 @@ The system is three cooperating subsystems, deliberately kept separate:
    and opt-in cross-employer discovery channels, then de-duplicates results
    against the local tracker and scan history.
 
-3. **Application assistant** (`job_hunt/cli.py` apply flow +
+3. **Application assistant** (`job_hunt/cli/apply.py` apply flow +
    `job_hunt/services/workday/`, `job_hunt/services/linkedin/`,
    `job_hunt/services/web/apply_ipc.py`) — Playwright automation for Workday
    and LinkedIn Easy Apply. It runs a **two-step, fill-only** flow: the browser
@@ -247,8 +247,19 @@ job-hunt evaluate jds/example.md
 job-hunt evaluate https://example.com/jobs/123
 ```
 
-The evaluator uses the cheap model tier for analysis nodes and writes token usage to
-`data/usage-ledger.jsonl` when local ledgers are enabled. LangSmith can be toggled per run:
+Evaluate a whole list in one run — one URL or JD path per line, `#` for comments —
+and get a single summary table instead of per-job output:
+
+```bash
+job-hunt evaluate-batch urls.txt --concurrency 3
+```
+
+Batched jobs run the same graph as a single evaluation, so any job that clears
+the score gate still gets its CV and cover letter written on the premium tier.
+
+The evaluator uses the cheap model tier for analysis nodes and writes token
+usage — and, for premium calls, real cost — to `data/usage-ledger.jsonl` when
+local ledgers are enabled. LangSmith can be toggled per run:
 
 ```bash
 job-hunt evaluate jds/example.md --trace
@@ -394,7 +405,8 @@ job-hunt llm cheap-test
 ### Two-Tier Model Routing
 
 - Cheap tier: Minimax or another low-cost provider for routine analysis.
-- Premium tier: local command invocation for Claude, GPT-5.5, or another high-quality model wrapper.
+- Premium tier: local command invocation for Claude, GPT-5.5, or another high-quality model wrapper. Everything a recruiter reads is generated here — tailored CV, cover letter, application answers — including audit-driven regenerations. The audit pass itself stays on the cheap tier so the review is cross-model rather than self-approval.
+- The premium command pipes its prompt on stdin with tools disabled and `--output-format json`. Asking the CLI to read a prompt file instead costs an extra agent turn and ~31k additional input tokens per call, for identical output.
 
 ### Observability
 

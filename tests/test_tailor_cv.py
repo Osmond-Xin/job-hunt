@@ -6,7 +6,7 @@ import asyncio
 
 from job_hunt.nodes import _quality as quality_module
 from job_hunt.nodes._quality import TENURE_SELF_LABEL_RE
-from job_hunt.nodes.pdf import cv_markdown_to_html, tailor_cv
+from job_hunt.nodes.pdf import cv_markdown_to_html, link_project_mentions, tailor_cv
 from job_hunt.services.llm.base import ChatResult
 
 
@@ -17,6 +17,30 @@ def test_tenure_regex_flags_self_labels() -> None:
     assert TENURE_SELF_LABEL_RE.search("20+ years of experience bridging software")
     assert TENURE_SELF_LABEL_RE.search("with 15 years' experience in backend systems")
     assert TENURE_SELF_LABEL_RE.search("Two decades of shipping production systems")
+
+
+def test_tailor_cv_prompt_forbids_relocating_a_bullet() -> None:
+    """A bullet's achievement is pinned to its source employer/project/period.
+
+    2026-08-19-class bug: the model moved a true AWS case-study bullet from
+    Iqidao onto Freelance. Every fact in the sentence was true; the
+    attribution was not. The prompt must say this is not allowed even when
+    each individual fact checks out.
+    """
+    from job_hunt.services.prompts import render
+
+    out = render(
+        "evaluate/tailor_cv.md",
+        cv="CV",
+        jd_text="JD",
+        article_digest="",
+        jd_meta=None,
+        archetype=None,
+        evaluation_blocks={"cv_match": "M", "personalization": "P"},
+        mode="full",
+    )
+    assert "Never relocate a bullet" in out
+    assert "even when every fact inside it is true" in out
 
 
 def test_tenure_regex_allows_role_scoped_facts() -> None:
@@ -54,6 +78,52 @@ def test_cv_html_ignores_inline_dashes_when_stripping() -> None:
 
 def test_cv_html_empty_input() -> None:
     assert cv_markdown_to_html("") == ""
+
+
+def test_cv_html_autolinks_bare_urls() -> None:
+    # Project repos are written as bare URLs in cv.md; a recruiter must be able
+    # to click straight through from the PDF.
+    cv_md = "## Projects\n\nGitHub: https://github.com/Osmond-Xin/LearnArken | 2026\n"
+    html = cv_markdown_to_html(cv_md, strip_contact_block=False)
+    assert '<a href="https://github.com/Osmond-Xin/LearnArken">' in html
+
+
+# ----- link_project_mentions -----
+
+_LEARNARKEN_HREF = 'href="https://github.com/Osmond-Xin/LearnArken"'
+
+
+def test_project_mention_becomes_a_link() -> None:
+    html = "<p>Built LearnArken, a fail-closed retrieval system.</p>"
+    assert link_project_mentions(html) == (
+        f'<p>Built <a {_LEARNARKEN_HREF}>LearnArken</a>, a fail-closed retrieval system.</p>'
+    )
+
+
+def test_project_mention_links_every_occurrence() -> None:
+    html = "<p>LearnArken ships.</p><li>LearnArken refuses.</li>"
+    assert link_project_mentions(html).count(_LEARNARKEN_HREF) == 2
+
+
+def test_project_mention_not_nested_inside_existing_anchor() -> None:
+    html = '<p><a href="https://example.com">LearnArken docs</a></p>'
+    assert link_project_mentions(html) == html
+
+
+def test_project_mention_leaves_urls_and_attributes_alone() -> None:
+    # The autolinked repo URL must not have an anchor injected into its href.
+    html = f'<p><a {_LEARNARKEN_HREF}>https://github.com/Osmond-Xin/LearnArken</a></p>'
+    assert link_project_mentions(html) == html
+
+
+def test_project_mention_is_case_sensitive() -> None:
+    # LEARNARKEN_LOCAL_ONLY is an env-var identifier, not a project reference.
+    html = "<li><code>LEARNARKEN_LOCAL_ONLY=1</code> is a hard egress fence.</li>"
+    assert link_project_mentions(html) == html
+
+
+def test_project_mention_empty_input() -> None:
+    assert link_project_mentions("") == ""
 
 
 # ----- tailor_cv node (through the generate→audit loop) -----
@@ -98,18 +168,23 @@ def test_tailor_cv_returns_body_and_strips_code_fence(monkeypatch) -> None:
     assert result["errors"] == []
 
 
-def test_tailor_cv_tenure_self_label_fails_audit_with_warning(monkeypatch) -> None:
-    # The deterministic gate rejects every attempt; the node keeps the last
-    # draft but surfaces the unresolved audit failure.
+def test_tailor_cv_withholds_a_draft_that_never_passed_audit(monkeypatch) -> None:
+    """A CV the auditor rejected every time must not reach the PDF.
+
+    The deterministic tenure gate rejects all three attempts. Rather than
+    shipping the last bad draft, the node returns no `cv_tailored` at all so
+    downstream renders the hand-written master CV, and flags the artifact.
+    """
     monkeypatch.setattr(
         quality_module,
         "call_node_llm_or_fallback",
         _fake_llm("## Experience\n\nEngineer with 20+ years of experience.\n"),
     )
     result = asyncio.run(tailor_cv(dict(_BASE_STATE), None))
-    assert "cv_tailored" in result
-    assert any("quality audit still failing" in err for err in result["errors"])
+    assert "cv_tailored" not in result
+    assert any("quality audit FAILED" in err for err in result["errors"])
     assert any("Tenure self-label" in err for err in result["errors"])
+    assert any("withheld" in warning for warning in result["artifact_warnings"])
 
 
 def test_tailor_cv_empty_llm_output_falls_back(monkeypatch) -> None:

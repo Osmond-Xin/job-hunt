@@ -68,7 +68,9 @@
       color: #1a1a2e;
       font-weight: 600;
     }
-    a { white-space: nowrap; }
+    /* Project-name mentions link to the repo; accent colour matches the CV.
+       .meta a above is more specific and keeps its inherited grey. */
+    a { white-space: nowrap; color: hsl(187, 74%, 32%); text-decoration: none; }
   </style>
 </head>
 <body>
@@ -91,7 +93,7 @@
 
   <div class="body">
     {% for paragraph in paragraphs %}
-    <p>{{ paragraph }}</p>
+    <p>{{ paragraph | project_links }}</p>
     {% endfor %}
   </div>
 

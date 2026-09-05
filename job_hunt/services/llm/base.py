@@ -20,6 +20,9 @@ class ChatResult(BaseModel):
     tier: Literal["cheap", "premium"]
     invocation: Literal["http", "local_command"]
     usage_estimated: bool = False
+    # Real USD cost when the provider reports it (claude -p --output-format
+    # json). None means "not reported", never "free".
+    cost_usd: float | None = None
     raw: dict[str, Any] = Field(default_factory=dict)
 
 

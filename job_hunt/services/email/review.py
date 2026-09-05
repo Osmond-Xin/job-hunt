@@ -7,6 +7,7 @@ from job_hunt.repositories.email_decision_repo import EmailDecisionRepository, E
 from job_hunt.repositories.email_event_repo import EmailEventRepository
 from job_hunt.repositories.tracker_repo import TrackerEntry, TrackerRepository
 from job_hunt.services.email.reconcile import EMAIL_STATUS_MAP, _is_reliable_tracker_match
+from job_hunt.services.employer_match import EmployerMatcher
 
 
 class EmailApprovalResult(BaseModel):
@@ -59,7 +60,7 @@ def approve_email_event(
     if not resolved_company or not resolved_role or not resolved_status:
         raise ValueError("Approval requires company, role, and status.")
 
-    matched, match_score = tracker.find_match(company=resolved_company, role=resolved_role)
+    matched, match_score = EmployerMatcher(tracker.parse()).raw_match(company=resolved_company, role=resolved_role)
     if matched and not force_new and _is_reliable_tracker_match(
         event.model_copy(update={"company": resolved_company, "role": resolved_role}),
         matched,

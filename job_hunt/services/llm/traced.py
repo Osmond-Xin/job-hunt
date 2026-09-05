@@ -52,6 +52,7 @@ async def traced_chat(
                 "total_tokens": result.total_tokens,
                 "latency_ms": latency_ms,
                 "usage_estimated": result.usage_estimated,
+                "cost_usd": result.cost_usd,
             },
         )
         return result

@@ -5,7 +5,7 @@ from typing import Annotated, Any, Literal, TypedDict
 
 from job_hunt.models.evaluation import EvaluationScores
 from job_hunt.models.job import ArchetypeResult, CandidateProfile, JobMeta
-from job_hunt.repositories.tracker_repo import TrackerEntry
+from job_hunt.models.tracker import TrackerEntry
 
 
 def _merge_dicts(a: dict, b: dict) -> dict:
@@ -36,6 +36,9 @@ class JobHuntState(TypedDict, total=False):
     # JD classification produced by the gate; pure-heuristic. Default
     # "unknown" passes through to scoring; mode mismatch routes to SKIP.
     jd_eligibility: Literal["student", "full", "unknown"]
+    # Set by verify_active() to indicate whether the JD text represents an
+    # active posting. Routes to mark_unavailable if False.
+    jd_active: bool
 
     # --- analysis outputs (parallel fan-in via reducer) ---
     archetype: ArchetypeResult
@@ -53,6 +56,10 @@ class JobHuntState(TypedDict, total=False):
     report_path: str | None
     pdf_path: str | None
     cover_letter_path: str | None
+    # BLOCK | REVISE | SEND | UNREVIEWED — set by redteam_review once the
+    # artifacts exist. UNREVIEWED means the reviewer could not be reached,
+    # which is not the same as passing.
+    redteam_verdict: str
 
     # --- evaluation toggles (set from CLI / profile) ---
     generate_cover_letter: bool
@@ -65,3 +72,7 @@ class JobHuntState(TypedDict, total=False):
 
     # --- errors (parallel fan-in via list concat) ---
     errors: Annotated[list[str], operator.add]
+    # Artifacts that were withheld or could not be verified by the quality
+    # audit. Separate from `errors` because these must reach the operator as a
+    # decision ("do not send this until you read it"), not as run noise.
+    artifact_warnings: Annotated[list[str], operator.add]

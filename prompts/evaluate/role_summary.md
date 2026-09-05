@@ -7,7 +7,9 @@ You are a senior tech recruiter summarising a job posting for a candidate review
 **Title**: {{ jd_meta.title }}
 **Location**: {{ jd_meta.location }} ({{ jd_meta.remote }})
 
+<<<JD_TEXT_BEGIN>>>
 {{ jd_text }}
+<<<JD_TEXT_END>>>
 
 ## Task
 Produce a concise role summary with the following sections. Be factual and quote the JD directly

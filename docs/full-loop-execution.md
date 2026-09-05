@@ -40,7 +40,7 @@ Execution:
 3. Confirm the resume PDF exists and is appropriate for the role.
 4. Generate the agent apply runbook with job-hunt agent-apply.
 5. Run job-hunt apply --fill-only in visible browser mode.
-6. Inspect the latest apply-review.md, apply-review.json, and screenshot.
+6. Inspect the latest apply-review.json (read the screenshot only when the JSON shows problems; use job-hunt apply-status for a live text view and apply-do to fix single fields).
 7. Report to the user:
    - matched report and score/recommendation
    - fields filled
@@ -51,7 +51,7 @@ Execution:
 8. If the user asks for changes, make them in the open browser when possible. If they ask to swap PDF, use job-hunt apply-replace-pdf.
 9. When the user says ready, instruct the user to manually click Submit/Apply in the browser.
 10. After the user says they submitted, run job-hunt apply-capture-page.
-11. Inspect the newest apply-page-*.png for a confirmation message if available.
+11. Inspect the newest apply-page-*.jpg for a confirmation message if available.
 12. Record with job-hunt apply --no-browser --confirmed.
 13. Verify tracker, activity log, event log, and Slack activity.
 14. Summarize exactly what happened and any residual follow-up.
@@ -244,7 +244,7 @@ Open/read the latest session files:
 
 ```bash
 ls -lt artifacts/apply/* | head
-sed -n '1,240p' artifacts/apply/<session>/apply-review.md
+cat artifacts/apply/<session>/apply-review.json
 ```
 
 The agent should report:
@@ -255,7 +255,7 @@ The agent should report:
 - skipped/needs-review fields
 - required empty fields
 - visible Submit/Apply button
-- PDF filename in the screenshot
+- PDF filename (apply-review.json `pdf` key)
 
 Special Workday note: if the application starts with `Create Account`, do not fill
 any `Website` field whose surrounding text says it is for robots only or should not
@@ -267,7 +267,7 @@ The agent must ask the user to review the visible browser before continuing.
 
 ## Modify Or Replace PDF
 
-If the user wants field edits, change them in the visible browser when the agent has browser-control tools. Otherwise tell the user the exact field and replacement value.
+If the user wants field edits, fix single fields with `job-hunt apply-do --fill 'label=value'` (also `--click/--select/--check`). Do not drive the page through a browser MCP. If apply-do cannot reach the field, tell the user the exact field and replacement value.
 
 If the user wants a different PDF:
 
@@ -275,7 +275,7 @@ If the user wants a different PDF:
 .venv/bin/job-hunt apply-replace-pdf '<new-resume.pdf>'
 ```
 
-Wait a few seconds, then inspect the newest screenshot and confirm the PDF filename changed.
+Wait a few seconds, then confirm the PDF filename changed from the command output or `job-hunt apply-status`.
 
 ## Manual Submit
 
@@ -295,7 +295,7 @@ After the user says they submitted:
 .venv/bin/job-hunt apply-capture-page
 ```
 
-Wait a few seconds. Then inspect the newest `apply-page-*.png` in the session artifact directory.
+Wait a few seconds. Then inspect the newest `apply-page-*.jpg` in the session artifact directory.
 
 Look for confirmation language such as:
 

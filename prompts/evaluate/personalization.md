@@ -26,7 +26,9 @@ You are a career coach designing a tailored application strategy.
 **Archetype**: {{ archetype.archetype }}
 
 ## JD Text
+<<<JD_TEXT_BEGIN>>>
 {{ jd_text }}
+<<<JD_TEXT_END>>>
 
 ## Task
 Design a concrete personalization plan for this application.

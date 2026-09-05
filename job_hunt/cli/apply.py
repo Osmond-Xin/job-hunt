@@ -6,37 +6,23 @@ import json
 import os
 import re
 import shlex
-import subprocess
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-
 import typer
 import yaml
-from rich.console import Console
-from rich.table import Table
-
 from job_hunt.config.models import Settings, load_settings
 from job_hunt.graphs.evaluate_job import build_evaluate_job_graph
 from job_hunt.models.events import ApplicationEvent
 from job_hunt.repositories.tracker_repo import TrackerRepository
-from job_hunt.services.scan import scan_portals
 from job_hunt.repositories.email_event_repo import EmailEventRepository
-from job_hunt.repositories.review_repo import ReviewRepository
 from job_hunt.services.activity import ActivityEvent, ActivityLogger, read_activity
-from job_hunt.services.email.message_parser import ParsedEmail, classify_email_event
-from job_hunt.services.email.poller import poll_gmail
-from job_hunt.services.email.reconcile import reconcile_email_events
-from job_hunt.services.email.review import approve_email_event, ignore_email_event, list_review_candidates
-from job_hunt.services.llm.base import ChatMessage
-from job_hunt.services.llm.factory import build_cheap_provider
-from job_hunt.services.llm.traced import traced_chat
-from job_hunt.services.observability import TraceManager
+from job_hunt.services.employer_match import EmployerMatcher, MATCH_THRESHOLD
 from job_hunt.services.profile_loader import (
     workday_education_entries as _load_workday_education_entries,
     workday_experience_entries as _load_workday_experience_entries,
 )
-from job_hunt.services.web import apply_ipc, apply_run_log
+from job_hunt.services.web import apply_ipc, apply_ops, apply_run_log, page_summary
 from job_hunt.services.web_extract import extract_url_text
 from job_hunt.services.workday.employer_config import (
     select_employer_config as _select_workday_employer_config,
@@ -57,1831 +43,24 @@ from job_hunt.services.workday.review_gate import (
     review_validation_messages as _workday_review_validation_messages,
 )
 
-
-app = typer.Typer(help="Job Hunt operations CLI.")
-config_app = typer.Typer(help="Configuration commands.")
-trace_app = typer.Typer(help="LangSmith tracing commands.")
-activity_app = typer.Typer(help="Activity log commands.")
-tracker_app = typer.Typer(help="Tracker commands.")
-schedule_app = typer.Typer(help="Scheduler commands.")
-email_app = typer.Typer(help="Gmail ingestion commands.")
-llm_app = typer.Typer(help="LLM provider commands.")
-review_app = typer.Typer(help="Review queue commands.")
-contacts_app = typer.Typer(help="Contact CRM commands.")
-outreach_app = typer.Typer(help="Outreach tracking commands.")
-
-app.add_typer(config_app, name="config")
-app.add_typer(trace_app, name="trace")
-app.add_typer(activity_app, name="activity")
-app.add_typer(tracker_app, name="tracker")
-app.add_typer(schedule_app, name="schedule")
-app.add_typer(email_app, name="email")
-app.add_typer(llm_app, name="llm")
-app.add_typer(review_app, name="review")
-app.add_typer(contacts_app, name="contacts")
-app.add_typer(outreach_app, name="outreach")
-
-pipeline_app = typer.Typer(help="Pipeline.md URL inbox commands.")
-app.add_typer(pipeline_app, name="pipeline")
-
-console = Console()
-
-
-ONBOARDING_NEXT_STEPS = """Next:
-  1. Import or confirm your resume:
-     .venv/bin/job-hunt import-resume '<resume.pdf-or-md>'
-  2. Configure AI:
-     .venv/bin/job-hunt configure-ai
-  3. Start searching:
-     .venv/bin/job-hunt search --save
-  4. Review candidates:
-     .venv/bin/job-hunt shortlist
-
-Optional closed-loop add-ons:
-  .venv/bin/job-hunt activity slack-test
-  .venv/bin/job-hunt email poll --live --max-results 20
-"""
-
-
-def default_gcloud_adc_path() -> Path:
-    return Path.home() / ".config/gcloud/application_default_credentials.json"
-
-
-def _copy_setup_examples() -> None:
-    copies = [
-        (Path("config/settings.example.yml"), Path("config/settings.yml")),
-        (Path("config/sites.example.yml"), Path("config/sites.yml")),
-        (Path("config/portals.example.yml"), Path("config/portals.yml")),
-        (Path("config/scheduler.example.yml"), Path("config/scheduler.yml")),
-        (Path(".env.example"), Path(".env")),
-    ]
-    for src, dst in copies:
-        if dst.exists():
-            continue
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        if src.exists():
-            shutil.copyfile(src, dst)
-        elif dst == Path("config/settings.yml"):
-            dst.write_text(
-                yaml.safe_dump(Settings().model_dump(mode="json"), sort_keys=False, allow_unicode=True),
-                encoding="utf-8",
-            )
-        elif dst == Path(".env"):
-            dst.write_text("# Add AI provider keys here. Run: job-hunt configure-ai\n", encoding="utf-8")
-        elif dst == Path("config/portals.yml"):
-            dst.write_text(
-                yaml.safe_dump(
-                    {
-                        "title_filter": {
-                            "positive": ["ai", "llm", "machine learning", "data", "software engineer"],
-                            "negative": ["intern", "unpaid"],
-                        },
-                        "tracked_companies": [
-                            {
-                                "name": "Cohere",
-                                "enabled": True,
-                                "careers_url": "https://jobs.ashbyhq.com/cohere",
-                            },
-                            {
-                                "name": "Anthropic",
-                                "enabled": True,
-                                "careers_url": "https://job-boards.greenhouse.io/anthropic",
-                            },
-                            {
-                                "name": "LangChain",
-                                "enabled": True,
-                                "careers_url": "https://jobs.ashbyhq.com/langchain",
-                            },
-                        ],
-                    },
-                    sort_keys=False,
-                    allow_unicode=True,
-                ),
-                encoding="utf-8",
-            )
-        else:
-            dst.write_text("# Optional configuration created by job-hunt init.\n", encoding="utf-8")
-
-
-def _write_onboarding_profile(
-    path: Path,
-    *,
-    full_name: str,
-    email: str,
-    target_role: str,
-    target_location: str,
-) -> None:
-    profile = {
-        "candidate": {
-            "full_name": full_name,
-            "email": email,
-            "phone": "",
-            "location": target_location,
-            "portfolio_url": "",
-            "linkedin": "",
-            "github": "",
-        },
-        "target_roles": {
-            "primary": [target_role],
-            "secondary": [],
-        },
-        "location": {
-            "country": "",
-            "city": target_location,
-            "open_to_relocation": "",
-        },
-    }
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(yaml.safe_dump(profile, sort_keys=False, allow_unicode=True), encoding="utf-8")
-
-
-def _update_env_file(path: Path, updates: dict[str, str]) -> None:
-    existing: dict[str, str] = {}
-    order: list[str] = []
-    if path.exists():
-        for line in path.read_text(encoding="utf-8").splitlines():
-            if not line.strip() or line.lstrip().startswith("#") or "=" not in line:
-                order.append(line)
-                continue
-            key, value = line.split("=", 1)
-            key = key.strip()
-            existing[key] = value
-            order.append(key)
-    for key, value in updates.items():
-        existing[key] = value
-        if key not in order:
-            order.append(key)
-    lines = []
-    for item in order:
-        if item in existing:
-            value = existing[item]
-            lines.append(f"{item}={json.dumps(value) if value and any(ch.isspace() for ch in value) else value}")
-        else:
-            lines.append(item)
-    path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
-
-
-def _import_resume_file(source: Path, *, keep_original: bool = True) -> None:
-    if not source.exists():
-        console.print(f"[red]Resume file not found:[/red] {source}")
-        raise typer.Exit(1)
-    storage_dir = Path("storage/resumes")
-    storage_dir.mkdir(parents=True, exist_ok=True)
-    if keep_original:
-        target = storage_dir / source.name
-        if source.resolve() != target.resolve():
-            shutil.copy2(source, target)
-        console.print(f"[green]Stored original resume:[/green] {target}")
-    suffix = source.suffix.lower()
-    if suffix in {".md", ".markdown", ".txt"}:
-        text = source.read_text(encoding="utf-8")
-    elif suffix == ".pdf":
-        text = _extract_pdf_text(source)
-    else:
-        console.print("[yellow]Unsupported resume type for text extraction. Stored the original only.[/yellow]")
-        return
-    if not text.strip():
-        console.print("[yellow]Could not extract resume text. Stored the original only.[/yellow]")
-        return
-    cv_path = Path("profile/cv.md")
-    cv_path.parent.mkdir(parents=True, exist_ok=True)
-    cv_path.write_text(text.strip() + "\n", encoding="utf-8")
-    console.print(f"[green]Updated[/green] {cv_path}")
-
-
-def _extract_pdf_text(source: Path) -> str:
-    pdftotext = shutil.which("pdftotext")
-    if not pdftotext:
-        return ""
-    try:
-        result = subprocess.run(
-            [pdftotext, "-layout", str(source), "-"],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-    except (subprocess.SubprocessError, OSError):
-        return ""
-    return result.stdout
-
-
-def _shortlist_rows(*, limit: int) -> list[dict[str, str]]:
-    rows: list[dict[str, str]] = []
-    pipeline = Path("data/pipeline.md")
-    if pipeline.exists():
-        for line in reversed(pipeline.read_text(encoding="utf-8").splitlines()):
-            if len(rows) >= limit:
-                break
-            if not line.startswith("- [ ]"):
-                continue
-            parts = [part.strip() for part in line.removeprefix("- [ ]").split("|")]
-            url = parts[0] if parts and parts[0].startswith("http") else ""
-            rows.append(
-                {
-                    "source": "pipeline",
-                    "company": parts[1] if len(parts) > 1 else "",
-                    "role": parts[2] if len(parts) > 2 else "",
-                    "status": "pending",
-                    "url": url,
-                }
-            )
-    if len(rows) < limit:
-        for entry in TrackerRepository(Path("data/applications.md")).parse():
-            if len(rows) >= limit:
-                break
-            haystack = f"{entry.status} {entry.notes}".lower()
-            if entry.status != "Evaluated" or not any(token in haystack for token in ["apply", "maybe", "hold"]):
-                continue
-            rows.append(
-                {
-                    "source": f"tracker #{entry.number}",
-                    "company": entry.company,
-                    "role": entry.role,
-                    "status": f"{entry.score} {entry.status}",
-                    "url": entry.report,
-                }
-            )
-    return rows[:limit]
-
-
-@app.command("init")
-def onboarding_init(
-    yes: bool = typer.Option(False, "--yes", "-y", help="Use defaults and do not prompt."),
-    role: str | None = typer.Option(None, help="Target role, e.g. AI Engineer."),
-    location: str | None = typer.Option(None, help="Target location, e.g. Canada Remote."),
-    resume: Path | None = typer.Option(None, help="Optional resume PDF/Markdown/text file to import."),
-    configure_ai_now: bool = typer.Option(False, "--configure-ai", help="Prompt for AI configuration during init."),
-    guided: bool = typer.Option(
-        True,
-        "--guided/--no-guided",
-        help=(
-            "Run the conversational onboarding questionnaire after the basic setup. "
-            "Skipped under --yes. Captures narrative fields used by evaluator framing."
-        ),
-    ),
-) -> None:
-    """Create the minimum local setup so a new user can start searching."""
-    _copy_setup_examples()
-    Path("profile").mkdir(exist_ok=True)
-    Path("data").mkdir(exist_ok=True)
-    Path("output").mkdir(exist_ok=True)
-    Path("reports").mkdir(exist_ok=True)
-    TrackerRepository(Path("data/applications.md")).ensure_exists()
-
-    target_role = role or ("AI Engineer" if yes else typer.prompt("Target role", default="AI Engineer"))
-    target_location = location or ("Canada Remote" if yes else typer.prompt("Target location", default="Canada Remote"))
-    profile_path = Path("profile/profile.yml")
-    if not profile_path.exists():
-        full_name = "Your Name" if yes else typer.prompt("Full name", default="Your Name")
-        email = "you@example.com" if yes else typer.prompt("Email", default="you@example.com")
-        _write_onboarding_profile(
-            profile_path,
-            full_name=full_name,
-            email=email,
-            target_role=target_role,
-            target_location=target_location,
-        )
-        console.print(f"[green]Created[/green] {profile_path}")
-    else:
-        console.print(f"[yellow]Skipped existing[/yellow] {profile_path}")
-
-    if resume:
-        _import_resume_file(resume)
-    elif not Path("profile/cv.md").exists():
-        Path("profile/cv.md").write_text(
-            f"# Resume\n\nPaste your resume here, or run:\n\n"
-            f"```bash\n.venv/bin/job-hunt import-resume '<resume.pdf-or-md>'\n```\n",
-            encoding="utf-8",
-        )
-        console.print("[green]Created[/green] profile/cv.md placeholder")
-
-    if configure_ai_now:
-        configure_ai()
-
-    if guided and not yes:
-        from job_hunt.services import onboarding as _onb
-
-        if not _onb.has_narrative(profile_path):
-            console.print(
-                "\n[bold]A few more questions[/bold] — these populate the evaluator's "
-                "framing so it knows how to position you. Press Enter to skip any."
-            )
-
-            def _ask(prompt: str, default: str) -> str:
-                return typer.prompt(prompt, default=default, show_default=False)
-
-            wrote = _onb.run_guided_questions(profile_path, _ask)
-            if wrote:
-                console.print(f"[green]Saved narrative to[/green] {profile_path}")
-            else:
-                console.print("[dim]Skipped narrative (no answers provided).[/dim]")
-        else:
-            console.print(
-                "[dim]Narrative already present in profile/profile.yml; skipping guided questions.[/dim]"
-            )
-
-    cv_present = Path("profile/cv.md").exists()
-    profile_present = Path("profile/profile.yml").exists()
-    tracker_present = Path("data/applications.md").exists()
-    from job_hunt.services import onboarding as _onb
-
-    console.print("")
-    console.print(
-        _onb.final_message(
-            cv_present=cv_present,
-            profile_present=profile_present,
-            tracker_present=tracker_present,
-        )
-    )
-    console.print("\n[dim]" + ONBOARDING_NEXT_STEPS.rstrip() + "[/dim]")
-
-
-@app.command("configure-ai")
-def configure_ai(
-    provider: str = typer.Option("minimax", help="Currently supported runtime provider: minimax."),
-    api_key: str | None = typer.Option(None, help="API key. If omitted, prompt securely."),
-    base_url: str = typer.Option("https://api.minimax.chat", help="Minimax or compatible base URL."),
-    model: str = typer.Option("", help="Model name, e.g. MiniMax-M2.7."),
-    endpoint_style: str = typer.Option("minimax", help="minimax, anthropic, or openai."),
-) -> None:
-    """Configure the AI provider used for job evaluation."""
-    if provider != "minimax":
-        console.print("[yellow]Only the minimax provider is currently implemented; writing minimax-compatible settings.[/yellow]")
-        provider = "minimax"
-    key = api_key or typer.prompt("AI API key", hide_input=True)
-    _update_env_file(
-        Path(".env"),
-        {
-            "MINIMAX_API_KEY": key,
-            "MINIMAX_BASE_URL": base_url,
-            "MINIMAX_MODEL": model,
-            "MINIMAX_ENDPOINT_STYLE": endpoint_style,
-        },
-    )
-    _copy_setup_examples()
-    settings_path = Path("config/settings.yml")
-    settings = yaml.safe_load(settings_path.read_text(encoding="utf-8")) if settings_path.exists() else {}
-    settings.setdefault("llm", {}).setdefault("cheap", {})
-    cheap = settings["llm"]["cheap"]
-    cheap.update(
-        {
-            "provider": "minimax",
-            "invocation": "http",
-            "base_url": "${MINIMAX_BASE_URL}",
-            "model": "${MINIMAX_MODEL}",
-            "endpoint_style": endpoint_style,
-            "api_key_env": "MINIMAX_API_KEY",
-        }
-    )
-    settings_path.write_text(yaml.safe_dump(settings, sort_keys=False, allow_unicode=True), encoding="utf-8")
-    console.print("[green]AI configuration saved.[/green]")
-    console.print("Run: .venv/bin/job-hunt llm cheap-test")
-
-
-@app.command("import-resume")
-def import_resume(
-    source: Path = typer.Argument(..., help="Resume PDF, Markdown, or text file."),
-    keep_original: bool = typer.Option(True, "--keep-original/--no-keep-original", help="Copy the original file into storage/resumes."),
-) -> None:
-    """Import a resume into profile/cv.md so search/evaluation can start from a simple upload."""
-    _import_resume_file(source, keep_original=keep_original)
-
-
-@app.command("search")
-def search_jobs(
-    role: str | None = typer.Option(None, help="Target role hint shown in output. Direct ATS scan still uses config/portals.yml filters."),
-    location: str | None = typer.Option(None, help="Target location hint shown in output."),
-    company: str | None = typer.Option(None, help="Only scan matching company name."),
-    limit_companies: int | None = typer.Option(None, help="Limit number of direct ATS companies."),
-    include_non_canada: bool = typer.Option(False, help="Include jobs outside Canada in results."),
-    save: bool = typer.Option(True, "--save/--no-save", help="Write new jobs to data/pipeline.md and scan history."),
-) -> None:
-    """Begin searching configured direct ATS portals and write a shortlist inbox."""
-    if role or location:
-        console.print(f"Search target: {role or 'configured roles'} / {location or 'configured locations'}")
-        console.print("[dim]Current scanner uses config/portals.yml title and Canada filters; role/location are onboarding hints.[/dim]")
-    scan(
-        company=company,
-        limit_companies=limit_companies,
-        include_non_canada=include_non_canada,
-        apply=save,
-    )
-    console.print("\nNext: .venv/bin/job-hunt shortlist")
-
-
-@app.command("shortlist")
-def shortlist(limit: int = typer.Option(20, help="Number of items to show.")) -> None:
-    """Show jobs that are ready for review from the local pipeline/tracker."""
-    rows = _shortlist_rows(limit=limit)
-    table = Table("#", "Source", "Company", "Role", "Score/Status", "URL or Report")
-    for index, row in enumerate(rows, start=1):
-        table.add_row(str(index), row["source"], row["company"], row["role"], row["status"], _short(row["url"], 80))
-    console.print(table)
-    if rows:
-        console.print("\nEvaluate a URL: .venv/bin/job-hunt evaluate '<url>'")
-        console.print("Prepare apply flow: .venv/bin/job-hunt loop '<url>'")
-    else:
-        console.print("No shortlist items found. Run: .venv/bin/job-hunt search --save")
-
-
-@config_app.command("validate")
-def config_validate(path: Path = Path("config/settings.yml")) -> None:
-    settings = load_settings(path)
-    console.print("[green]Configuration is valid.[/green]")
-    console.print(f"Environment: {settings.app.env}")
-    console.print(f"LangSmith enabled: {settings.observability.langsmith.enabled}")
-
-
-@config_app.command("doctor")
-def config_doctor() -> None:
-    from job_hunt.services.profile_loader import current_mode as _read_mode
-
-    settings = load_settings()
-    checks = [
-        ("settings", Path("config/settings.yml").exists(), "config/settings.yml"),
-        ("sites", Path("config/sites.yml").exists(), "config/sites.yml"),
-        ("scheduler", Path("config/scheduler.yml").exists(), "config/scheduler.yml"),
-        ("env", Path(".env").exists(), ".env"),
-        (
-            "gcloud adc",
-            default_gcloud_adc_path().exists() or bool(os.getenv("GOOGLE_APPLICATION_CREDENTIALS")),
-            str(default_gcloud_adc_path()),
-        ),
-        ("activity log parent", settings.activity.sinks.local_log.path.parent.exists(), str(settings.activity.sinks.local_log.path.parent)),
-        ("gitignore", Path(".gitignore").exists(), ".gitignore"),
-    ]
-    table = Table("Check", "Status", "Detail")
-    for name, ok, detail in checks:
-        table.add_row(name, "ok" if ok else "missing", detail, style="green" if ok else "yellow")
-    console.print(table)
-    mode = _read_mode()
-    console.print(f"\n[bold]Operator mode:[/bold] [cyan]{mode}[/cyan] "
-                  f"(set in profile/profile.yml; see docs/design-notes.md §N)")
-    console.print("Doctor finished. Missing local config files are expected until you copy the examples.")
-
-
-@config_app.command("set-mode")
-def config_set_mode(
-    value: str = typer.Argument(..., help="Target mode: student or full."),
-    force: bool = typer.Option(False, "--force", help="Allow setting to current value (no-op)."),
-) -> None:
-    """Atomically flip ``profile/profile.yml`` ``mode`` between student and full.
-
-    The value is the only thing the system reads to switch discovery, scoring,
-    and apply behaviour. See docs/design-notes.md §N.2.
-    """
-    target = value.strip().lower()
-    if target not in ("student", "full"):
-        console.print(f"[red]Invalid mode:[/red] {value!r}. Allowed values: student, full.")
-        raise typer.Exit(2)
-
-    profile_path = Path("profile/profile.yml")
-    if not profile_path.exists():
-        console.print(
-            f"[red]profile/profile.yml not found.[/red] Run `job-hunt init` or "
-            "copy config/profile.example.yml first."
-        )
-        raise typer.Exit(2)
-
-    raw = profile_path.read_text(encoding="utf-8")
-    try:
-        parsed = yaml.safe_load(raw) or {}
-    except yaml.YAMLError as exc:
-        console.print(f"[red]profile/profile.yml is malformed:[/red] {exc}")
-        raise typer.Exit(2)
-
-    current = (parsed.get("mode") or "").strip().lower() if isinstance(parsed.get("mode"), str) else ""
-    if current == target and not force:
-        console.print(
-            f"[yellow]No change:[/yellow] mode is already {target!r}. "
-            "Pass --force to rewrite anyway."
-        )
-        raise typer.Exit(0)
-
-    # Surgical text edit — preserve comments and ordering. Match the first
-    # ``mode:`` line at column 0 (top-level only); fall back to inserting at
-    # the top of the file when no such line exists.
-    pattern = re.compile(r"^mode:\s*.*$", re.MULTILINE)
-    if pattern.search(raw):
-        new_text = pattern.sub(f'mode: "{target}"', raw, count=1)
-    else:
-        header = (
-            f'# Top-level mode switch — see docs/design-notes.md Section N.\n'
-            f'mode: "{target}"\n\n'
-        )
-        new_text = header + raw
-
-    tmp_path = profile_path.with_suffix(profile_path.suffix + ".tmp")
-    tmp_path.write_text(new_text, encoding="utf-8")
-    tmp_path.replace(profile_path)
-
-    console.print(f"[green]Mode set to {target!r}.[/green]")
-    console.print(
-        "Subsystems that will pick up the change on next invocation: "
-        "scan (title filter + tracked-companies eligibility), "
-        "evaluate (eligibility gate + scoring weights + thresholds), "
-        "cover_letter (narrative variant), apply (auto-submit gate)."
-    )
-
-
-@config_app.command("init")
-def config_init() -> None:
-    copies = [
-        (Path("config/settings.example.yml"), Path("config/settings.yml")),
-        (Path("config/sites.example.yml"), Path("config/sites.yml")),
-        (Path("config/portals.example.yml"), Path("config/portals.yml")),
-        (Path("config/scheduler.example.yml"), Path("config/scheduler.yml")),
-        (Path(".env.example"), Path(".env")),
-    ]
-    for src, dst in copies:
-        if dst.exists():
-            console.print(f"[yellow]Skipped existing[/yellow] {dst}")
-            continue
-        shutil.copyfile(src, dst)
-        console.print(f"[green]Created[/green] {dst}")
-
-
-@trace_app.command("status")
-def trace_status() -> None:
-    manager = TraceManager(load_settings())
-    status = manager.status()
-    console.print(f"LangSmith enabled: {status.enabled}")
-    console.print(f"Project: {status.project}")
-    console.print(f"Example local trace id: {status.trace_id}")
-
-
-@trace_app.command("on")
-def trace_on() -> None:
-    console.print("Set JOB_HUNT_LANGSMITH_ENABLED=true or edit config/settings.yml.")
-
-
-@trace_app.command("off")
-def trace_off() -> None:
-    console.print("Set JOB_HUNT_LANGSMITH_ENABLED=false or edit config/settings.yml.")
-
-
-@trace_app.command("smoke-test")
-def trace_smoke_test() -> None:
-    settings = load_settings()
-    if not settings.observability.langsmith.enabled:
-        console.print("[yellow]LangSmith is disabled. Set JOB_HUNT_LANGSMITH_ENABLED=true to send traces.[/yellow]")
-        raise typer.Exit(1)
-
-    from langsmith import traceable
-
-    @traceable(
-        name="job-hunt.langsmith_smoke_test",
-        run_type="chain",
-        metadata={"app": "job-hunt", "test": "smoke"},
-    )
-    def smoke() -> dict:
-        return {"ok": True, "message": "langsmith smoke test"}
-
-    result = smoke()
-    console.print(f"Sent smoke trace to project: {settings.observability.langsmith.project}")
-    console.print_json(data=result)
-
-
-@activity_app.command("list")
-def activity_list(
-    limit: int = typer.Option(20, help="Maximum number of events to show."),
-    since: str | None = typer.Option(None, help="Only show events since a duration like 1d/12h/30m or an ISO timestamp."),
-) -> None:
-    settings = load_settings()
-    try:
-        events = read_activity(settings.activity.sinks.local_log.path, limit=limit, since=since)
-    except ValueError as exc:
-        raise typer.BadParameter(str(exc), param_hint="--since") from None
-    table = Table("Time", "Level", "Type", "Summary")
-    for event in events:
-        table.add_row(event.ts.isoformat(), event.level, event.type, event.summary)
-    console.print(table)
-
-
-@activity_app.command("tail")
-def activity_tail(limit: int = 20) -> None:
-    activity_list(limit=limit, since=None)
-
-
-@activity_app.command("slack-test")
-def activity_slack_test() -> None:
-    settings = load_settings()
-    logger = ActivityLogger(settings.activity)
-    logger.emit(ActivityEvent(type="activity.slack_test", level="info", summary="Slack test from job-hunt"))
-    console.print("Slack test event emitted. Check local activity log and Slack config.")
-
-
-@tracker_app.command("init")
-def tracker_init(path: Path = Path("data/applications.md")) -> None:
-    repo = TrackerRepository(path)
-    repo.ensure_exists()
-    console.print(f"[green]Tracker ready:[/green] {path}")
-
-
-@tracker_app.command("stats")
-def tracker_stats(path: Path = Path("data/applications.md")) -> None:
-    repo = TrackerRepository(path)
-    stats = repo.stats()
-    console.print(f"Total: {stats['total']}")
-    console.print(f"With PDF: {stats['with_pdf']}")
-    table = Table("Status", "Count")
-    for status, count in sorted(stats["by_status"].items()):
-        table.add_row(status, str(count))
-    console.print(table)
-
-
-@tracker_app.command("verify")
-def tracker_verify(
-    path: Path = Path("data/applications.md"),
-    additions_dir: Path = typer.Option(
-        Path("data/tracker-additions"), help="Tracker TSV staging directory."
-    ),
-    reports_dir: Path = typer.Option(
-        None, help="Resolve report links against this directory (skip if omitted)."
-    ),
-) -> None:
-    from job_hunt.services import tracker_ops
-
-    result = tracker_ops.verify_pipeline(
-        applications_md=path,
-        additions_dir=additions_dir,
-        reports_dir=reports_dir,
-    )
-    console.print(f"Entries: {result.entries}")
-    for warning in result.warnings:
-        console.print(f"[yellow]warning:[/yellow] {warning}")
-    for error in result.errors:
-        console.print(f"[red]error:[/red] {error}")
-    if result.errors:
-        raise typer.Exit(1)
-    console.print("[green]Tracker verification passed.[/green]")
-
-
-@tracker_app.command("merge")
-def tracker_merge(
-    additions_dir: Path = Path("data/tracker-additions"),
-    path: Path = Path("data/applications.md"),
-    dry_run: bool = typer.Option(False, "--dry-run", help="Report actions without writing."),
-) -> None:
-    """Merge pending TSV additions into applications.md."""
-    from job_hunt.services import tracker_ops
-
-    result = tracker_ops.merge(additions_dir=additions_dir, applications_md=path, dry_run=dry_run)
-    if not result.actions and not result.added and not result.updated:
-        console.print("[green]No pending additions.[/green]")
-        return
-    for action in result.actions:
-        if action.kind == "added":
-            console.print(f"[green]+ #{action.number}[/green] {action.company} — {action.role} ({action.detail})")
-        elif action.kind == "updated":
-            console.print(f"[cyan]~ #{action.number}[/cyan] {action.company} — {action.role} ({action.detail})")
-        else:
-            console.print(f"[dim]· skip[/dim] {action.company} — {action.role} ({action.detail})")
-    console.print(
-        f"Summary: +{result.added} added, ~{result.updated} updated, ·{result.skipped} skipped"
-        + (" (dry-run)" if dry_run else "")
-    )
-
-
-@tracker_app.command("dedup")
-def tracker_dedup(
-    path: Path = Path("data/applications.md"),
-    dry_run: bool = typer.Option(False, "--dry-run", help="Report actions without writing."),
-) -> None:
-    """Remove duplicate (company, role) entries; promote status if a duplicate is further along."""
-    from job_hunt.services import tracker_ops
-
-    result = tracker_ops.dedup(applications_md=path, dry_run=dry_run)
-    for kept_num, old_status, new_status in result.promoted:
-        console.print(f"[cyan]promoted #{kept_num}[/cyan] {old_status} → {new_status}")
-    for entry in result.removed_entries:
-        console.print(f"[yellow]drop #{entry.number}[/yellow] {entry.company} — {entry.role} ({entry.score})")
-    console.print(f"Removed: {result.removed}" + (" (dry-run)" if dry_run else ""))
-
-
-@tracker_app.command("normalize")
-def tracker_normalize(
-    path: Path = Path("data/applications.md"),
-    dry_run: bool = typer.Option(False, "--dry-run", help="Report actions without writing."),
-) -> None:
-    """Rewrite status field of every row to the canonical label per states.yml."""
-    from job_hunt.services import tracker_ops
-
-    result = tracker_ops.normalize_statuses(applications_md=path, dry_run=dry_run)
-    for num, old, new in result.changed_entries:
-        console.print(f"#{num}: {old!r} → {new!r}")
-    for num, raw in result.unknowns:
-        console.print(f"[yellow]unknown[/yellow] #{num}: {raw!r}")
-    console.print(f"Changes: {result.changes}" + (" (dry-run)" if dry_run else ""))
-
-
-@contacts_app.command("add")
-def contacts_add(
-    company: str = typer.Option(..., help="Company name."),
-    name: str = typer.Option("", help="Contact name."),
-    title: str = typer.Option("", help="Contact title."),
-    linkedin_url: str = typer.Option("", help="LinkedIn profile URL."),
-    email: str = typer.Option("", help="Email address, if known."),
-    relationship: str = typer.Option(
-        "unknown", help="recruiter / hiring_manager / peer / referral / unknown."
-    ),
-    source: str = typer.Option("manual", help="manual / linkedin / email / web_search."),
-    notes: str = typer.Option("", help="Optional notes."),
-) -> None:
-    """Add a recruiter, hiring manager, peer, or referral contact."""
-    from job_hunt.services.outreach import Contact, add_contact
-
-    contact = add_contact(
-        Contact(
-            company=company,
-            name=name,
-            title=title,
-            linkedin_url=linkedin_url,
-            email=email,
-            relationship=relationship,
-            source=source,
-            notes=notes,
-        )
-    )
-    label = contact.name or contact.title or "unknown"
-    console.print(f"[green]+ contact[/green] {contact.id} {contact.company} — {label}")
-
-
-@contacts_app.command("search")
-def contacts_search(company: str = typer.Option("", help="Filter by company substring.")) -> None:
-    """Search local contacts."""
-    from job_hunt.services.outreach import find_contacts
-
-    contacts = find_contacts(company)
-    if not contacts:
-        console.print("[dim]No contacts found.[/dim]")
-        return
-    table = Table("ID", "Company", "Name", "Title", "Relationship", "LinkedIn", "Notes")
-    for contact in contacts:
-        table.add_row(
-            contact.id,
-            contact.company,
-            contact.name,
-            contact.title,
-            contact.relationship,
-            contact.linkedin_url,
-            contact.notes,
-        )
-    console.print(table)
-
-
-@outreach_app.command("draft")
-def outreach_draft(
-    contact_id: str = typer.Argument(..., help="Contact id or unique prefix."),
-    company: str = typer.Option("", help="Override company; defaults to contact company."),
-    role: str = typer.Option(..., help="Target role."),
-    application_id: int | None = typer.Option(None, help="Tracker row number, if relevant."),
-    jd: str | None = typer.Option(None, "--jd", help="Path to JD file or pasted JD text."),
-    output: Path | None = typer.Option(None, help="Optional path for the draft message."),
-    max_tokens: int = typer.Option(900, help="LLM max tokens."),
-) -> None:
-    """Draft a LinkedIn outreach message and record a drafted outreach event."""
-    from job_hunt.services.outreach import OutreachEvent, add_event, get_contact
-
-    contact = get_contact(contact_id)
-    if contact is None:
-        console.print(f"[red]Contact not found:[/red] {contact_id}")
-        raise typer.Exit(1)
-    target_company = company or contact.company
-    jd_text = ""
-    if jd:
-        jd_path = Path(jd)
-        jd_text = jd_path.read_text(encoding="utf-8") if jd_path.exists() else jd
-    body = _run_one_shot_prompt(
-        template="linkedin_outreach.md",
-        node_name="outreach_draft",
-        graph_name="outreach_cli",
-        max_tokens=max_tokens,
-        temperature=0.4,
-        company=target_company,
-        role=role,
-        jd_text=jd_text,
-        cv_excerpt=_load_cv_excerpt(),
-    )
-    console.print(body)
-    message_path = output
-    if message_path is None:
-        company_slug = re.sub(r"[^a-z0-9]+", "-", target_company.lower()).strip("-")
-        role_slug = re.sub(r"[^a-z0-9]+", "-", role.lower()).strip("-")
-        message_path = Path("data/outreach-drafts") / (
-            f"{datetime.now().date()}-{company_slug}-{role_slug}.md"
-        )
-    message_path.parent.mkdir(parents=True, exist_ok=True)
-    message_path.write_text(body, encoding="utf-8")
-    event = add_event(
-        OutreachEvent(
-            contact_id=contact.id,
-            application_id=application_id,
-            company=target_company,
-            role=role,
-            channel="linkedin",
-            status="drafted",
-            message_path=str(message_path),
-            notes=f"Drafted for {contact.name or contact.title or contact.id}",
-        )
-    )
-    console.print(f"\n[green]Recorded draft[/green] outreach event {event.id}; wrote {message_path}")
-
-
-@outreach_app.command("mark-sent")
-def outreach_mark_sent(
-    event_id: str = typer.Argument(..., help="Outreach event id or unique prefix."),
-    follow_up_at: str = typer.Option("", help="Optional follow-up date YYYY-MM-DD."),
-    notes: str = typer.Option("", help="Optional notes."),
-) -> None:
-    """Mark an outreach event as sent."""
-    from job_hunt.services.outreach import update_event
-
-    event = update_event(event_id, status="sent", follow_up_at=follow_up_at, notes=notes)
-    if event is None:
-        console.print(f"[red]Outreach event not found:[/red] {event_id}")
-        raise typer.Exit(1)
-    console.print(f"[green]Marked sent[/green] {event.id} {event.company} — {event.role}")
-
-
-@outreach_app.command("mark")
-def outreach_mark(
-    event_id: str = typer.Argument(..., help="Outreach event id or unique prefix."),
-    status: str = typer.Argument(..., help="responded / follow_up_due / closed."),
-    notes: str = typer.Option("", help="Optional notes."),
-) -> None:
-    """Mark an outreach event as responded, follow_up_due, or closed."""
-    from job_hunt.services.outreach import update_event
-
-    if status not in {"responded", "follow_up_due", "closed"}:
-        console.print("[red]Status must be responded, follow_up_due, or closed.[/red]")
-        raise typer.Exit(1)
-    event = update_event(event_id, status=status, notes=notes)
-    if event is None:
-        console.print(f"[red]Outreach event not found:[/red] {event_id}")
-        raise typer.Exit(1)
-    console.print(f"[green]Marked {status}[/green] {event.id} {event.company} — {event.role}")
-
-
-@outreach_app.command("due")
-def outreach_due() -> None:
-    """List sent outreach events whose follow-up date is due."""
-    from job_hunt.services.outreach import due_events
-
-    events = due_events()
-    if not events:
-        console.print("[dim]No outreach follow-ups due.[/dim]")
-        return
-    table = Table("ID", "Company", "Role", "Contact", "Follow-up", "Notes")
-    for event in events:
-        table.add_row(
-            event.id,
-            event.company,
-            event.role,
-            event.contact_id,
-            event.follow_up_at,
-            event.notes,
-        )
-    console.print(table)
-
-
-@pipeline_app.command("add")
-def pipeline_add(
-    url: str = typer.Argument(..., help="Job posting URL to drop in the inbox."),
-    company: str = typer.Option("", help="Company name (optional, helps tracker dedup)."),
-    role: str = typer.Option("", help="Role title (optional)."),
-    path: Path = typer.Option(Path("data/pipeline.md"), help="Pipeline file path."),
-) -> None:
-    """Append a URL to the pending inbox in pipeline.md."""
-    from job_hunt.services import pipeline_inbox
-
-    if pipeline_inbox.add(url, company=company, role=role, path=path):
-        console.print(f"[green]+ pending[/green] {url}")
-    else:
-        console.print(f"[yellow]Already in pipeline:[/yellow] {url}")
-
-
-@pipeline_app.command("list")
-def pipeline_list(
-    status: str = typer.Option("all", help="Filter: all / pending / processed / error."),
-    path: Path = typer.Option(Path("data/pipeline.md"), help="Pipeline file path."),
-) -> None:
-    """List entries in pipeline.md (default: all)."""
-    from job_hunt.services import pipeline_inbox
-
-    status_filter = None
-    if status != "all":
-        try:
-            status_filter = pipeline_inbox.EntryStatus(status)
-        except ValueError:
-            console.print(f"[red]Unknown status:[/red] {status}")
-            raise typer.Exit(1) from None
-    entries = pipeline_inbox.list_entries(status=status_filter, path=path)
-    if not entries:
-        console.print("[dim]No entries.[/dim]")
-        return
-    for e in entries:
-        marker = {
-            pipeline_inbox.EntryStatus.PENDING: "[ ]",
-            pipeline_inbox.EntryStatus.PROCESSED: "[x]",
-            pipeline_inbox.EntryStatus.ERROR: "[!]",
-        }[e.status]
-        head = f"#{e.tracker_id} | " if e.tracker_id else ""
-        suffix_parts = [p for p in (e.score, f"PDF {e.pdf_check}".strip() if e.pdf_check else "", e.note) if p]
-        suffix = (" | " + " | ".join(suffix_parts)) if suffix_parts else ""
-        console.print(f"{marker} {head}{e.url} | {e.company} | {e.role}{suffix}")
-
-
-@pipeline_app.command("process")
-def pipeline_process(
-    limit: int = typer.Option(0, help="Process at most N entries (0 = all)."),
-    cover_letter: bool | None = typer.Option(
-        None,
-        "--cover-letter/--no-cover-letter",
-        help="Pass-through to evaluate; defaults to apply.cover_letter_default.",
-    ),
-    path: Path = typer.Option(Path("data/pipeline.md"), help="Pipeline file path."),
-) -> None:
-    """Run `evaluate` on each pending URL, then move it to Processed (or Error)."""
-    from job_hunt.services import pipeline_inbox
-
-    pending = pipeline_inbox.list_entries(
-        status=pipeline_inbox.EntryStatus.PENDING, path=path
-    )
-    if not pending:
-        console.print("[green]No pending entries.[/green]")
-        return
-    if limit > 0:
-        pending = pending[:limit]
-
-    for entry in pending:
-        console.print(f"\n[bold]→[/bold] Evaluating {entry.url}")
-        try:
-            evaluate(target=entry.url, source_type="auto", trace=None, cover_letter=cover_letter)
-        except SystemExit as exc:
-            # evaluate() may exit on cv-sync-check errors etc; treat as inbox error.
-            note = f"evaluate exited (code={exc.code})"
-            pipeline_inbox.mark_error(entry.url, note=note, path=path)
-            console.print(f"[red]error:[/red] {note}")
-            continue
-        except Exception as exc:  # noqa: BLE001 — surface unexpected failures into inbox
-            note = str(exc)[:200]
-            pipeline_inbox.mark_error(entry.url, note=note, path=path)
-            console.print(f"[red]error:[/red] {note}")
-            continue
-
-        # Look up the freshly-written tracker row by URL match (best-effort).
-        tracker = TrackerRepository(Path("data/applications.md"))
-        latest = sorted(tracker.parse(), key=lambda e: e.number, reverse=True)
-        match = next((e for e in latest if entry.url in e.report or entry.url in e.notes), None)
-        if match:
-            pdf_check = "✅" if "✅" in match.pdf else "❌"
-            pipeline_inbox.mark_processed(
-                entry.url,
-                tracker_id=match.number,
-                score=match.score,
-                pdf_check=pdf_check,
-                company=match.company,
-                role=match.role,
-                path=path,
-            )
-            console.print(f"[green]✓ processed[/green] #{match.number} {match.company} — {match.role}")
-        else:
-            pipeline_inbox.mark_error(
-                entry.url, note="evaluate finished but tracker row not found", path=path
-            )
-
-
-@tracker_app.command("dashboard")
-def tracker_dashboard(
-    path: Path = typer.Option(Path("data/applications.md"), help="Tracker source file."),
-    output: Path = typer.Option(
-        Path("data/dashboard.html"),
-        help="Output HTML path. Open in a browser after generation.",
-    ),
-) -> None:
-    """Generate a self-contained HTML dashboard from the tracker."""
-    from job_hunt.services import dashboard_html
-
-    count = dashboard_html.generate(apps_path=path, output_path=output)
-    console.print(f"[green]Wrote[/green] {output} ({count} applications)")
-
-
-@tracker_app.command("check-sync")
-def tracker_check_sync() -> None:
-    """Run the cv/profile/prompts/digest consistency check."""
-    from job_hunt.services import cv_sync_check
-
-    result = cv_sync_check.run()
-    for warning in result.warnings:
-        console.print(f"[yellow]warning:[/yellow] {warning}")
-    for error in result.errors:
-        console.print(f"[red]error:[/red] {error}")
-    if result.errors:
-        raise typer.Exit(1)
-    console.print("[green]CV sync check passed.[/green]")
-
-
-@schedule_app.command("list")
-def schedule_list() -> None:
-    console.print("Scheduler implementation is planned for Phase 6. See docs/design.md.")
-
-
-@schedule_app.command("run")
-def schedule_run(job_id: str) -> None:
-    console.print(f"Scheduler job placeholder: {job_id}")
-
-
-@email_app.command("poll")
-def email_poll(
-    since: str = "30d",
-    max_results: int = 25,
-    live: bool = False,
-    include_unknown: bool = False,
-) -> None:
-    settings = load_settings()
-    console.print(f"Gmail polling for since={since}.")
-    console.print(f"Query: {settings.email_ingest.query.strip()[:160]}...")
-    console.print(f"Token path: {settings.email_ingest.token_path}")
-    if not live:
-        console.print("Dry-run only. Pass --live to call Gmail API.")
-        return
-    result = poll_gmail(settings, max_results=max_results, include_unknown=include_unknown)
-    ActivityLogger(settings.activity).emit(
-        ActivityEvent(
-            type="email.poll_completed",
-            level="info",
-            summary=f"Gmail poll completed: {result.events_created} events from {result.scanned} messages",
-            payload={
-                "scanned": result.scanned,
-                "skipped_seen": result.skipped_seen,
-                "events_created": result.events_created,
-            },
-        )
-    )
-    console.print(f"Scanned: {result.scanned}")
-    console.print(f"Skipped seen: {result.skipped_seen}")
-    console.print(f"Events created: {result.events_created}")
-    for event in result.events:
-        console.print(f"- {event.event_type}: {event.company or '?'} / {event.role or '?'} ({event.confidence:.2f})")
-
-
-@email_app.command("summarize")
-def email_summarize(
-    since: str = "120d",
-    limit: int = 0,
-    live: bool = False,
-    concurrency: int = 3,
-) -> None:
-    """LLM-scan the mailbox: classify + summarize every email into data/email-summaries.jsonl."""
-    from job_hunt.services.email.summarize import SUMMARY_PATH, summarize_mailbox
-
-    settings = load_settings()
-    console.print(f"Mailbox summarize since={since} (broad query; LLM does the filtering).")
-    console.print(f"Output: {SUMMARY_PATH}")
-    if not live:
-        console.print("Dry-run only. Pass --live to call Gmail + MiniMax.")
-        return
-    result = asyncio.run(
-        summarize_mailbox(
-            settings,
-            since=since,
-            limit=limit,
-            concurrency=concurrency,
-            progress=lambda msg: console.print(f"[dim]{msg}[/dim]"),
-        )
-    )
-    ActivityLogger(settings.activity).emit(
-        ActivityEvent(
-            type="email.summarize_completed",
-            level="info",
-            summary=(
-                f"Mailbox summarize: {result.summarized} summarized, "
-                f"{result.skipped_done} already done, {result.errors} errors"
-            ),
-            payload={
-                "listed": result.listed,
-                "skipped_done": result.skipped_done,
-                "summarized": result.summarized,
-                "errors": result.errors,
-            },
-        )
-    )
-    console.print(f"Listed: {result.listed}")
-    console.print(f"Already summarized: {result.skipped_done}")
-    console.print(f"Summarized now: {result.summarized}")
-    console.print(f"Errors: {result.errors}")
-    if result.error_ids:
-        console.print(f"[yellow]Retry errors by re-running the same command (resumable).[/yellow]")
-
-
-@email_app.command("events")
-def email_events(limit: int = 20, needs_review: bool = False) -> None:
-    repo = EmailEventRepository()
-    events = repo.list(limit=limit, needs_review=needs_review)
-    table = Table("Time", "Type", "Company", "Role", "Confidence", "Review", "Subject")
-    for event in events:
-        table.add_row(
-            event.event_time.isoformat(),
-            event.event_type,
-            event.company or "",
-            event.role or "",
-            f"{event.confidence:.2f}",
-            "yes" if event.needs_review else "no",
-            event.subject[:60],
-        )
-    console.print(table)
-
-
-@email_app.command("parse-sample")
-def email_parse_sample(
-    subject: str = typer.Option(..., help="Email subject to classify."),
-    sender: str = typer.Option("recruiting@example.com", help="Email sender."),
-    body: str = typer.Option("", help="Email body/snippet."),
-    save: bool = typer.Option(False, help="Persist the parsed event to data/email-events.jsonl."),
-) -> None:
-    parsed = ParsedEmail(
-        message_id="sample",
-        thread_id=None,
-        sender=sender,
-        subject=subject,
-        snippet=body[:240],
-        body=body,
-        date=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
-    )
-    event = classify_email_event(parsed)
-    if save:
-        EmailEventRepository().append(event)
-    console.print_json(event.model_dump_json())
-
-
-@email_app.command("import-events")
-def email_import_events(
-    apply: bool = False,
-    limit: int = 20,
-    import_new: bool = False,
-    new_only: bool = False,
-    skip_review: bool = False,
-) -> None:
-    result = reconcile_email_events(
-        apply=apply,
-        limit=limit,
-        import_new=import_new,
-        update_existing=not new_only,
-        create_review=not skip_review,
-    )
-    console.print(f"Scanned: {result.scanned}")
-    console.print(f"Matched existing: {result.matched}")
-    console.print(f"Updated existing: {result.updated}")
-    console.print(f"Imported new: {result.imported}")
-    console.print(f"Review created: {result.review_created}")
-    console.print(f"Skipped: {result.skipped}")
-
-
-@email_app.command("reconcile")
-def email_reconcile(
-    apply: bool = False,
-    limit: int = 50,
-    import_new: bool = False,
-    new_only: bool = False,
-    skip_review: bool = False,
-) -> None:
-    email_import_events(
-        apply=apply,
-        limit=limit,
-        import_new=import_new,
-        new_only=new_only,
-        skip_review=skip_review,
-    )
-
-
-@email_app.command("review-candidates")
-def email_review_candidates(limit: int = 50) -> None:
-    events = list_review_candidates(limit=limit)
-    table = Table("ID", "Type", "Company", "Role", "Confidence", "Subject")
-    table.columns[0].no_wrap = True
-    for event in events:
-        table.add_row(
-            event.id[:12],
-            event.event_type,
-            _short(event.company or "", 28),
-            _short(event.role or "", 44),
-            f"{event.confidence:.2f}",
-            _short(event.subject, 56),
-        )
-    console.print(table)
-
-
-@email_app.command("approve-event")
-def email_approve_event(
-    event_id: str,
-    company: str | None = None,
-    role: str | None = None,
-    status: str | None = None,
-    force_new: bool = False,
-    note: str = "Approved from Gmail review",
-) -> None:
-    try:
-        result = approve_email_event(
-            event_id,
-            company=company,
-            role=role,
-            status=status,
-            force_new=force_new,
-            note=note,
-        )
-    except ValueError as exc:
-        console.print(f"[red]{exc}[/red]")
-        raise typer.Exit(1) from None
-    if result.tracker_entry:
-        entry = result.tracker_entry
-        console.print(f"Imported tracker row #{entry.number}: {entry.company} / {entry.role} -> {entry.status}")
-        return
-    if result.matched_existing:
-        entry = result.matched_existing
-        console.print(
-            f"Matched existing tracker row #{entry.number}: {entry.company} / {entry.role} "
-            f"({result.match_score:.2f})"
-        )
-
-
-@email_app.command("ignore-event")
-def email_ignore_event(event_id: str, note: str = "") -> None:
-    try:
-        event = ignore_email_event(event_id, note=note)
-    except ValueError as exc:
-        console.print(f"[red]{exc}[/red]")
-        raise typer.Exit(1) from None
-    console.print(f"Ignored email event {event.id[:12]}: {event.company or '?'} / {event.role or '?'}")
-
-
-@review_app.command("list")
-def review_list(limit: int = 20, status: str = "open") -> None:
-    items = ReviewRepository().list(limit=limit, status=status)
-    table = Table("ID", "Type", "Priority", "Status", "Summary")
-    for item in items:
-        table.add_row(item.id[:12], item.type, item.priority, item.status, item.summary)
-    console.print(table)
-
-
-@llm_app.command("cheap-test")
-def llm_cheap_test(
-    prompt: str = "Say ok in one short sentence.",
-    max_tokens: int = 1024,
-) -> None:
-    settings = load_settings()
-    provider = build_cheap_provider(settings)
-
-    async def run() -> None:
-        result = await traced_chat(
-            provider,
-            settings=settings,
-            messages=[ChatMessage(role="user", content=prompt)],
-            model=settings.llm.cheap.model,
-            node_name="cheap_test",
-            graph_name="llm_smoke_test",
-            model_tier="cheap",
-            temperature=settings.llm.cheap.temperature,
-            max_tokens=max_tokens,
-        )
-        console.print(result.content)
-        console.print(f"provider={result.provider} tier={result.tier}")
-        console.print(f"tokens={result.total_tokens} estimated={result.usage_estimated}")
-
-    asyncio.run(run())
-
-
-@app.command("evaluate")
-def evaluate(
-    target: str,
-    source_type: str = typer.Option("auto", help="auto, url, jd_text, or local_file."),
-    trace: bool | None = typer.Option(None, help="Temporarily enable/disable LangSmith for this run."),
-    cover_letter: bool | None = typer.Option(
-        None,
-        "--cover-letter/--no-cover-letter",
-        help="Generate a standalone one-page cover letter PDF. Defaults to apply.cover_letter_default in profile.yml.",
-    ),
-) -> None:
-    if trace is not None:
-        os.environ["JOB_HUNT_LANGSMITH_ENABLED"] = "true" if trace else "false"
-
-    if os.environ.get("JOB_HUNT_SKIP_CV_SYNC_CHECK") != "1":
-        from job_hunt.services import cv_sync_check
-
-        sync_result = cv_sync_check.run()
-        for warning in sync_result.warnings:
-            console.print(f"[yellow]cv-sync-check:[/yellow] {warning}")
-        if sync_result.errors:
-            for error in sync_result.errors:
-                console.print(f"[red]cv-sync-check:[/red] {error}")
-            console.print("[red]Aborting evaluate.[/red] Run `job-hunt tracker check-sync` for details.")
-            raise typer.Exit(1)
-
-    resolved_source = _resolve_source_type(target, source_type)
-    run_id = uuid.uuid4().hex
-    profile_values = _apply_profile_values()
-    if cover_letter is None:
-        generate_cover_letter_flag = bool(profile_values.get("apply_cover_letter_default"))
-    else:
-        generate_cover_letter_flag = cover_letter
-    state = {
-        "run_id": run_id,
-        "thread_id": run_id,
-        "input": target,
-        "source_type": resolved_source,
-        "url": target if resolved_source == "url" else None,
-        "generate_cover_letter": generate_cover_letter_flag,
-        "errors": [],
-    }
-
-    async def run() -> None:
-        graph = build_evaluate_job_graph()
-        result = await graph.ainvoke(
-            state,
-            config={"configurable": {"thread_id": run_id}},
-        )
-        scores = result.get("scores")
-        console.print(f"Run: {run_id}")
-        console.print(f"Recommendation: {result.get('recommendation', 'skip')}")
-        if scores:
-            console.print(f"Score: {scores.weighted_total:.2f}/5.0")
-        if result.get("report_path"):
-            console.print(f"Report: {result['report_path']}")
-        if result.get("pdf_path"):
-            console.print(f"PDF: {result['pdf_path']}")
-        if result.get("cover_letter_path"):
-            console.print(f"Cover letter: {result['cover_letter_path']}")
-        errors = result.get("errors") or []
-        for error in errors:
-            console.print(f"[yellow]warning:[/yellow] {error}")
-
-    asyncio.run(run())
-
-
-def _resolve_source_type(target: str, source_type: str) -> str:
-    if source_type != "auto":
-        if source_type not in {"url", "jd_text", "local_file"}:
-            raise typer.BadParameter("source_type must be auto, url, jd_text, or local_file")
-        return source_type
-    if target.startswith(("http://", "https://")):
-        return "url"
-    # P2-10: `local:jds/foo.md` is treated as a URL — web_extract intercepts the
-    # `local:` scheme and reads the file directly.
-    if target.startswith("local:"):
-        return "url"
-    if Path(target).exists() or (Path("jds") / target).exists():
-        return "local_file"
-    return "jd_text"
-
-
-def _short(value: str, limit: int) -> str:
-    if len(value) <= limit:
-        return value
-    return value[: max(0, limit - 1)].rstrip() + "…"
-
-
-def _load_cv_excerpt() -> str:
-    """Load CV markdown from the canonical profile path."""
-    candidate = Path("profile/cv.md")
-    if candidate.exists():
-        try:
-            return candidate.read_text(encoding="utf-8")
-        except OSError:
-            return ""
-    return ""
-
-
-def _build_research_context_for_prompt(
-    *,
-    company: str,
-    role: str,
-    enabled: bool,
-    purpose: str,
-) -> str:
-    """Run a small set of grounding queries and return a formatted block.
-
-    Returns ``""`` when ``--with-search`` was not requested, the WebSearch
-    provider is unconfigured, or every query yielded zero hits. Callers
-    pass the value into prompts that conditionally render
-    ``{% if research_context %}{{ research_context }}{% endif %}``.
-
-    ``purpose`` selects the query bundle: ``"research"`` favours strategy /
-    recent moves / engineering culture; ``"linkedin"`` favours news the
-    sender can reference as a hook.
-    """
-    if not enabled:
-        return ""
-    from job_hunt.services.web_search import (
-        build_web_search_provider,
-        format_search_hits,
-    )
-
-    settings = load_settings()
-    provider = build_web_search_provider(settings)
-    if provider is None:
-        console.print(
-            "[dim]--with-search ignored: web_search.provider is unset or "
-            "BRAVE_API_KEY is missing.[/dim]"
-        )
-        return ""
-
-    company_clean = company.strip()
-    role_clean = role.strip()
-    if purpose == "linkedin":
-        queries = [
-            f"{company_clean} news {role_clean}",
-            f"{company_clean} engineering blog {role_clean}",
-            f"{company_clean} product announcement",
-        ]
-    else:  # research / default
-        queries = [
-            f"{company_clean} {role_clean} engineering team",
-            f"{company_clean} recent product news",
-            f"{company_clean} engineering blog",
-            f"{company_clean} glassdoor culture",
-        ]
-    return format_search_hits(provider, queries)
-
-
-def _run_one_shot_prompt(
-    *,
-    template: str,
-    node_name: str,
-    graph_name: str,
-    max_tokens: int,
-    temperature: float,
-    **template_kwargs,
-) -> str:
-    """Render `template` and call the cheap LLM tier. Returns the response text."""
-    from job_hunt.nodes._prompts import render
-
-    prompt = render(template, **template_kwargs)
-    settings = load_settings()
-    provider = build_cheap_provider(settings)
-
-    async def run() -> str:
-        result = await traced_chat(
-            provider,
-            settings=settings,
-            messages=[ChatMessage(role="user", content=prompt)],
-            model=settings.llm.cheap.model,
-            node_name=node_name,
-            graph_name=graph_name,
-            model_tier="cheap",
-            temperature=temperature,
-            max_tokens=max_tokens,
-        )
-        return result.content
-
-    return asyncio.run(run())
-
-
-@app.command("linkedin")
-def linkedin_outreach(
-    company: str = typer.Argument(..., help="Target company."),
-    role: str = typer.Argument(..., help="Target role."),
-    jd: str | None = typer.Option(
-        None, "--jd", help="Path to JD file or pasted JD text. Optional."
-    ),
-    output: Path | None = typer.Option(
-        None, help="Optional path to write the message draft. Stdout always prints."
-    ),
-    max_tokens: int = typer.Option(900, help="LLM max tokens."),
-    with_search: bool = typer.Option(
-        False,
-        "--with-search",
-        help=(
-            "Run live Brave WebSearch queries to ground the connection-request "
-            "hook in real recent signals. No-op when web_search.provider is unset."
-        ),
-    ),
-) -> None:
-    """Draft a 300-char LinkedIn connection-request message + targets list."""
-    jd_text = ""
-    if jd:
-        jd_path = Path(jd)
-        jd_text = jd_path.read_text(encoding="utf-8") if jd_path.exists() else jd
-
-    research_context = _build_research_context_for_prompt(
-        company=company,
-        role=role,
-        enabled=with_search,
-        purpose="linkedin",
-    )
-
-    body = _run_one_shot_prompt(
-        template="linkedin_outreach.md",
-        node_name="linkedin_outreach",
-        graph_name="linkedin_outreach_cli",
-        max_tokens=max_tokens,
-        temperature=0.4,
-        company=company,
-        role=role,
-        jd_text=jd_text,
-        cv_excerpt=_load_cv_excerpt(),
-        research_context=research_context,
-    )
-    console.print(body)
-    if output:
-        output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_text(body, encoding="utf-8")
-        console.print(f"\n[green]Wrote[/green] {output}")
-
-
-@app.command("research")
-def research_prompt(
-    company: str = typer.Argument(..., help="Target company."),
-    role: str = typer.Argument(..., help="Target role."),
-    jd: str | None = typer.Option(
-        None, "--jd", help="Path to JD file or pasted JD text. Optional."
-    ),
-    output: Path | None = typer.Option(
-        None, help="Optional path to write the research prompt. Stdout always prints."
-    ),
-    max_tokens: int = typer.Option(2000, help="LLM max tokens."),
-    with_search: bool = typer.Option(
-        False,
-        "--with-search",
-        help=(
-            "Run live Brave WebSearch queries and inject the snippets into "
-            "the research prompt. No-op when web_search.provider is unset."
-        ),
-    ),
-) -> None:
-    """Generate a 6-axis deep-research prompt for Perplexity / Claude / ChatGPT."""
-    jd_text = ""
-    if jd:
-        jd_path = Path(jd)
-        jd_text = jd_path.read_text(encoding="utf-8") if jd_path.exists() else jd
-
-    research_context = _build_research_context_for_prompt(
-        company=company,
-        role=role,
-        enabled=with_search,
-        purpose="research",
-    )
-
-    body = _run_one_shot_prompt(
-        template="deep_research.md",
-        node_name="deep_research",
-        graph_name="deep_research_cli",
-        max_tokens=max_tokens,
-        temperature=0.3,
-        company=company,
-        role=role,
-        jd_text=jd_text,
-        cv_excerpt=_load_cv_excerpt(),
-        research_context=research_context,
-    )
-    console.print(body)
-    if output:
-        output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_text(body, encoding="utf-8")
-        console.print(f"\n[green]Wrote[/green] {output}")
-
-
-@app.command("project-eval")
-def project_eval(
-    project_idea: str = typer.Argument(..., help="Portfolio project idea to evaluate."),
-    role_context: str = typer.Option("", "--context", help="Optional target role/company context."),
-    output: Path | None = typer.Option(
-        None, help="Optional path to write the evaluation. Stdout always prints."
-    ),
-    max_tokens: int = typer.Option(1800, help="LLM max tokens."),
-) -> None:
-    """Evaluate whether a portfolio project is worth building."""
-    body = _run_one_shot_prompt(
-        template="project_eval.md",
-        node_name="project_eval",
-        graph_name="career_strategy_cli",
-        max_tokens=max_tokens,
-        temperature=0.25,
-        project_idea=project_idea,
-        role_context=role_context,
-        cv_excerpt=_load_cv_excerpt(),
-    )
-    console.print(body)
-    if output:
-        output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_text(body, encoding="utf-8")
-        console.print(f"\n[green]Wrote[/green] {output}")
-
-
-@app.command("training-eval")
-def training_eval(
-    training_option: str = typer.Argument(..., help="Course, certificate, or training to evaluate."),
-    role_context: str = typer.Option("", "--context", help="Optional target role/company context."),
-    output: Path | None = typer.Option(
-        None, help="Optional path to write the evaluation. Stdout always prints."
-    ),
-    max_tokens: int = typer.Option(1800, help="LLM max tokens."),
-) -> None:
-    """Evaluate whether a course or certification is worth the time."""
-    body = _run_one_shot_prompt(
-        template="training_eval.md",
-        node_name="training_eval",
-        graph_name="career_strategy_cli",
-        max_tokens=max_tokens,
-        temperature=0.25,
-        training_option=training_option,
-        role_context=role_context,
-        cv_excerpt=_load_cv_excerpt(),
-    )
-    console.print(body)
-    if output:
-        output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_text(body, encoding="utf-8")
-        console.print(f"\n[green]Wrote[/green] {output}")
-
-
-@app.command("search-test")
-def search_test(
-    query: str = typer.Argument(..., help="Search query to send to the configured provider."),
-    count: int | None = typer.Option(None, help="Override result count (default from settings)."),
-    freshness: str | None = typer.Option(
-        None, help="Override freshness: pd (past day) / pw (week) / pm (month) / py (year)."
-    ),
-) -> None:
-    """Smoke-test the configured WebSearch provider (Brave by default)."""
-    from job_hunt.services.web_search import build_web_search_provider
-
-    settings = load_settings()
-    provider = build_web_search_provider(settings)
-    if provider is None:
-        console.print(
-            "[red]No web search provider configured.[/red]\n"
-            "Set `web_search.provider: brave` in config/settings.yml and "
-            "BRAVE_API_KEY in .env, then retry."
-        )
-        raise typer.Exit(1)
-
-    hits = provider.search(query, count=count, freshness=freshness)
-    if not hits:
-        console.print("[yellow]No hits returned.[/yellow]")
-        return
-
-    table = Table("#", "Title", "URL", "Age")
-    for i, hit in enumerate(hits, 1):
-        table.add_row(str(i), hit.title[:60], hit.url[:70], hit.age or "")
-    console.print(table)
-    console.print(f"\n{len(hits)} result(s) for: {query!r}")
-
-
-@app.command("search-usage")
-def search_usage(
-    month: str | None = typer.Option(
-        None,
-        help="UTC month in YYYY-MM. Defaults to the current month.",
-    ),
-) -> None:
-    """Show WebSearch quota usage (api_calls / cache_hits / errors) for a month.
-
-    Brave's free tier is ~2k queries/month — this command lets the operator
-    eyeball the counter before kicking off a wide scan or batch evaluation.
-    """
-    from job_hunt.services.web_search import (
-        CachingProvider,
-        WebSearchCache,
-        _resolve_cache_dir,
-        build_web_search_provider,
-    )
-
-    settings = load_settings()
-    provider = build_web_search_provider(settings)
-    cache: WebSearchCache | None = None
-    if isinstance(provider, CachingProvider):
-        cache = provider.cache
-    else:
-        cache_dir = _resolve_cache_dir(settings, "brave")
-        if cache_dir.exists():
-            cache = WebSearchCache(
-                cache_dir,
-                ttl_seconds=settings.web_search.cache_ttl_seconds,
-            )
-    if cache is None:
-        console.print(
-            "[yellow]No cache directory found.[/yellow] "
-            "Either WebSearch is disabled or no queries have run yet."
-        )
-        return
-
-    usage = cache.usage(month=month)
-    table = Table("Metric", "Count")
-    table.add_row("API calls", str(usage.api_calls))
-    table.add_row("Cache hits", str(usage.cache_hits))
-    table.add_row("Errors / empty", str(usage.errors))
-    table.add_row(
-        "[bold]Total provider lookups[/bold]",
-        f"[bold]{usage.api_calls + usage.cache_hits + usage.errors}[/bold]",
-    )
-    console.print(f"WebSearch usage for {usage.month} (UTC):")
-    console.print(table)
-    console.print(f"\nUsage file: {cache.usage_path()}")
-
-
-@app.command("compare")
-def compare_offers(
-    tracker_ids: list[int] = typer.Argument(
-        ..., help="Tracker entry numbers to compare (2 or more)."
-    ),
-    output: Path | None = typer.Option(
-        None, help="Optional path to write the comparison markdown. Stdout always prints."
-    ),
-    max_tokens: int = typer.Option(2400, help="LLM max tokens for the comparison."),
-) -> None:
-    """Compare 2+ offers from the tracker on a 10-dimension weighted matrix."""
-    if len(tracker_ids) < 2:
-        console.print("[red]compare requires at least 2 tracker IDs.[/red]")
-        raise typer.Exit(1)
-
-    from job_hunt.services import compare_offers as svc
-
-    offers, missing = svc.load_offers(tracker_ids)
-    if missing:
-        console.print(f"[yellow]Tracker IDs not found:[/yellow] {', '.join(missing)}")
-    if len(offers) < 2:
-        console.print("[red]Fewer than 2 offers resolved; aborting.[/red]")
-        raise typer.Exit(1)
-
-    prompt = svc.render_prompt(offers)
-    settings = load_settings()
-    provider = build_cheap_provider(settings)
-
-    async def run() -> str:
-        result = await traced_chat(
-            provider,
-            settings=settings,
-            messages=[ChatMessage(role="user", content=prompt)],
-            model=settings.llm.cheap.model,
-            node_name="compare_offers",
-            graph_name="compare_offers_cli",
-            model_tier="cheap",
-            temperature=0.2,
-            max_tokens=max_tokens,
-        )
-        return result.content
-
-    body = asyncio.run(run())
-    console.print(body)
-    if output:
-        output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_text(body, encoding="utf-8")
-        console.print(f"\n[green]Wrote[/green] {output}")
-
-
-@app.command("scan")
-def scan(
-    company: str | None = typer.Option(None, help="Only scan matching company name."),
-    limit_companies: int | None = typer.Option(None, help="Limit number of direct ATS companies."),
-    include_non_canada: bool = typer.Option(False, help="Include jobs outside Canada in results."),
-    apply: bool = typer.Option(False, help="Write new jobs to scan history and pipeline."),
-    channel: str | None = typer.Option(
-        None,
-        "--channel",
-        help=(
-            "Restrict tier-3 discovery to one channel id "
-            "(linkedin / indeed / glassdoor / waterlooworks / talentegg / ...)."
-        ),
-    ),
-) -> None:
-    from job_hunt.services.web_search import build_web_search_provider
-
-    settings = load_settings()
-    web_search_provider = build_web_search_provider(settings)
-    if web_search_provider is None:
-        console.print(
-            "[dim]WebSearch tier disabled (set web_search.provider=brave + BRAVE_API_KEY "
-            "to scan companies with scan_method: websearch and discovery channels).[/dim]"
-        )
-    result = scan_portals(
-        company=company,
-        limit_companies=limit_companies,
-        include_non_canada=include_non_canada,
-        apply=apply,
-        web_search_provider=web_search_provider,
-        discovery_channel=channel,
-    )
-    console.print(f"Scanned companies: {result.scanned_companies}")
-    console.print(f"Fetched jobs: {result.fetched_jobs}")
-    console.print(f"Matched jobs: {result.matched_jobs}")
-    console.print(f"Skipped by filters: {result.skipped_filtered}")
-    console.print(f"New jobs: {result.new_jobs}")
-    console.print(f"Skipped duplicates: {result.skipped_duplicates}")
-    for error in result.errors:
-        console.print(f"[yellow]warning:[/yellow] {error}")
-    table = Table("Company", "Title", "Location", "Portal", "URL")
-    for job in result.jobs[:30]:
-        table.add_row(job.company, job.title, job.location, job.portal, job.url)
-    if result.jobs:
-        console.print(table)
-    if result.new_jobs > 30:
-        console.print(f"... {result.new_jobs - 30} more new jobs")
+from ._render import _short, console
+from job_hunt.services.profile_loader import _apply_profile_values
+from job_hunt.services.web_extract import _extract_loop_url_metadata
+from job_hunt.services.source_type import _resolve_source_type
+from .outreach import _gate_outward_artifact
+from . import app
 
 
 @app.command("apply")
 def apply_assist(
-    url: str = typer.Argument(..., help="Application or job form URL to open."),
+    url: str | None = typer.Argument(
+        None,
+        help=(
+            "Application or job form URL to open. Required unless --no-browser "
+            "is set — there is nothing to open in a browser otherwise. Recording "
+            "a submission via --no-browser never requires one."
+        ),
+    ),
     tracker_id: int | None = typer.Option(None, help="Existing tracker row number to mark Applied after confirmation."),
     company: str | None = typer.Option(None, help="Company name if no tracker row is supplied."),
     role: str | None = typer.Option(None, help="Role title if no tracker row is supplied."),
@@ -1911,7 +90,7 @@ def apply_assist(
         "--low-score-override",
         help=(
             "Override the ethical low-score gate. By default, applying to a tracker "
-            "row with weighted_total < 4.0 aborts. Set this flag if you have a "
+            "row with weighted_total < 3.0 aborts. Set this flag if you have a "
             "specific reason to apply anyway (e.g. learning experience, network signal)."
         ),
     ),
@@ -1922,6 +101,15 @@ def apply_assist(
     when every safety gate passes (see flag help). Any gate failure falls back
     to the normal "user submits manually" flow without partial state.
     """
+    if url is None and not no_browser:
+        console.print(
+            "[red]URL is required unless --no-browser is set:[/red] there is "
+            "nothing to open in a browser. Pass a URL, or add --no-browser to "
+            "record an application found without one (e.g. from LinkedIn "
+            "browsing or a referral)."
+        )
+        raise typer.Exit(1)
+
     settings = load_settings()
     tracker = TrackerRepository(Path("data/applications.md"))
     existing = _tracker_entry_by_id(tracker, tracker_id) if tracker_id is not None else None
@@ -2053,6 +241,9 @@ def apply_assist(
         )
     )
     console.print(f"[green]Recorded Applied[/green] tracker row #{updated.number}: {updated.company} / {updated.role}")
+    marker = _link_artifacts_to_row(pdf, updated, url)
+    if marker:
+        console.print(f"[dim]Linked {marker.parent.name} to row #{updated.number}.[/dim]")
 
 
 @app.command("agent-apply")
@@ -2088,9 +279,16 @@ def full_loop_from_url(
         console.print("[yellow]Running evaluation first. This may take a while.[/yellow]")
         graph = build_evaluate_job_graph()
         run_id = f"run_{uuid.uuid4().hex}"
+        source_type = _resolve_source_type(url, "auto")
         result = asyncio.run(
             graph.ainvoke(
-                {"input": url, "run_id": run_id, "thread_id": run_id},
+                {
+                    "input": url,
+                    "run_id": run_id,
+                    "thread_id": run_id,
+                    "source_type": source_type,
+                    "url": url if source_type == "url" else None,
+                },
                 config={"configurable": {"thread_id": run_id}},
             )
         )
@@ -2191,6 +389,12 @@ def apply_answers(
         help="Path to a text file containing the verbatim form questions.",
     ),
     url: str | None = typer.Option(None, "--url", help="Optional application URL for context."),
+    jd: str | None = typer.Option(
+        None,
+        "--jd",
+        help="Path to JD file or pasted JD text. Grounds the red team's targeting "
+        "pass (CLAUDE.md §1) against the actual posting; optional.",
+    ),
     output: Path | None = typer.Option(
         None,
         "--output",
@@ -2207,6 +411,11 @@ def apply_answers(
         )
         raise typer.Exit(1)
 
+    jd_text = ""
+    if jd:
+        jd_path = Path(jd)
+        jd_text = jd_path.read_text(encoding="utf-8") if jd_path.exists() else jd
+
     tracker = TrackerRepository(Path("data/applications.md"))
     report_context = _load_apply_report_context(
         tracker=tracker,
@@ -2219,9 +428,14 @@ def apply_answers(
     if report_context and report_context.get("path"):
         report_path = Path(report_context["path"])
         if report_path.exists():
-            report_full = report_path.read_text(encoding="utf-8")
             section_g = report_context.get("application_section") or ""
-    if not report_full:
+            # Section G is the extract of this report that answers form
+            # questions. Sending the whole report alongside it adds ~13k
+            # tokens of duplicate context per call, so the full text is a
+            # fallback for when the section could not be located.
+            if not section_g:
+                report_full = report_path.read_text(encoding="utf-8")
+    if not section_g and not report_full:
         console.print(
             f"[yellow]No matching report found for {company} / {role}; "
             "answers will be grounded in the CV only.[/yellow]"
@@ -2240,13 +454,44 @@ def apply_answers(
             report_full=report_full,
             cv_md=cv_md,
         )
-        console.print(result.content)
-        if output:
-            output.parent.mkdir(parents=True, exist_ok=True)
-            output.write_text(result.content + "\n", encoding="utf-8")
-            console.print(f"\n[green]Wrote answers to[/green] {output}")
         for error in result.errors:
             console.print(f"[yellow]warning:[/yellow] {error}")
+
+        # CLAUDE.md §1: application-form answers are named alongside résumés
+        # and cover letters as requiring red team before delivery, and the
+        # reviewer reads artifacts off disk — so, unlike before, the answers
+        # always get written out, not only when --output was passed. Prefer
+        # the run directory the matched report already lives in (paired with
+        # the pipeline's own cv.pdf / redteam.md); fall back to a company/role
+        # slug when no report matched.
+        if output is not None:
+            answers_path = output
+        elif report_context and report_context.get("path"):
+            answers_path = Path("output") / Path(report_context["path"]).stem / "apply-answers.md"
+        else:
+            company_slug = re.sub(r"[^a-z0-9]+", "-", company.lower()).strip("-")
+            role_slug = re.sub(r"[^a-z0-9]+", "-", role.lower()).strip("-")
+            answers_path = Path("output") / f"{company_slug}-{role_slug}-apply-answers.md"
+        answers_path.parent.mkdir(parents=True, exist_ok=True)
+        answers_path.write_text(result.content + "\n", encoding="utf-8")
+
+        if not jd_text:
+            # Without a JD the review's TARGETING pass (CLAUDE.md §1) has nothing
+            # to compare against and degrades to a no-op — say so rather than
+            # letting a clean-looking verdict imply all three passes ran.
+            console.print(
+                "[yellow]No JD supplied (--jd); the red team's targeting pass "
+                "has nothing to compare against.[/yellow]"
+            )
+        _gate_outward_artifact(artifact_path=answers_path, jd_text=jd_text, company=company, role=role)
+
+        # CLAUDE.md §1: printing the answers and announcing their path *is*
+        # delivery — this command used to do both before the gate above, so
+        # the operator could read and paste the answers into an employer's
+        # form before any verdict existed. Presence of the gate was verified
+        # three times over; order never was.
+        console.print(result.content)
+        console.print(f"\n[green]Wrote answers to[/green] {answers_path}")
 
     asyncio.run(run())
 
@@ -2260,14 +505,159 @@ def apply_close_session() -> None:
     console.print("Browser will close after saving the persistent profile.")
 
 
-def _active_apply_artifact_dir() -> Path:
+@app.command("apply-status")
+def apply_status(
+    controls: bool = typer.Option(
+        False,
+        "--controls",
+        help="Include the full form-control summary (label/type/value/required).",
+    ),
+    session: str | None = typer.Option(
+        None,
+        "--session",
+        help="Artifact-dir name substring to disambiguate between live sessions.",
+    ),
+) -> None:
+    """Print a compact text report of the live fill-only page (no screenshot).
+
+    Token-efficient replacement for reading a screenshot or driving a browser
+    MCP: URL, Workday step, error banners, required-but-empty fields, and
+    (with --controls) every visible form control with its current value.
+    """
+    art_dir = _active_apply_artifact_dir(session)
+    sentinel = apply_ipc.submit_command(
+        art_dir, apply_ipc.COMMAND_TYPE_STATUS, {"controls": controls}
+    )
+    response = apply_ipc.wait_for_response(art_dir, apply_ipc.command_id_of(sentinel))
+    if response is None:
+        console.print(
+            "[red]No response from the fill-only session (timeout). "
+            "It may be dead — restart with `apply --fill-only`.[/red]"
+        )
+        raise typer.Exit(1)
+    for line in page_summary.render_status_lines(response):
+        console.print(line)
+
+
+@app.command("apply-do")
+def apply_do(
+    click: str | None = typer.Option(
+        None, "--click", help="Click a button/link by its visible label."
+    ),
+    fill: str | None = typer.Option(
+        None, "--fill", help="Fill an input by label: 'label=value'."
+    ),
+    select: str | None = typer.Option(
+        None, "--select", help="Pick a dropdown option by label: 'label=option'."
+    ),
+    check: str | None = typer.Option(
+        None, "--check", help="Check a checkbox/radio by its label."
+    ),
+    session: str | None = typer.Option(
+        None,
+        "--session",
+        help="Artifact-dir name substring to disambiguate between live sessions.",
+    ),
+) -> None:
+    """Run one targeted action inside the live fill-only session.
+
+    The escape hatch for fixing a single missed field without an interactive
+    browser session. Never touches Submit: submit-like labels are rejected —
+    the final click stays human-only (or goes through the gated --auto-submit).
+    """
+    try:
+        op, label, value = apply_ops.parse_op_args(
+            click=click, fill=fill, select=select, check=check
+        )
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    if op == apply_ops.OP_CLICK and _looks_like_submit_label(label):
+        console.print(
+            "[red]apply-do refuses submit-like clicks; the final Submit stays "
+            "manual (or use the gated `apply --auto-submit`).[/red]"
+        )
+        raise typer.Exit(1)
+    art_dir = _active_apply_artifact_dir(session)
+    sentinel = apply_ipc.submit_command(
+        art_dir,
+        apply_ipc.COMMAND_TYPE_DO,
+        {"op": op, "label": label, "value": value},
+    )
+    response = apply_ipc.wait_for_response(art_dir, apply_ipc.command_id_of(sentinel))
+    if response is None:
+        console.print(
+            "[red]No response from the fill-only session (timeout). "
+            "It may be dead — restart with `apply --fill-only`.[/red]"
+        )
+        raise typer.Exit(1)
+    if response.get("ok"):
+        console.print(f"[green]Done:[/green] {op} '{label}'"
+                      + (f" = '{value}'" if value else ""))
+    else:
+        console.print(
+            f"[red]Failed:[/red] {op} '{label}' — {response.get('detail') or 'no matching element'}"
+        )
+    if response.get("url"):
+        console.print(f"URL now: {response['url']}")
+    required_empty = response.get("required_empty")
+    if required_empty:
+        console.print(f"Required still empty ({len(required_empty)}):")
+        for item in required_empty:
+            console.print(f"  - {item}")
+    elif required_empty == []:
+        console.print("Required still empty: none")
+    if not response.get("ok"):
+        raise typer.Exit(1)
+
+
+# Deny-list for apply-do clicks. Final-submission buttons across ATSes say
+# more than just "Submit" (Greenhouse/Lever/Ashby use Apply/Finish/Done/…),
+# so anything that plausibly finalizes an application is refused; the human
+# (or the multi-gated --auto-submit) performs that click. Step-advance labels
+# like "Save and Continue" / "Next" stay allowed.
+_SUBMIT_LABEL_RE = re.compile(
+    r"\bsubmit\b|\bsend\b|\bapply\b|\bfinish\b|\bcomplete\b|\bdone\b"
+    r"|\bconfirm\b|\bfinali[sz]e\b",
+    re.I,
+)
+
+
+def _looks_like_submit_label(label: str) -> bool:
+    return bool(_SUBMIT_LABEL_RE.search(label))
+
+
+class ApplyDoRefused(Exception):
+    """An apply-do op was refused by a safety/ambiguity check (not a miss)."""
+
+
+def _active_apply_artifact_dir(session: str | None = None) -> Path:
     """Find the most-recent active session and warn if its heartbeat is stale.
 
     Phase 3.3: prefer ``.session.json`` heartbeat freshness; fall back to
     ``.cdp`` for sessions started by an older runner that doesn't write a
-    heartbeat yet.
+    heartbeat yet. ``session`` (a substring of the artifact dir name)
+    disambiguates when several sessions are alive at once.
     """
-    art_dir = apply_ipc.find_active_session_dir(Path("artifacts/apply"))
+    root = Path("artifacts/apply")
+    alive = apply_ipc.find_alive_session_dirs(root)
+    if session:
+        matches = [d for d in alive if session in d.name]
+        if len(matches) == 1:
+            return matches[0]
+        console.print(
+            f"[red]--session '{session}' matches {len(matches)} live session(s): "
+            f"{', '.join(d.name for d in matches) or 'none'}[/red]"
+        )
+        raise typer.Exit(1)
+    if len(alive) > 1:
+        console.print(
+            "[red]Multiple live fill-only sessions; pick one with --session:[/red]"
+        )
+        for d in alive:
+            console.print(f"- {d.name}")
+        raise typer.Exit(1)
+    art_dir = apply_ipc.find_active_session_dir(root)
     if art_dir is None:
         console.print(
             "[red]No active fill-only session found. Start one with: apply --fill-only[/red]"
@@ -2305,6 +695,7 @@ def _build_agent_apply_prompt(
     smoke_command = "printf 'n\\n' | " + base_command + " --headless"
     replace_command = ".venv/bin/job-hunt apply-replace-pdf '<new-resume.pdf>'"
     capture_command = ".venv/bin/job-hunt apply-capture-page"
+    status_command = ".venv/bin/job-hunt apply-status"
 
     return f"""# Agent Apply Runbook
 
@@ -2319,6 +710,11 @@ Hard safety rules:
 - Do not expose secrets, cookies, OAuth tokens, or webhook URLs in the conversation.
 - Do not record the application as Applied until the user explicitly confirms they clicked Submit.
 
+Token rules (cheapest source of truth first):
+- Never drive the application page through a browser MCP (Playwright MCP etc.); all browser interaction goes through these CLI commands.
+- Verify results from `apply-review.json` (and `{status_command}`) first. Read a screenshot image only when the JSON shows a problem (`required_empty`, `validation_issues`, `warnings`, or `pdf: null` when a PDF was expected).
+- Fix a single missed field with `.venv/bin/job-hunt apply-do --fill 'label=value'` (also `--click/--select/--check`) instead of taking over the browser.
+
 Fill command, run this in the background so the browser stays open:
 
 ```bash
@@ -2331,20 +727,21 @@ Execution protocol:
 3. Confirm the PDF exists if `--pdf` is present.
 4. Run the fill command in visible browser mode.
 5. Read the terminal output. It should list attached PDF, auto-filled fields, skipped fields, visible actions, artifact dir, and a review screenshot path.
-6. Inspect the browser or the newest `apply-review-*.png` in the artifact dir. Summarize for the user:
+6. Read `apply-review.json` in the artifact dir (NOT the screenshot). Summarize for the user:
    - company and role
    - fields filled
-   - fields needing attention
-   - PDF filename shown in the form
+   - fields needing attention (`required_empty`, `validation_issues`, `warnings`)
+   - PDF filename (`pdf` key)
    - any risk, missing answer, or work-authorization question
-7. Ask the user to review the visible browser. If the user requests edits, update the open form when possible; otherwise tell the user the exact field/value to change.
+   Only read the newest `apply-review-*.jpg` when the JSON shows a problem. For a live view of the page state, run `{status_command}` (add `--controls` for the full field list).
+7. Ask the user to review the visible browser. If the user requests edits, fix single fields with `apply-do --fill 'label=value'`; otherwise tell the user the exact field/value to change.
 8. If the user asks to swap the PDF, run:
 
 ```bash
 {replace_command}
 ```
 
-9. Wait a few seconds, then inspect the newest screenshot to verify the replacement.
+9. Wait a few seconds, then confirm the swap from the command output or `{status_command}`.
 10. When the user says it is ready, instruct the user to manually click the final Submit/Apply button in the browser.
 11. After the user confirms they submitted, capture the current confirmation page while the browser is still open:
 
@@ -2352,7 +749,7 @@ Execution protocol:
 {capture_command}
 ```
 
-12. Wait a few seconds, then inspect the newest screenshot for a confirmation such as "Thank you for applying" or "application received".
+12. Wait a few seconds, then inspect the newest `apply-page-*.jpg` screenshot for a confirmation such as "Thank you for applying" or "application received".
 13. Record the application:
 
 ```bash
@@ -2395,8 +792,8 @@ def _infer_loop_target(*, url: str, description: str) -> dict:
     entry = None
     score = 0.0
     if company:
-        entry, score = tracker.find_match(company=company, role=role)
-    if (not entry or score < 0.70) and inferred_text:
+        entry, score = EmployerMatcher(tracker.parse()).raw_match(company=company, role=role)
+    if (not entry or score < MATCH_THRESHOLD) and inferred_text:
         entry, score = _best_tracker_text_match(tracker.parse(), inferred_text)
     if entry and score >= 0.55:
         company = company or entry.company
@@ -2407,7 +804,7 @@ def _infer_loop_target(*, url: str, description: str) -> dict:
             company = company or ats_company
     if company and role:
         role = re.sub(rf"^{re.escape(company)}\s+", "", role, flags=re.IGNORECASE).strip() or role
-    if entry and score >= 0.70:
+    if entry and score >= MATCH_THRESHOLD:
         role = entry.role
     if entry:
         pdf = _select_pdf_for_entry(entry)
@@ -2419,21 +816,6 @@ def _infer_loop_target(*, url: str, description: str) -> dict:
         "pdf": pdf,
         "tracker_entry": entry if entry and score >= 0.55 else None,
         "metadata": metadata,
-    }
-
-
-def _extract_loop_url_metadata(url: str) -> dict[str, str]:
-    try:
-        result = asyncio.run(extract_url_text(url, min_chars=50))
-    except Exception:
-        return {}
-    return {
-        "title": result.title.strip(),
-        "company": result.company.strip(),
-        "location": result.location.strip(),
-        "ats": result.ats.strip(),
-        "adapter": result.adapter,
-        "text": result.text.strip(),
     }
 
 
@@ -2532,6 +914,31 @@ def _loop_agent_apply_command(*, url: str, company: str | None, role: str | None
 
 _BROWSER_PROFILE = Path("storage/browser-profile")
 _CDP_PORT = 9222
+
+
+# Session screenshots are agent/user evidence, not print material: full-page
+# JPEG at this quality is ~5-10x smaller than the old PNG and cheaper for the
+# agent to read, with no loss of legibility for form text.
+_SCREENSHOT_JPEG_QUALITY = 60
+
+
+async def _save_session_screenshot(page, art_dir: Path, prefix: str) -> Path:
+    path = art_dir / f"{prefix}-{uuid.uuid4().hex[:8]}.jpg"
+    try:
+        await page.screenshot(
+            path=str(path), full_page=True,
+            type="jpeg", quality=_SCREENSHOT_JPEG_QUALITY,
+            timeout=15000,
+        )
+    except Exception:
+        # Very tall/hostile pages can stall full-page capture; a viewport
+        # shot is still useful evidence and keeps the session responsive.
+        await page.screenshot(
+            path=str(path), full_page=False,
+            type="jpeg", quality=_SCREENSHOT_JPEG_QUALITY,
+            timeout=10000,
+        )
+    return path
 
 
 async def _open_apply_page(
@@ -2791,8 +1198,18 @@ async def _open_apply_page(
                         "[yellow]Auto-submit skipped: Submit button not located on Review page.[/yellow]"
                     )
 
-        screenshot = art_dir / f"apply-review-{uuid.uuid4().hex[:8]}.png"
-        await page.screenshot(path=str(screenshot), full_page=True)
+        screenshot = await _save_session_screenshot(page, art_dir, "apply-review")
+        if required_empty or validation_issues:
+            # Failure-path aid: dump a compact form-control summary so the agent
+            # can diagnose from JSON instead of reading the screenshot.
+            controls = await page_summary.collect_form_controls(page)
+            (art_dir / "apply-controls.json").write_text(
+                json.dumps(
+                    {"url": page.url, "form_controls": controls},
+                    ensure_ascii=False, indent=2,
+                ),
+                encoding="utf-8",
+            )
         summary_path = _write_apply_review_summary(
             artifact_dir=art_dir,
             url=url,
@@ -2862,7 +1279,11 @@ async def _open_apply_page(
             cdp_sentinel = art_dir / ".cdp"
             cdp_sentinel.write_text("active")
             session_started = asyncio.get_event_loop().time()
-            apply_ipc.write_heartbeat(art_dir, started_at=session_started)
+            session_token = uuid.uuid4().hex
+            apply_ipc.clear_stale_responses(art_dir)
+            apply_ipc.write_heartbeat(
+                art_dir, started_at=session_started, session_token=session_token
+            )
             apply_run_log.emit(
                 art_dir, "session.started", url=url, company=company, role=role,
                 pdf=str(pdf) if pdf else None,
@@ -2888,7 +1309,10 @@ async def _open_apply_page(
                     break
                 # Heartbeat refresh.
                 if now - last_heartbeat_at >= apply_ipc.HEARTBEAT_REFRESH_SECONDS:
-                    apply_ipc.write_heartbeat(art_dir, started_at=session_started)
+                    apply_ipc.write_heartbeat(
+                        art_dir, started_at=session_started,
+                        session_token=session_token,
+                    )
                     last_heartbeat_at = now
                 await asyncio.sleep(2)
 
@@ -2897,6 +1321,24 @@ async def _open_apply_page(
 
                 for cmd in pending:
                     last_activity_at = asyncio.get_event_loop().time()
+                    # Authenticate every sentinel against the per-session nonce:
+                    # a stale script or stray file must not drive the browser.
+                    if cmd.token != session_token:
+                        apply_run_log.emit(
+                            art_dir, "command.rejected",
+                            kind=cmd.kind, reason="bad_session_token",
+                        )
+                        console.print(
+                            f"[red]Rejected command '{cmd.kind}': session token mismatch.[/red]"
+                        )
+                        try:
+                            apply_ipc.write_response(
+                                art_dir, cmd.id,
+                                {"ok": False, "detail": "session token mismatch"},
+                            )
+                        except Exception:
+                            pass
+                        continue
                     if cmd.kind == apply_ipc.COMMAND_TYPE_REPLACE_PDF:
                         new_pdf_str = str(cmd.payload.get("pdf", "")).strip()
                         # Reject empty payloads up front: ``Path("")`` would
@@ -2915,8 +1357,9 @@ async def _open_apply_page(
                             await _attach_resume(page, new_pdf)
                             await page.wait_for_timeout(1500)
                             shutil.copy2(new_pdf, art_dir / new_pdf.name)
-                            last_screenshot = art_dir / f"apply-review-{uuid.uuid4().hex[:8]}.png"
-                            await page.screenshot(path=str(last_screenshot), full_page=True)
+                            last_screenshot = await _save_session_screenshot(
+                                page, art_dir, "apply-review"
+                            )
                             _append_apply_review_event(
                                 artifact_dir=art_dir,
                                 event=f"PDF replaced: {new_pdf.name}",
@@ -2935,8 +1378,9 @@ async def _open_apply_page(
                             )
                             console.print(f"[red]PDF not found:[/red] {new_pdf_str}")
                     elif cmd.kind == apply_ipc.COMMAND_TYPE_CAPTURE_PAGE:
-                        last_screenshot = art_dir / f"apply-page-{uuid.uuid4().hex[:8]}.png"
-                        await page.screenshot(path=str(last_screenshot), full_page=True)
+                        last_screenshot = await _save_session_screenshot(
+                            page, art_dir, "apply-page"
+                        )
                         current_title = await page.title()
                         _append_apply_review_event(
                             artifact_dir=art_dir,
@@ -2954,6 +1398,59 @@ async def _open_apply_page(
                             page, art_dir, url, company, role, report_context,
                             pdf, role_warnings,
                         )
+                    elif cmd.kind == apply_ipc.COMMAND_TYPE_STATUS:
+                        # Fail closed: a status/do handler crash must never
+                        # kill the fill-only session.
+                        try:
+                            status_payload = await _collect_status_payload(
+                                page,
+                                include_controls=bool(cmd.payload.get("controls")),
+                                filled_hint=filled,
+                            )
+                            apply_ipc.write_response(art_dir, cmd.id, status_payload)
+                            apply_run_log.emit(
+                                art_dir, "command.status",
+                                url=page.url,
+                                required_empty_count=len(status_payload.get("required_empty") or []),
+                                error_count=len(status_payload.get("errors") or []),
+                            )
+                            console.print("[green]Status request answered.[/green]")
+                        except Exception as exc:
+                            apply_run_log.emit(
+                                art_dir, "command.status.failed",
+                                error=_short(str(exc), 160),
+                            )
+                            console.print(f"[red]Status request failed:[/red] {exc}")
+                    elif cmd.kind == apply_ipc.COMMAND_TYPE_DO:
+                        try:
+                            do_result = await _handle_do_command(
+                                page, cmd.payload, filled_hint=filled,
+                            )
+                            apply_ipc.write_response(art_dir, cmd.id, do_result)
+                            apply_run_log.emit(
+                                art_dir,
+                                "command.do" if do_result.get("ok") else "command.do.failed",
+                                op=do_result.get("op"), label=do_result.get("label"),
+                                detail=do_result.get("detail") or None,
+                            )
+                            _append_apply_review_event(
+                                artifact_dir=art_dir,
+                                event=(
+                                    f"apply-do {do_result.get('op')} '{do_result.get('label')}': "
+                                    + ("ok" if do_result.get("ok") else f"failed ({do_result.get('detail') or 'no match'})")
+                                ),
+                            )
+                            console.print(
+                                f"[green]apply-do handled:[/green] {do_result.get('op')} '{do_result.get('label')}'"
+                                if do_result.get("ok")
+                                else f"[red]apply-do failed:[/red] {do_result.get('op')} '{do_result.get('label')}'"
+                            )
+                        except Exception as exc:
+                            apply_run_log.emit(
+                                art_dir, "command.do.failed",
+                                error=_short(str(exc), 160),
+                            )
+                            console.print(f"[red]apply-do crashed:[/red] {exc}")
                     elif cmd.kind == apply_ipc.COMMAND_TYPE_CLOSE_SESSION:
                         _append_apply_review_event(
                             artifact_dir=art_dir,
@@ -3036,8 +1533,16 @@ async def _handle_refill_current_page(
     )
     labels = await page.locator("button, a[role=button], input[type=submit]").all_inner_texts()
     actions = [_short(label.strip(), 80) for label in labels if label.strip()]
-    last_screenshot = art_dir / f"apply-review-{uuid.uuid4().hex[:8]}.png"
-    await page.screenshot(path=str(last_screenshot), full_page=True)
+    last_screenshot = await _save_session_screenshot(page, art_dir, "apply-review")
+    if required_empty or refill_validation_issues:
+        controls = await page_summary.collect_form_controls(page)
+        (art_dir / "apply-controls.json").write_text(
+            json.dumps(
+                {"url": page.url, "form_controls": controls},
+                ensure_ascii=False, indent=2,
+            ),
+            encoding="utf-8",
+        )
     _write_apply_review_summary(
         artifact_dir=art_dir,
         url=url,
@@ -3075,6 +1580,220 @@ async def _handle_refill_current_page(
         for item in required_empty[:20]:
             console.print(f"- {item}")
     return last_screenshot
+
+
+async def _collect_status_payload(
+    page, *, include_controls: bool, filled_hint: list[str]
+) -> dict:
+    """Build the compact apply-status response for the live page.
+
+    ``filled_hint`` is the session's accumulated ``filled[]`` list, used to
+    suppress required-empty false positives the same way the fill path does.
+    """
+    try:
+        title = await page.title()
+    except Exception:
+        title = ""
+    step = ""
+    if "myworkdayjobs.com" in page.url:
+        try:
+            step = await _workday_current_step(page)
+        except Exception:
+            step = ""
+    required_empty = _filter_required_empty_fields(
+        await _required_empty_fields(page), filled_hint
+    )
+    errors = await page_summary.collect_error_banners(page)
+    try:
+        labels = await page.locator(
+            "button, a[role=button], input[type=submit]"
+        ).all_inner_texts()
+        actions = [_short(label.strip(), 80) for label in labels if label.strip()][:12]
+    except Exception:
+        actions = []
+    payload: dict = {
+        "ok": True,
+        "url": page.url,
+        "title": title,
+        "workday_step": step,
+        "errors": errors,
+        "required_empty": required_empty,
+        "actions": actions,
+    }
+    if include_controls:
+        payload["form_controls"] = await page_summary.collect_form_controls(page)
+    return payload
+
+
+async def _handle_do_command(page, payload: dict, *, filled_hint: list[str]) -> dict:
+    """Execute one apply-do op against the live page; always returns a response."""
+    op = str(payload.get("op") or "")
+    label = str(payload.get("label") or "")
+    value = str(payload.get("value") or "")
+    ok = False
+    detail = ""
+    if not op or not label:
+        detail = "missing op/label"
+    elif op == apply_ops.OP_CLICK and _looks_like_submit_label(label):
+        # Defense in depth: the CLI already refuses submit-like clicks, but a
+        # hand-written sentinel must not bypass the human-only submit rule.
+        detail = "submit-like click refused"
+    else:
+        try:
+            ok = await apply_ops.execute_op(
+                page, op, label, value,
+                click=_do_click_by_label,
+                fill=_do_fill_by_label,
+                select=_do_select_by_label,
+                check=_do_check_by_label,
+            )
+        except ApplyDoRefused as exc:
+            detail = str(exc)
+        except Exception as exc:
+            detail = _short(str(exc), 160)
+    if ok and op == apply_ops.OP_CLICK:
+        # A click may navigate or trigger validation; let the DOM settle so
+        # the required_empty/url below describe the resulting page, not the
+        # one the click left behind.
+        try:
+            await page.wait_for_load_state("domcontentloaded", timeout=5000)
+        except Exception:
+            pass
+        await page.wait_for_timeout(1200)
+    required_empty = _filter_required_empty_fields(
+        await _required_empty_fields(page), filled_hint
+    )
+    return {
+        "ok": ok,
+        "op": op,
+        "label": label,
+        "value": value,
+        "detail": detail,
+        "url": page.url,
+        "required_empty": required_empty,
+    }
+
+
+async def _resolve_unique_target(candidates, label: str):
+    """First locator with exactly one match wins; >1 matches is a hard refusal.
+
+    Candidates are ordered exact-match-first so a precise label never loses to
+    a broader substring locator, and ``.first`` never silently picks among
+    multiple hits (red-team fix: partial first-match mutating the wrong field).
+    """
+    for locator in candidates:
+        try:
+            n = await locator.count()
+        except Exception:
+            continue
+        if n == 0:
+            continue
+        if n > 1:
+            raise ApplyDoRefused(f"ambiguous: {n} elements match '{label}'")
+        return locator.first
+    return None
+
+
+async def _element_looks_like_submit(target) -> bool:
+    """Read back the resolved element's own text/labels before clicking.
+
+    The CLI-side guard only sees the requested label; without this, clicking
+    'Save' could land on a 'Save & Submit' button.
+    """
+    try:
+        text = await target.evaluate(
+            "el => [el.innerText, el.value, el.getAttribute('aria-label')]"
+            ".filter(Boolean).join(' ')"
+        )
+    except Exception:
+        return False
+    return _looks_like_submit_label(str(text or ""))
+
+
+async def _do_click_by_label(page, label: str) -> bool:
+    pattern = re.compile(re.escape(label), re.I)
+    target = await _resolve_unique_target(
+        (
+            page.get_by_role("button", name=label, exact=True),
+            page.get_by_role("link", name=label, exact=True),
+            page.get_by_role("button", name=pattern),
+            page.get_by_role("link", name=pattern),
+            page.locator("button, [role='button'], a, input[type='submit']").filter(
+                has_text=pattern
+            ),
+        ),
+        label,
+    )
+    if target is None:
+        return False
+    if await _element_looks_like_submit(target):
+        raise ApplyDoRefused("resolved element looks like a final submit control")
+    try:
+        await target.click(timeout=3000)
+        return True
+    except Exception:
+        return False
+
+
+async def _do_fill_by_label(page, label: str, value: str) -> bool:
+    pattern = re.compile(re.escape(label), re.I)
+    target = await _resolve_unique_target(
+        (
+            page.get_by_label(label, exact=True),
+            page.get_by_label(pattern),
+            page.get_by_placeholder(pattern),
+        ),
+        label,
+    )
+    if target is not None:
+        try:
+            await target.fill(value, timeout=3000)
+            return True
+        except Exception:
+            pass
+    # Workday-style: input inside the question container matching the label text.
+    try:
+        return await _fill_workday_input_in_question(page, label, value, force=True)
+    except Exception:
+        return False
+
+
+async def _do_select_by_label(page, label: str, value: str) -> bool:
+    pattern = re.compile(re.escape(label), re.I)
+    target = await _resolve_unique_target(
+        (page.get_by_label(label, exact=True), page.get_by_label(pattern)), label
+    )
+    if target is not None:
+        try:
+            await target.select_option(label=value, timeout=3000)
+            return True
+        except Exception:
+            pass
+    try:
+        return await _select_workday_dropdown_by_label(page, label, [value], force=True)
+    except Exception:
+        return False
+
+
+async def _do_check_by_label(page, label: str) -> bool:
+    pattern = re.compile(re.escape(label), re.I)
+    target = await _resolve_unique_target(
+        (
+            page.get_by_role("checkbox", name=label, exact=True),
+            page.get_by_role("radio", name=label, exact=True),
+            page.get_by_role("checkbox", name=pattern),
+            page.get_by_role("radio", name=pattern),
+            page.get_by_label(pattern),
+        ),
+        label,
+    )
+    if target is None:
+        return False
+    try:
+        await target.check(timeout=3000)
+        return True
+    except Exception:
+        return False
 
 
 async def _enter_application_form(page) -> None:
@@ -3577,97 +2296,6 @@ async def _auto_fill_application(
     return filled, skipped, answers
 
 
-async def _fill_workday_phone_code(page, search_term: str = "Canada") -> bool:
-    """Fill Workday Country Phone Code by removing any auto-filled chip then re-selecting.
-
-    Workday profile auto-fill may pre-populate a chip visually, but that chip is often
-    not "confirmed" in React's controlled state, causing form validation to reject it.
-    Removing the chip and re-selecting forces Workday to register a fresh selection event.
-    """
-    try:
-        # Step 1: Remove any existing phone code chips (click all × buttons near phone section).
-        # Use JavaScript to find and click × buttons scoped to the Country Phone Code section.
-        await page.evaluate(
-            """() => {
-                const normalize = t => (t || '').replace(/\\s+/g, ' ').trim().toLowerCase();
-                const visible = el => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
-                // Find the Country Phone Code label
-                const labels = Array.from(document.querySelectorAll('label, div, span, p'))
-                    .filter(el => visible(el) && normalize(el.innerText) === 'country phone code');
-                for (const lbl of labels) {
-                    let scope = lbl.parentElement;
-                    for (let d = 0; scope && d < 5; d++, scope = scope.parentElement) {
-                        // Click any × / remove buttons inside this section
-                        const removeBtns = Array.from(scope.querySelectorAll('button'))
-                            .filter(b => visible(b) && /^[×✕✗x]$/i.test(normalize(b.innerText)));
-                        removeBtns.forEach(b => b.click());
-                        if (removeBtns.length) break;
-                    }
-                }
-            }"""
-        )
-        await page.wait_for_timeout(500)
-
-        # Step 2: Find the text input inside the Country Phone Code combobox and type to search.
-        # Workday's chip combobox has an underlying <input> for text entry.
-        input_found = bool(
-            await page.evaluate(
-                """(searchTerm) => {
-                    const normalize = t => (t || '').replace(/\\s+/g, ' ').trim().toLowerCase();
-                    const visible = el => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
-                    const labels = Array.from(document.querySelectorAll('label, div, span, p'))
-                        .filter(el => visible(el) && normalize(el.innerText) === 'country phone code');
-                    for (const lbl of labels) {
-                        let scope = lbl.parentElement;
-                        for (let d = 0; scope && d < 5; d++, scope = scope.parentElement) {
-                            const inputs = Array.from(scope.querySelectorAll('input:not([type=hidden])'))
-                                .filter(visible);
-                            for (const inp of inputs) {
-                                inp.focus();
-                                // Use React's native setter to trigger onChange
-                                const setter = Object.getOwnPropertyDescriptor(
-                                    window.HTMLInputElement.prototype, 'value').set;
-                                if (setter) setter.call(inp, searchTerm);
-                                inp.dispatchEvent(new Event('input', {bubbles: true}));
-                                inp.dispatchEvent(new Event('change', {bubbles: true}));
-                                return true;
-                            }
-                        }
-                    }
-                    return false;
-                }""",
-                search_term,
-            )
-        )
-        await page.wait_for_timeout(1200)
-
-        # Step 3: Click the matching option from autocomplete.
-        for option_text in [f"{search_term} (+1)", "Canada (+1)", search_term]:
-            pat = re.compile(re.escape(option_text), re.IGNORECASE)
-            for locator in [
-                page.get_by_role("option", name=pat),
-                page.get_by_role("menuitem", name=pat),
-                page.locator('[role="option"], [role="menuitem"], li').filter(has_text=pat),
-            ]:
-                if await locator.count():
-                    await locator.first.click(timeout=4000)
-                    await page.wait_for_timeout(500)
-                    return True
-
-        # Fallback: keyboard navigation (ArrowDown + Enter)
-        if input_found:
-            await page.keyboard.press("ArrowDown")
-            await page.wait_for_timeout(300)
-            await page.keyboard.press("Enter")
-            await page.wait_for_timeout(500)
-            return True
-
-        # Last resort: dropdown-button approach
-        return await _select_workday_dropdown_by_label(page, "Country Phone Code", ["Canada (+1)", "Canada", "+1"])
-    except Exception:
-        return False
-
-
 async def _fill_workday_current_step(
     page,
     values: dict[str, str],
@@ -3979,44 +2607,6 @@ async def _select_workday_dropdown_in_question(page, label_fragment: str, choice
         return False
 
 
-async def _fill_workday_textarea_containing_label(page, label_fragment: str, value: str) -> bool:
-    """Fill the first textarea whose nearby label CONTAINS label_fragment (partial match)."""
-    if not value:
-        return False
-    try:
-        return bool(
-            await page.evaluate(
-                """({fragment, value}) => {
-                    const normalize = text => (text || '').replace(/\\*/g, '').replace(/\\s+/g, ' ').trim().toLowerCase();
-                    const wanted = normalize(fragment);
-                    const visible = el => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
-                    const setVal = (el, val) => {
-                        const proto = window.HTMLTextAreaElement.prototype;
-                        const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
-                        if (setter) setter.call(el, val); else el.value = val;
-                        el.dispatchEvent(new Event('input', {bubbles: true}));
-                        el.dispatchEvent(new Event('change', {bubbles: true}));
-                        el.dispatchEvent(new Event('blur', {bubbles: true}));
-                    };
-                    const areas = Array.from(document.querySelectorAll('textarea')).filter(visible);
-                    for (const area of areas) {
-                        let scope = area.parentElement;
-                        for (let depth = 0; scope && depth < 8; depth++, scope = scope.parentElement) {
-                            if (normalize(scope.innerText).includes(wanted)) {
-                                setVal(area, value);
-                                return true;
-                            }
-                        }
-                    }
-                    return false;
-                }""",
-                {"fragment": label_fragment, "value": value},
-            )
-        )
-    except Exception:
-        return False
-
-
 async def _choose_workday_option(page, choices: list[str]) -> bool:
     await page.wait_for_timeout(700)
     for choice in choices:
@@ -4136,24 +2726,6 @@ async def _click_workday_save_and_continue(page) -> bool:
         return True
     except Exception:
         return False
-
-
-async def _maybe_continue_workday_experience(page) -> bool:
-    if "myworkdayjobs.com" not in page.url:
-        return False
-    try:
-        text = await page.locator("body").inner_text(timeout=5000)
-    except Exception:
-        return False
-    if "My Experience" not in text:
-        return False
-    if "Resume/CV" in text and "Successfully Uploaded" not in text:
-        return False
-    try:
-        await page.keyboard.press("Escape")
-    except Exception:
-        pass
-    return await _click_workday_save_and_continue(page)
 
 
 # Phase 3.2: hard cap on the advancement loop. Workday has 5 known steps
@@ -4397,19 +2969,6 @@ async def _workday_advance_all_steps(
 
 async def _workday_review_needs_repair(page) -> bool:
     return await _workday_review_needs_repair_from_module(
-        page,
-        experience_entries=_workday_experience_entries(),
-        education_entries=_workday_education_entries(_apply_profile_values()),
-    )
-
-
-async def _workday_review_validation_issues(page) -> list[str]:
-    """Return human-readable Review-gate messages (backwards-compatible signature).
-
-    Phase 3.1: the structured ``ReviewIssue`` records are also captured via
-    ``_collect_workday_review_issues`` so they can be written to apply-review.json.
-    """
-    return await _workday_review_validation_messages(
         page,
         experience_entries=_workday_experience_entries(),
         education_entries=_workday_education_entries(_apply_profile_values()),
@@ -4933,151 +3492,6 @@ async def _fill_workday_scoped_field(page, marker: str, label_fragment: str, val
         return False
 
 
-async def _fill_workday_input_near_text(page, label_fragment: str, value: str) -> bool:
-    if not value:
-        return False
-    try:
-        return bool(
-            await page.evaluate(
-                """({labelFragment, value}) => {
-                    const visible = el => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
-                    const norm = text => (text || '').replace(/\\*/g, '').replace(/\\s+/g, ' ').trim().toLowerCase();
-                    const wanted = norm(labelFragment);
-                    const setValue = (input, val) => {
-                        const proto = input.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
-                        const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
-                        if (setter) setter.call(input, val); else input.value = val;
-                        input.dispatchEvent(new InputEvent('input', {bubbles: true, inputType: 'insertText', data: val}));
-                        input.dispatchEvent(new Event('change', {bubbles: true}));
-                        input.dispatchEvent(new Event('blur', {bubbles: true}));
-                    };
-                    const labels = Array.from(document.querySelectorAll('label, div, span'))
-                        .filter(visible)
-                        .map(el => ({el, text: norm(el.innerText), rect: el.getBoundingClientRect()}))
-                        .filter(item => item.text.includes(wanted))
-                        .sort((a, b) => a.rect.top - b.rect.top);
-                    for (const label of labels) {
-                        const inputs = Array.from(document.querySelectorAll('input:not([type="hidden"]):not([type="file"]):not([type="checkbox"]):not([type="radio"]), textarea'))
-                            .filter(visible)
-                            .map(input => ({input, rect: input.getBoundingClientRect()}))
-                            .filter(item => item.rect.top >= label.rect.top - 8 && item.rect.top - label.rect.bottom < 120)
-                            .sort((a, b) => Math.abs(a.rect.top - label.rect.bottom) - Math.abs(b.rect.top - label.rect.bottom));
-                        if (inputs[0]) {
-                            setValue(inputs[0].input, value);
-                            return true;
-                        }
-                    }
-                    return false;
-                }""",
-                {"labelFragment": label_fragment, "value": value},
-            )
-        )
-    except Exception:
-        return False
-
-
-async def _fill_workday_month_year_containing(page, label_fragment: str, month: str, year: str) -> bool:
-    masked_value = f"{int(month):02d}/{year}"
-    try:
-        month_spin = page.locator(
-            "xpath="
-            f"//*[self::label or self::div or self::span][normalize-space()='{label_fragment}' or normalize-space()='{label_fragment}*']"
-            "/following::input[@role='spinbutton' and @aria-label='Month'][1]"
-        )
-        year_spin = page.locator(
-            "xpath="
-            f"//*[self::label or self::div or self::span][normalize-space()='{label_fragment}' or normalize-space()='{label_fragment}*']"
-            "/following::input[@role='spinbutton' and @aria-label='Year'][1]"
-        )
-        if await month_spin.count() and await year_spin.count():
-            await month_spin.first.fill(str(int(month)), timeout=5000)
-            await year_spin.first.fill(str(year), timeout=5000)
-            await page.wait_for_timeout(300)
-            month_value = await month_spin.first.input_value(timeout=1000)
-            year_value = await year_spin.first.input_value(timeout=1000)
-            if str(int(month)) == str(int(month_value or 0)) and str(year) == str(year_value):
-                return True
-    except Exception:
-        pass
-    try:
-        loc = page.locator(
-            "xpath="
-            f"//*[self::label or self::div or self::span][normalize-space()='{label_fragment}' or normalize-space()='{label_fragment}*']"
-            "/following::input[not(@type='hidden') and not(@type='file')][1]"
-        )
-        if await loc.count():
-            field = loc.first
-            await field.scroll_into_view_if_needed(timeout=3000)
-            try:
-                await field.fill(masked_value, timeout=5000)
-            except Exception:
-                await field.click(timeout=5000, force=True)
-                await page.keyboard.press("Meta+A")
-                await page.keyboard.type(masked_value, delay=20)
-            await page.wait_for_timeout(300)
-            try:
-                current = (await field.input_value(timeout=1000)).strip()
-                if year in current and f"{int(month):02d}" in current:
-                    return True
-            except Exception:
-                pass
-    except Exception:
-        pass
-    try:
-        return bool(
-            await page.evaluate(
-                """({labelFragment, month, year}) => {
-                    const visible = el => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
-                    const norm = text => (text || '').replace(/\\s+/g, ' ').trim().toLowerCase();
-                    const wanted = norm(labelFragment);
-                    const setValue = (input, value) => {
-                        const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
-                        if (setter) setter.call(input, String(value)); else input.value = String(value);
-                        input.dispatchEvent(new InputEvent('input', {bubbles: true, inputType: 'insertText', data: String(value)}));
-                        input.dispatchEvent(new Event('change', {bubbles: true}));
-                        input.dispatchEvent(new Event('blur', {bubbles: true}));
-                    };
-                    const paddedMonth = String(Number(month)).padStart(2, '0');
-                    const maskedValue = `${paddedMonth}/${year}`;
-                    const labels = Array.from(document.querySelectorAll('label, div, span'))
-                        .filter(visible)
-                        .map(el => ({el, text: norm(el.innerText), rect: el.getBoundingClientRect()}))
-                        .filter(item => item.text === wanted || item.text.startsWith(wanted + ' '))
-                        .sort((a, b) => a.rect.top - b.rect.top);
-                    for (const label of labels) {
-                        const visibleDateInputs = Array.from(document.querySelectorAll('input:not([type="hidden"]):not([type="file"])'))
-                            .filter(visible)
-                            .filter(input => (input.getAttribute('role') || '') !== 'spinbutton')
-                            .map(input => ({input, rect: input.getBoundingClientRect(), placeholder: input.placeholder || ''}))
-                            .filter(item => item.rect.top >= label.rect.top - 12 && item.rect.top - label.rect.bottom < 140)
-                            .sort((a, b) => a.rect.left - b.rect.left);
-                        const masked = visibleDateInputs.find(item => /mm\\s*\\/\\s*yyyy/i.test(item.placeholder) || item.input.value.includes('/'));
-                        if (masked) {
-                            setValue(masked.input, maskedValue);
-                            return true;
-                        }
-                        const inputs = Array.from(document.querySelectorAll('input[role="spinbutton"]'))
-                            .filter(visible)
-                            .map(input => ({input, rect: input.getBoundingClientRect()}))
-                            .filter(item => item.rect.top >= label.rect.top - 12 && item.rect.top - label.rect.bottom < 120)
-                            .sort((a, b) => a.rect.left - b.rect.left);
-                        const monthInput = inputs.find(item => /month/i.test(item.input.getAttribute('aria-label') || ''))?.input;
-                        const yearInput = inputs.find(item => /year/i.test(item.input.getAttribute('aria-label') || ''))?.input;
-                        if (monthInput && yearInput) {
-                            setValue(monthInput, Number(month));
-                            setValue(yearInput, year);
-                            return true;
-                        }
-                    }
-                    return false;
-                }""",
-                {"labelFragment": label_fragment, "month": month, "year": year},
-            )
-        )
-    except Exception:
-        return False
-
-
 async def _workday_any_input_has_value(page, value: str) -> bool:
     try:
         return bool(
@@ -5096,179 +3510,6 @@ def _workday_experience_entries() -> list[dict[str, str]]:
 
 def _workday_education_entries(values: dict) -> list[dict[str, str]]:
     return _load_workday_education_entries(values)
-
-
-async def _workday_fill_repeating_section(page, *, section_keywords: list[str], entries: list[dict[str, str]], kind: str) -> bool:
-    try:
-        try:
-            body_text = await page.locator("body").inner_text(timeout=2000)
-        except Exception:
-            body_text = ""
-        marker = entries[0].get("title") if kind == "experience" else entries[0].get("school")
-        if marker and marker not in body_text:
-            for keyword in section_keywords:
-                keyword_text = keyword.replace("'", "")
-                add = page.locator(
-                    "xpath="
-                    f"//*[self::h3 or self::h4 or self::h5 or @role='heading'][contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{keyword_text.lower()}')]"
-                    "/following::button[normalize-space()='Add' or normalize-space()='Add Another' or normalize-space()='添加' or normalize-space()='添加另一个'][1]"
-                )
-                try:
-                    if await add.count():
-                        await add.first.click(timeout=5000, force=True)
-                        await page.wait_for_timeout(1200)
-                        break
-                except Exception:
-                    continue
-        result = await page.evaluate(
-            """async ({sectionKeywords, entries, kind}) => {
-                const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
-                const visible = el => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
-                const norm = text => (text || '').replace(/\\*/g, '').replace(/\\s+/g, ' ').trim().toLowerCase();
-                const setInput = (el, value) => {
-                    if (!el || value === undefined || value === null) return false;
-                    const proto = el.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
-                    const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
-                    if (setter) setter.call(el, String(value)); else el.value = String(value);
-                    el.dispatchEvent(new InputEvent('input', {bubbles: true, inputType: 'insertText', data: String(value)}));
-                    el.dispatchEvent(new Event('change', {bubbles: true}));
-                    el.dispatchEvent(new Event('blur', {bubbles: true}));
-                    return true;
-                };
-                const headings = Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,[role="heading"], div, span'))
-                    .filter(visible)
-                    .filter(h => {
-                        const text = norm(h.innerText);
-                        return text && text.length < 80;
-                    });
-                const heading = headings.find(h => {
-                    const text = norm(h.innerText);
-                    return sectionKeywords.some(k => text === norm(k) || text.includes(norm(k)));
-                });
-                if (!heading) return false;
-                const headingRect = heading.getBoundingClientRect();
-                const nextHeading = headings
-                    .filter(h => h !== heading)
-                    .map(h => ({h, rect: h.getBoundingClientRect(), text: norm(h.innerText)}))
-                    .filter(item => item.rect.top > headingRect.top + 8)
-                    .filter(item => {
-                        const text = item.text;
-                        return [
-                            'work experience', 'professional experience', 'education', 'education history',
-                            'skills', 'resume/cv', 'websites', 'social network', '专业经验', '教育背景', '技能', '网站'
-                        ].some(k => text.includes(k));
-                    })
-                    .sort((a, b) => a.rect.top - b.rect.top)[0];
-                const sectionTop = headingRect.top;
-                const sectionBottom = nextHeading ? nextHeading.rect.top : Number.POSITIVE_INFINITY;
-                const inSection = el => {
-                    const rect = el.getBoundingClientRect();
-                    return rect.bottom > sectionTop && rect.top < sectionBottom;
-                };
-                const findItemGroups = () => Array.from(document.querySelectorAll('[role="group"], fieldset, div'))
-                    .filter(inSection)
-                    .filter(visible)
-                    .filter(el => {
-                        const text = norm(el.innerText);
-                        if (!text) return false;
-                        if (kind === 'experience') {
-                            return /(work experience|professional experience|专业经验)\\s*\\d+/.test(text)
-                                || (text.includes('job title') && text.includes('company'))
-                                || (text.includes('职务名称') && text.includes('公司'));
-                        }
-                        return /(education|education history|教育背景)\\s*\\d+/.test(text)
-                            || text.includes('school or university')
-                            || text.includes('学校或大学');
-                    })
-                    .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top)
-                    .filter((el, idx, arr) => !arr.slice(0, idx).some(prev => prev.contains(el)));
-                const addButton = () => Array.from(document.querySelectorAll('button,[role="button"]'))
-                    .filter(inSection)
-                    .filter(visible)
-                    .filter(btn => /^(add|add another|添加|添加另一个)$/i.test((btn.innerText || btn.getAttribute('aria-label') || '').trim()))
-                    .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top)
-                    .at(0);
-                for (let guard = 0; guard < entries.length + 2 && findItemGroups().length < entries.length; guard++) {
-                    const btn = addButton();
-                    if (!btn) break;
-                    btn.scrollIntoView({block: 'center'});
-                    btn.click();
-                    await sleep(900);
-                }
-                const groups = findItemGroups().slice(0, entries.length);
-                if (!groups.length) return false;
-                for (let i = 0; i < Math.min(groups.length, entries.length); i++) {
-                    const group = groups[i];
-                    const entry = entries[i];
-                    const inputs = Array.from(group.querySelectorAll('input:not([type="hidden"]):not([type="file"]):not([type="checkbox"]), textarea'))
-                        .filter(visible)
-                        .filter(input => (input.getAttribute('role') || '') !== 'spinbutton')
-                        .filter(input => !/search/i.test(input.getAttribute('placeholder') || ''))
-                        .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top || a.getBoundingClientRect().left - b.getBoundingClientRect().left);
-                    const textInputs = inputs.filter(input => input.tagName !== 'TEXTAREA');
-                    const textareas = inputs.filter(input => input.tagName === 'TEXTAREA');
-                    const spins = Array.from(group.querySelectorAll('input[role="spinbutton"], input[data-automation-id*="Year"], input[data-automation-id*="Month"]'))
-                        .filter(visible)
-                        .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top || a.getBoundingClientRect().left - b.getBoundingClientRect().left);
-                    const setMonthYearPairs = () => {
-                        const months = spins.filter(input => /month/i.test(input.getAttribute('aria-label') || input.getAttribute('data-automation-id') || ''));
-                        const years = spins.filter(input => /year/i.test(input.getAttribute('aria-label') || input.getAttribute('data-automation-id') || ''));
-                        if (months.length >= 2 && years.length >= 2) {
-                            setInput(months[0], entry.start_month);
-                            setInput(years[0], entry.start_year);
-                            setInput(months[1], entry.end_month);
-                            setInput(years[1], entry.end_year);
-                        } else {
-                            setInput(spins[0], entry.start_month);
-                            setInput(spins[1], entry.start_year);
-                            setInput(spins[2], entry.end_month);
-                            setInput(spins[3], entry.end_year);
-                        }
-                    };
-                    if (kind === 'experience') {
-                        setInput(textInputs[0], entry.title);
-                        setInput(textInputs[1], entry.company);
-                        setInput(textInputs[2], entry.location);
-                        setInput(textareas[0], entry.description);
-                    } else {
-                        setInput(textInputs[0], entry.school);
-                        const gpaInput = textInputs.find(input => /gpa|综合成绩/i.test(input.getAttribute('aria-label') || input.placeholder || input.parentElement?.innerText || ''));
-                        if (gpaInput && entry.gpa) setInput(gpaInput, entry.gpa);
-                        const majorInput = textInputs.find((input, idx) => idx > 0 && input !== gpaInput && /major|field|主修|专业/i.test(input.getAttribute('aria-label') || input.placeholder || input.parentElement?.innerText || ''));
-                        if (majorInput) setInput(majorInput, entry.field);
-                    }
-                    setMonthYearPairs();
-                }
-                return true;
-            }""",
-            {"sectionKeywords": section_keywords, "entries": entries, "kind": kind},
-        )
-        if not result:
-            return False
-        if kind == "education":
-            for entry in entries:
-                await _select_workday_dropdown_containing_label(page, "Degree", [entry["degree"], "Masters", "Bachelor", "Other"])
-                await _select_workday_dropdown_containing_label(page, "学位", [entry["degree"], "2级学位", "1级学位", "其他"])
-        marker = entries[0].get("title") if kind == "experience" else entries[0].get("school")
-        if marker:
-            try:
-                marker_visible = bool(
-                    await page.evaluate(
-                        """(marker) => {
-                            const text = document.body.innerText || '';
-                            if (text.includes(marker)) return true;
-                            return Array.from(document.querySelectorAll('input, textarea')).some(el => (el.value || '').includes(marker));
-                        }""",
-                        marker,
-                    )
-                )
-            except Exception:
-                marker_visible = False
-            if not marker_visible:
-                return False
-        return True
-    except Exception:
-        return False
 
 
 async def _workday_remove_duplicate_uploads(page, *, keep_filenames: list[str]) -> int:
@@ -5349,19 +3590,6 @@ async def _fill_workday_voluntary_disclosures(page, values: dict) -> tuple[list[
     )
 
     return await fill_voluntary_disclosures(page, values)
-
-
-async def _wait_for_workday_step(page, step_name: str, *, timeout_ms: int = 10000) -> bool:
-    deadline = asyncio.get_event_loop().time() + timeout_ms / 1000
-    while asyncio.get_event_loop().time() < deadline:
-        try:
-            text = await page.locator("body").inner_text(timeout=2000)
-            if step_name in text:
-                return True
-        except Exception:
-            pass
-        await page.wait_for_timeout(500)
-    return False
 
 
 async def _wait_for_workday_step_change(page, previous_step: str, *, timeout_ms: int = 10000) -> bool:
@@ -5801,23 +4029,6 @@ async def _workday_element_in_question(page, label_fragment: str, selector: str)
         return handle.as_element()
     except Exception:
         return None
-
-
-async def _fill_first_visible_textarea(page, value: str) -> bool:
-    try:
-        areas = page.locator("textarea")
-        for index in range(await areas.count()):
-            area = areas.nth(index)
-            if not await area.is_visible():
-                continue
-            current = await area.input_value()
-            if not current:
-                await area.fill(value)
-                await area.blur(timeout=2000)
-                return True
-    except Exception:
-        return False
-    return False
 
 
 async def _fill_workday_field_containing(page, needle: str, value: str, force: bool = False) -> bool:
@@ -6534,106 +4745,10 @@ def _apply_artifact_dir(company: str | None, role: str | None) -> Path:
     return Path("artifacts/apply") / "-".join(parts)
 
 
-def _apply_profile_values() -> dict[str, object]:
-    values = {
-        "name": "Example Candidate",
-        "first_name": "Example",
-        "last_name": "Candidate",
-        "email": "candidate@example.com",
-        "phone": "555-0100",
-        "linkedin": "https://www.linkedin.com/in/example-candidate/",
-        "github": "https://github.com/example-candidate",
-        "portfolio": "https://candidate.example.com",
-        "location": "City, Region, Country",
-        "country": "",
-        "address": "123 Example Street",
-        "city": "",
-        "province": "",
-        "postal_code": "",
-        "phone_device_type": "Mobile",
-        "source": "Company Website",
-        "full_time_start": "",
-        "graduation_date": "",
-        "gpa_4_scale": "",
-        # Co-op eligibility fields (used by Workday co-op forms)
-        "cowork_eligibility_category": "",
-        "cowork_eligibility_description": "",
-        # Path to an unofficial transcript PDF for Workday upload; leave empty to skip
-        "transcript_pdf": "",
-        # Academic distinction/award proof is not a transcript. Use it only for
-        # fields asking for honors or academic-achievement proof.
-        "academic_distinction_pdf": "",
-        # Legal/terms consent is never assumed. Set explicitly in profile.yml or
-        # create storage/private/workday-consent-terms after the user approves.
-        "workday_consent_terms_and_conditions": False,
-        # Auto-submit profile gate. CLI ``--auto-submit`` is only honoured when
-        # ``apply.auto_submit_enabled: true`` is also set in profile.yml.
-        "apply_auto_submit_enabled": False,
-        # Default to producing a one-page cover letter PDF on every evaluate run.
-        # CLI ``--cover-letter`` overrides per-run.
-        "apply_cover_letter_default": False,
-    }
-    profile_path = Path("profile/profile.yml")
-    if not profile_path.exists():
-        return values
-    try:
-        raw = yaml.safe_load(profile_path.read_text(encoding="utf-8")) or {}
-    except Exception:
-        return values
-    candidate = raw.get("candidate") or raw
-    location = raw.get("location") or {}
-    cowork = raw.get("cowork") or {}
-    workday = raw.get("workday") or {}
-    apply_section = raw.get("apply") or {}
-    values.update(
-        {
-            "name": candidate.get("full_name") or candidate.get("name") or values["name"],
-            "email": candidate.get("email") or values["email"],
-            "phone": candidate.get("phone") or values["phone"],
-            "linkedin": candidate.get("linkedin") or values["linkedin"],
-            "github": candidate.get("github") or values["github"],
-            "portfolio": candidate.get("portfolio_url") or candidate.get("website") or values["portfolio"],
-            "location": candidate.get("location") or values["location"],
-            "country": location.get("country") or values["country"],
-            "address": location.get("address") or values["address"],
-            "city": location.get("city") or values["city"],
-            "province": location.get("province") or values["province"],
-            "postal_code": location.get("postal_code") or values["postal_code"],
-            "cowork_eligibility_category": cowork.get("eligibility_category") or values["cowork_eligibility_category"],
-            "cowork_eligibility_description": cowork.get("eligibility_description") or values["cowork_eligibility_description"],
-            "gpa_4_scale": cowork.get("gpa_4_scale")
-            or candidate.get("gpa_4_scale")
-            or values["gpa_4_scale"],
-            "graduation_date": cowork.get("graduation_date")
-            or candidate.get("graduation_date")
-            or values["graduation_date"],
-            "full_time_start": apply_section.get("full_time_start")
-            or candidate.get("full_time_start")
-            or values["full_time_start"],
-            "transcript_pdf": cowork.get("transcript_pdf") or candidate.get("transcript_pdf") or values["transcript_pdf"],
-            "academic_distinction_pdf": cowork.get("academic_distinction_pdf")
-            or candidate.get("academic_distinction_pdf")
-            or values.get("academic_distinction_pdf", ""),
-            "workday_consent_terms_and_conditions": bool(
-                workday.get("consent_terms_and_conditions")
-                or candidate.get("workday_consent_terms_and_conditions")
-            ),
-            "apply_auto_submit_enabled": bool(
-                apply_section.get("auto_submit_enabled")
-            ),
-            "apply_cover_letter_default": bool(
-                apply_section.get("cover_letter_default")
-            ),
-        }
-    )
-    name_parts = values["name"].split()
-    if name_parts:
-        values["first_name"] = candidate.get("first_name") or name_parts[0]
-        values["last_name"] = candidate.get("last_name") or " ".join(name_parts[1:]) or values["last_name"]
-    return values
-
-
-_LOW_SCORE_GATE_THRESHOLD = 4.0
+# Tracks the Ethical Use threshold in `prompts/shared.md`, lowered 4.0 → 3.0 on
+# 2026-08-16. Leaving it at 4.0 would have aborted the apply flow for every role
+# the scorer now recommends in the 3.0–4.0 band — Whitby at 3.73 among them.
+_LOW_SCORE_GATE_THRESHOLD = 3.0
 
 # Bumped when apply-review.json fields are renamed, removed, or change semantics.
 # Additive fields do NOT require a bump. Downstream tooling (`jq`, dashboards)
@@ -6642,10 +4757,11 @@ APPLY_REVIEW_SCHEMA_VERSION = 1
 
 
 def _enforce_low_score_gate(report_context: dict | None, *, override: bool) -> None:
-    """Abort the apply flow if the matched tracker row has weighted_total < 4.0.
+    """Abort the apply flow if the matched tracker row scores below the threshold.
 
     Per `prompts/shared.md` Ethical Use rules, applying to a low-score role costs
-    recruiter attention. The gate fires only when (a) we have a tracker match
+    recruiter attention. "Low" now means a blocker the candidate cannot satisfy,
+    not an imperfect match. The gate fires only when (a) we have a tracker match
     with a parseable score and (b) that score is below the threshold. When no
     score is available (manual cases, fresh tracker rows, "N/A" / "DUP"), the
     gate stays silent rather than blocking legitimate manual workflows.
@@ -6684,8 +4800,8 @@ def _load_apply_report_context(
     entry = tracker_entry
     score = 1.0 if entry else 0.0
     if entry is None:
-        entry, score = tracker.find_match(company=company, role=role)
-    if not entry or score < 0.70:
+        entry, score = EmployerMatcher(tracker.parse()).raw_match(company=company, role=role)
+    if not entry or score < MATCH_THRESHOLD:
         return None
 
     report_path = _resolve_report_path(entry.report)
@@ -6997,13 +5113,45 @@ def _tracker_entry_by_id(tracker: TrackerRepository, tracker_id: int | None):
     raise typer.Exit(1)
 
 
+def _link_artifacts_to_row(pdf: Path | None, entry, url: str | None) -> Path | None:
+    """Stamp the tracker row number into the directory the PDF came from.
+
+    Materials and tracker rows had nothing joining them, so an agent could
+    build a résumé, the user could send it, and no later check could tell the
+    directory had never been recorded. The marker makes that join exact for
+    everything recorded from here on; `job-hunt checkup` reads it.
+    """
+    if pdf is None or entry is None:
+        return None
+    directory = pdf.resolve().parent
+    if Path("output").resolve() not in directory.parents:
+        return None
+    marker = directory / ".tracker-row"
+    marker.write_text(
+        json.dumps(
+            {
+                "tracker_row": entry.number,
+                "company": entry.company,
+                "role": entry.role,
+                "status": entry.status,
+                "url": url,
+                "recorded_at": datetime.now().isoformat(timespec="seconds"),
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return marker
+
+
 def _record_manual_submission(
     *,
     tracker: TrackerRepository,
     tracker_entry,
     company: str,
     role: str,
-    url: str,
+    url: str | None,
     pdf: Path | None,
 ):
     today = datetime.now().date()
@@ -7019,8 +5167,12 @@ def _record_manual_submission(
         tracker.update_entry(updated)
         return updated
 
-    existing, score = tracker.find_match(company=company, role=role)
-    if existing and score >= 0.70:
+    from job_hunt.services.employer_match import EmployerMatcher, load_aliases
+
+    matcher = EmployerMatcher(tracker.parse(), aliases=load_aliases())
+    match = matcher.best(company=company, role=role, intent="mutate")
+    if match:
+        existing = match.entry
         updated = existing.model_copy(
             update={
                 "status": "Applied",
@@ -7036,10 +5188,10 @@ def _record_manual_submission(
         role=role,
         status="Applied",
         email_ref=f"manual:{today}",
-        note=f"Submitted manually via apply assist; url={url}",
+        note=(
+            f"Submitted manually via apply assist; url={url}"
+            if url
+            else "Submitted manually via apply assist; no URL (recorded without one)"
+        ),
         pdf_attached=bool(pdf),
     )
-
-
-if __name__ == "__main__":
-    app()

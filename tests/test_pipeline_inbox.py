@@ -67,6 +67,47 @@ def test_mark_processed_returns_false_when_not_pending(tmp_path: Path) -> None:
     )
 
 
+_ROW_BELOW_THE_WRONG_HEADING = (
+    "- [ ] https://example.com/a | SIGA | Applications Systems Analyst"
+    " | Saskatoon | posted 2026-08-10 | source: adzuna\n"
+)
+
+
+def test_mark_evaluated_ticks_a_row_off_under_any_heading(tmp_path: Path) -> None:
+    """Discovery appends to the end of the file, i.e. below "## Processed".
+
+    3,355 of the real file's 3,385 pending rows sit there, so a section-scoped
+    search finds almost none of them. Triage reads the marker and ignores the
+    headings; this has to do the same or nothing ever gets ticked off.
+    """
+    p = tmp_path / "pipeline.md"
+    p.write_text(
+        "# Pipeline\n\n## Pending\n\n## Processed\n\n" + _ROW_BELOW_THE_WRONG_HEADING,
+        encoding="utf-8",
+    )
+    assert pipeline_inbox.mark_evaluated(
+        "https://example.com/a", tracker_id=768, score="3.9/5", path=p
+    )
+    entry = pipeline_inbox.parse(p)[0]
+    assert entry.status is EntryStatus.PROCESSED
+    assert entry.tracker_id == 768
+    assert entry.score == "3.9/5"
+    # The row's own annotations are what make it worth reading months later.
+    assert "source: adzuna" in p.read_text(encoding="utf-8")
+
+
+def test_mark_evaluated_is_idempotent(tmp_path: Path) -> None:
+    p = tmp_path / "pipeline.md"
+    p.write_text("# Pipeline\n\n## Pending\n\n" + _ROW_BELOW_THE_WRONG_HEADING, encoding="utf-8")
+    assert pipeline_inbox.mark_evaluated(
+        "https://example.com/a", tracker_id=1, score="4/5", path=p
+    )
+    assert not pipeline_inbox.mark_evaluated(
+        "https://example.com/a", tracker_id=2, score="1/5", path=p
+    )
+    assert "#1" in p.read_text(encoding="utf-8")
+
+
 def test_mark_error_keeps_entry_in_pending_section(tmp_path: Path) -> None:
     p = tmp_path / "pipeline.md"
     pipeline_inbox.add("https://example.com/x", path=p)

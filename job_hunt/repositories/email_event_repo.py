@@ -1,32 +1,27 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 from job_hunt.models.events import ApplicationEvent
+from job_hunt.repositories.jsonl_log import JsonlLog, MalformedLine
 
 
 class EmailEventRepository:
     def __init__(self, path: Path = Path("data/email-events.jsonl")):
         self.path = path
+        self._log = JsonlLog(path, ApplicationEvent)
 
     def append(self, event: ApplicationEvent) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.path.open("a", encoding="utf-8") as handle:
-            handle.write(event.model_dump_json() + "\n")
+        self._log.append(event)
+
+    def malformed(self) -> list[MalformedLine]:
+        """Lines the reader had to skip. Empty when the file is healthy."""
+        return self._log.malformed()
 
     def list(self, limit: int = 50, needs_review: bool = False) -> list[ApplicationEvent]:
-        if not self.path.exists():
-            return []
-        lines = self.path.read_text(encoding="utf-8").splitlines()
-        events: list[ApplicationEvent] = []
-        for line in lines:
-            if not line.strip():
-                continue
-            event = ApplicationEvent.model_validate(json.loads(line))
-            if needs_review and not event.needs_review:
-                continue
-            events.append(event)
+        events, _ = self._log.read()
+        if needs_review:
+            events = [event for event in events if event.needs_review]
         return events[-limit:]
 
     def get(self, event_id: str) -> ApplicationEvent | None:
@@ -47,3 +42,7 @@ class EmailEventRepository:
             if event.source_message_id:
                 ids.add(event.source_message_id)
         return ids
+
+    def replace_line(self, line_number: int, event: ApplicationEvent) -> None:
+        """Rewrite one line in place. Used to repair a malformed row."""
+        self._log.replace_line(line_number, event)

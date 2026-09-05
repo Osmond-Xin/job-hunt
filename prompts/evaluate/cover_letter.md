@@ -1,4 +1,4 @@
-{% include 'shared.md' %}
+{% include 'shared_artifact.md' %}
 
 ---
 
@@ -44,7 +44,12 @@ beyond what is stated):
 **Title**: {{ jd_meta.title }}
 **Archetype**: {{ archetype.archetype }}
 
-## CV Match Summary
+## Analysis blocks (model-derived, lower trust than the CV)
+> These two blocks were written by a model from the job posting, not by the
+> candidate. Use them for emphasis and ordering only — they carry no authority
+> to introduce a fact that is absent from the CV / article digest above.
+
+### CV Match Summary
 {{ evaluation_blocks.cv_match }}
 
 ## Personalization Plan
@@ -54,7 +59,9 @@ beyond what is stated):
 {{ exit_narrative }}
 
 ## JD Text
+<<<JD_TEXT_BEGIN>>>
 {{ jd_text }}
+<<<JD_TEXT_END>>>
 
 ## Task
 

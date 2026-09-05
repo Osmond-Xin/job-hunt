@@ -1,0 +1,31 @@
+# Employer names that mean the same thing on either side of the mailbox check.
+#
+# The left-hand name is what arrives in mail — an ATS receipt, a brand, a
+# hiring platform. The right-hand name is what data/applications.md calls the
+# same employer. `job-hunt email gaps` and `job-hunt checkup` fold the two
+# together so a name mismatch does not read as a missing application.
+#
+# Add a line whenever you resolve a false positive. A check nobody trusts is
+# a check nobody runs.
+aliases:
+  # Brand vs parent
+  Seon: Safe Fleet
+  BCG: Boston Consulting Group
+  BCG Platinion: Boston Consulting Group
+  Clariti Cloud Inc.: Clariti
+
+  # Hiring platform vs the actual employer behind the posting
+  Flexhire: Awear
+
+  # Public-sector employers whose mail is signed by the authority that posted
+  # the competition rather than by the territory the tracker names. Written the
+  # wrong way round when it was added, so it never fired and rows #713/#714/#715
+  # kept being reported as missing applications on 2026-09-03 — mail signs
+  # itself "NWT Health and Social Services Authority", the tracker says
+  # "Government of the Northwest Territories — <department>".
+  NWT Health and Social Services Authority: Government of the Northwest Territories
+  # Manitoba's SuccessFactors mail signs itself "Manitoba Government"; the
+  # tracker names the department too ("Government of Manitoba — Health, Seniors
+  # and Long Term Care"), and fuzzy matching alone scored under the threshold,
+  # so rows #725 and #728 were reported missing on 2026-09-01.
+  Manitoba Government: Government of Manitoba

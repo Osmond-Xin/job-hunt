@@ -5,6 +5,12 @@ You are a career coach assessing positioning strategy for a job application.
 ## Candidate Profile
 - **Years of experience**: {{ profile.years_experience }}
 - **Target roles**: {{ profile.target_roles | join(", ") }}
+{% if profile.level_acceptance %}
+- **Levels the candidate accepts**: {{ profile.level_acceptance }}
+{% endif %}
+{% if profile.relocation_stance %}
+- **Relocation**: {{ profile.relocation_stance }}
+{% endif %}
 
 ## Job
 **Company**: {{ jd_meta.company }}
@@ -15,8 +21,14 @@ You are a career coach assessing positioning strategy for a job application.
 Analyse the level and application strategy. Address:
 
 ### Seniority fit
-Is the candidate a natural fit, reaching up, or overqualified? Cite specific signals from the JD
+Is the candidate a natural fit, reaching up, or reaching down? Cite specific signals from the JD
 (years required, scope, IC vs. manager expectations).
+
+A role below the candidate's tenure is **not** a fit problem — down-levelling is a deliberate
+standing decision (see "Levels the candidate accepts" above). Describe the gap plainly and move
+straight to how the application should be framed. Do not recommend against applying on
+seniority grounds, and do not describe the candidate as "overqualified" — downstream scoring
+reads this section, and that word has been producing false-negative SKIPs.
 
 ### Application angle
 Given the fit, what is the strongest angle for this candidate?

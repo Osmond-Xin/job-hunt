@@ -5,8 +5,8 @@ from collections import Counter
 from pathlib import Path
 
 from filelock import FileLock, Timeout
-from pydantic import BaseModel
-from rapidfuzz import fuzz
+
+from job_hunt.models.tracker import TrackerEntry
 
 _LOCK_TIMEOUT = 30
 
@@ -16,18 +16,6 @@ TRACKER_HEADER = """# Applications Tracker
 | # | Date | Company | Role | Score | Status | PDF | Report | Notes |
 |---|------|---------|------|-------|--------|-----|--------|-------|
 """
-
-
-class TrackerEntry(BaseModel):
-    number: int
-    date: str
-    company: str
-    role: str
-    score: str
-    status: str
-    pdf: str
-    report: str
-    notes: str = ""
 
 
 class TrackerRepository:
@@ -143,34 +131,19 @@ class TrackerRepository:
             raise RuntimeError(f"Could not acquire tracker lock within {_LOCK_TIMEOUT}s") from None
         return replaced
 
-    def find_match(self, *, company: str | None, role: str | None) -> tuple[TrackerEntry | None, float]:
-        if not company:
-            return None, 0.0
-        entries = self.parse()
-        best: TrackerEntry | None = None
-        best_score = 0.0
-        company_norm = normalize(company)
-        role_norm = normalize(role or "")
-        for entry in entries:
-            company_score = 1.0 if normalize(entry.company) == company_norm else fuzz.ratio(normalize(entry.company), company_norm) / 100
-            if role_norm:
-                role_score = 1.0 if normalize(entry.role) == role_norm else fuzz.token_sort_ratio(entry.role, role or "") / 100
-            else:
-                role_score = 0.0
-            # When the company is an exact match, require strong role similarity to
-            # avoid conflating two different roles at the same company.
-            if company_score == 1.0 and role_score < 0.85:
-                continue
-            score = company_score * 0.65 + role_score * 0.35
-            if score > best_score:
-                best_score = score
-                best = entry
-        return best, best_score
+
+_SEPARATOR_ROW = re.compile(r"^\|[\s:|-]+\|?$")
 
 
 def parse_tracker_line(line: str) -> TrackerEntry | None:
     line = line.strip()
-    if not line.startswith("|") or "---" in line or line.lower().startswith("| #"):
+    if not line.startswith("|") or line.lower().startswith("| #"):
+        return None
+    # Only a line that is *entirely* pipes, dashes, colons and spaces is the
+    # markdown separator. Testing for "---" anywhere silently dropped every row
+    # whose notes happened to contain a triple dash — six of them, including a
+    # row that had reached Interview, which then read as Evaluated everywhere.
+    if _SEPARATOR_ROW.match(line):
         return None
     # Split on unescaped pipes only, then unescape, so a cell containing an
     # escaped "\|" (written by _cell) round-trips as a single column.
@@ -193,10 +166,6 @@ def parse_tracker_line(line: str) -> TrackerEntry | None:
         report=parts[7],
         notes=parts[8] if len(parts) > 8 else "",
     )
-
-
-def normalize(value: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "", value.lower())
 
 
 def _cell(value: object) -> str:

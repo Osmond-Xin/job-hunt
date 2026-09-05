@@ -1,6 +1,14 @@
 from __future__ import annotations
 
+import asyncio
+
+import pytest
+
+from job_hunt.services import web_extract
 from job_hunt.services.web_extract import (
+    ProxyRequiredError,
+    _guard_proxy_only_host,
+    _is_proxy_only_host,
     _ashby_board_api_url,
     _company_from_ats_url,
     _find_ashby_job,
@@ -11,6 +19,7 @@ from job_hunt.services.web_extract import (
     clean_web_text,
     extract_html_body,
     extract_html_title,
+    extract_url_text,
 )
 
 
@@ -81,3 +90,40 @@ def test_workday_metadata_helpers_extract_company_and_location() -> None:
 
     assert _workday_company_from_url(url) == "Acme"
     assert _workday_location_from_text("Role\nlocations\nToronto\ntime type\nFull time") == "Toronto"
+
+
+def test_linkedin_is_refused_without_a_proxy(monkeypatch) -> None:
+    """Scraping LinkedIn from the operator's own address risks his account.
+
+    Both proxy sources are cleared: the env var and profile.yml. Without the
+    second, this test passes or fails depending on whether the operator
+    happens to have a proxy configured locally.
+    """
+    monkeypatch.delenv("JOB_HUNT_SCRAPE_PROXY", raising=False)
+    monkeypatch.setattr(web_extract, "_proxy_from_profile", lambda: "")
+    for url in (
+        "https://ca.linkedin.com/jobs/view/ml-data-engineer-4414954379",
+        "https://www.linkedin.com/jobs/view/123456",
+        "https://linkedin.com/jobs/view/123456",
+    ):
+        with pytest.raises(ProxyRequiredError):
+            asyncio.run(extract_url_text(url))
+
+
+def test_linkedin_is_allowed_once_a_proxy_is_configured(monkeypatch) -> None:
+    monkeypatch.setenv("JOB_HUNT_SCRAPE_PROXY", "http://proxy.example:8080")
+    assert _is_proxy_only_host("https://ca.linkedin.com/jobs/view/1")
+    # The guard is what gates the fetch; with a proxy set it must not raise.
+    _guard_proxy_only_host("https://ca.linkedin.com/jobs/view/1")
+
+
+def test_ordinary_hosts_are_never_proxy_gated(monkeypatch) -> None:
+    monkeypatch.delenv("JOB_HUNT_SCRAPE_PROXY", raising=False)
+    monkeypatch.setattr(web_extract, "_proxy_from_profile", lambda: "")
+    for url in (
+        "https://digitalnovascotia.com/job-posts/data-analyst-27/",
+        "https://jobs.lever.co/Legend/9f047636",
+        "https://mylinkedinclone.com/jobs/view/1",
+    ):
+        assert not _is_proxy_only_host(url)
+        _guard_proxy_only_host(url)

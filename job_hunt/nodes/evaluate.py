@@ -6,8 +6,8 @@ from langchain_core.runnables import RunnableConfig
 
 from job_hunt.models.evaluation import DimensionScore, EvaluationScores, PdfContent
 from job_hunt.models.state import JobHuntState
-from job_hunt.nodes._llm import call_node_llm_or_fallback
-from job_hunt.nodes._prompts import render
+from job_hunt.services.llm.call import call_node_llm_or_fallback
+from job_hunt.services.prompts import render
 from job_hunt.services.immigration import immigration_context
 from job_hunt.services.llm.content import extract_json_object
 
@@ -91,12 +91,16 @@ async def score_and_recommend(state: JobHuntState, config: RunnableConfig) -> di
         article_digest=state.get("article_digest") or "",
         jd_text=state.get("jd_text", ""),
         immigration_context=immigration_context(jd_meta.location if jd_meta else ""),
+        # A cover letter is opt-in. When it was not requested, the prompt drops
+        # `cover_letter_body` entirely rather than paying to generate 3–4
+        # paragraphs no artifact will render.
+        generate_cover_letter=bool(state.get("generate_cover_letter")),
     )
     result, errors = await call_node_llm_or_fallback(
         state,
         node_name="score_and_recommend",
         prompt=prompt,
-        prompt_version="evaluate/score_and_recommend.md:v3",
+        prompt_version="evaluate/score_and_recommend.md:v4",
         fallback_content=(
             '{"weighted_total": 0.0, "recommendation": "skip", '
             '"recommendation_rationale": "Scoring unavailable because the LLM provider failed.", '
@@ -134,9 +138,20 @@ def _parse_scores(content: str) -> EvaluationScores:
                 raw_dim["rationale"] = raw_dim.get("rationale") or ""
                 dims.append(DimensionScore(**raw_dim))
             pdf_raw = data.get("pdf_content", {})
+            # Recompute rather than trust the model's own top-level field: a
+            # 2026-09-03 live run reported "Score: 3.88" in the header while
+            # the dimension breakdown summed to 3.38 — the model had applied
+            # an out-of-band adjustment to weighted_total that never touched
+            # a dimension score. Deriving it here guarantees the number the
+            # operator reads is always the number the weight table produced.
+            weighted_total = (
+                sum(d.score * d.weight for d in dims)
+                if dims
+                else float(data.get("weighted_total", 0.0))
+            )
             return EvaluationScores(
                 dimensions=dims,
-                weighted_total=float(data.get("weighted_total", 0.0)),
+                weighted_total=weighted_total,
                 recommendation=data.get("recommendation", "skip"),
                 recommendation_rationale=data.get("recommendation_rationale", ""),
                 generate_pdf=_coerce_bool(data.get("generate_pdf", False)),

@@ -19,20 +19,40 @@ _JDS_DIR = Path("jds")
 _MIN_JD_CHARS = 200
 
 # Signals that a page is still active (checked case-insensitively).
+# A posting is recognised by its own structure. The list is deliberately wide:
+# failing to recognise a live posting drops it silently, which is the expensive
+# error here, while a false positive only costs one evaluation. BigGeo's
+# Calgary Spatial AI Engineer role was dropped twice on 2026-09-04 — it heads
+# its sections "The Role", "What You Will Build and Own" and "Who You Are", and
+# not one of the original thirteen phrases appears anywhere on the page.
 _ACTIVE_SIGNALS = [
     "apply now", "apply for this job", "apply for this position",
     "submit application", "apply online", "apply here",
     "job description", "responsibilities", "requirements", "qualifications",
-    "what you'll do", "about the role", "about this role",
+    "what you'll do", "what you will do", "about the role", "about this role",
+    "the role", "role overview", "the opportunity", "about the job",
+    "what you will build", "what you'll build", "what you bring",
+    "what you'll bring", "who you are", "what we're looking for",
+    "what we are looking for", "skills and experience", "what you'll own",
 ]
 
-# Signals that a posting has closed.
+# Signals that a posting has closed. Boards phrase this differently enough that
+# a near-miss costs a full evaluation against a job nobody can apply to — the
+# SuccessFactors wording ("no further applications can be accepted") matched
+# none of the original five.
 _CLOSED_SIGNALS = [
     "this job is no longer available",
     "this position has been filled",
     "this posting has expired",
     "no longer accepting applications",
     "position has been closed",
+    "posting is now closed",
+    "no further applications can be accepted",
+    "applications are now closed",
+    "this job posting is closed",
+    "this opportunity is no longer available",
+    "the job you are looking for is no longer",
+    "expired_jd_redirect",
 ]
 
 
@@ -63,10 +83,11 @@ async def extract_jd(state: JobHuntState, config: RunnableConfig) -> dict:
     jd_text = _clean_text(raw)
     jd_meta = _extract_meta(jd_text, state)
     if source_type == "url" and "extracted" in locals():
+        row_company, row_role = _identity_from_pipeline(url)
         jd_meta = jd_meta.model_copy(
             update={
-                "title": jd_meta.title or extracted.title,
-                "company": jd_meta.company or extracted.company,
+                "title": _strip_board_suffix(jd_meta.title or extracted.title) or row_role,
+                "company": jd_meta.company or extracted.company or row_company,
                 "location": jd_meta.location or extracted.location,
                 "url": extracted.url,
                 "ats": extracted.ats,
@@ -95,8 +116,17 @@ async def verify_active(state: JobHuntState, config: RunnableConfig) -> dict:
         if signal in jd_text:
             return {"jd_active": True, "errors": []}
 
-    # Heuristic: if substantial text present, assume active.
-    return {"jd_active": len(jd_text) >= _MIN_JD_CHARS, "errors": []}
+    # No JD structure anywhere in the page. Length alone does not mean a posting:
+    # a closed SuccessFactors job still serves 2,500 characters of site chrome,
+    # and scoring that produces a full report inferred from the title alone.
+    return {
+        "jd_active": False,
+        "errors": [
+            "No job-description structure found in the extracted text "
+            f"({len(jd_text)} chars of boilerplate?); treating as inactive rather "
+            "than scoring a posting that may be closed or failed to extract."
+        ],
+    }
 
 
 async def mark_unavailable(state: JobHuntState, config: RunnableConfig) -> dict:
@@ -171,6 +201,40 @@ def _guess_title_company_location(jd_text: str) -> tuple[str, str, str]:
                 company = company or parts[1].strip()
 
     return title, company, location
+
+
+_BOARD_SUFFIX_RE = re.compile(r"\s*[-|–]\s*(?:www\.)?[\w.-]+\.(?:ca|com|org|net)\s*$")
+
+
+def _strip_board_suffix(title: str) -> str:
+    """Drop the aggregator's brand from a page title.
+
+    Adzuna titles its pages "AI Solutions Engineer - adzuna.ca", and that went
+    into the tracker's Role column verbatim on four rows before this was fixed.
+    It also breaks every dedupe: the same posting reached from the employer's
+    own board is "AI Solutions Engineer", and nothing matches the two.
+    """
+    return _BOARD_SUFFIX_RE.sub("", title or "").strip()
+
+
+def _identity_from_pipeline(url: str) -> tuple[str, str]:
+    """(company, role) discovery recorded for this URL, or ("", "").
+
+    Aggregator pages name the employer in body copy the page never labels, so
+    the extractor comes back with an empty company and the tracker row is
+    written blank — unsearchable, and invisible to every company+role check.
+    Discovery already knew: its API answer carried the employer, and the
+    pipeline row still has it.
+    """
+    try:
+        from job_hunt.services import pipeline_inbox
+
+        for entry in pipeline_inbox.parse():
+            if entry.url == url:
+                return entry.company.strip(), entry.role.strip()
+    except Exception:  # noqa: BLE001 — a missing inbox is not an extraction failure
+        pass
+    return "", ""
 
 
 def _looks_like_url(value: str) -> bool:

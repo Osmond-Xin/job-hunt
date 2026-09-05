@@ -41,6 +41,14 @@ class CandidateProfile(BaseModel):
     min_salary: int | None = None
     years_experience: int | None = None
     open_to_remote: bool = True
+    # Free-text stance strings read straight from profile.yml and handed to the
+    # scoring prompts. They exist because the scorer kept inferring the
+    # candidate's constraints from cv.md's contact line ("Niagara Falls, ON")
+    # and from raw tenure, and marking down on-site and junior roles the
+    # candidate actively wants. See prompts/shared.md "Location Policy" and
+    # score_and_recommend.md's full-mode calibration block.
+    relocation_stance: str = ""
+    level_acceptance: str = ""
     preferred_archetypes: list[str] = Field(default_factory=list)
     avoid_companies: list[str] = Field(default_factory=list)
     skills: list[str] = Field(default_factory=list)
@@ -54,6 +62,10 @@ class CandidateProfile(BaseModel):
     # ``narrative.availability``). Rendered truthfully in full-mode cover
     # letters so recruiters see the PGWP timeline instead of screening out.
     availability: str = ""
+    # One-line work-authorization statement (from ``narrative.work_auth_line``)
+    # for the CV PDF header — the tailored-CV path strips cv.md's contact
+    # block, so the resume would otherwise carry no work-authorization line.
+    work_auth_line: str = ""
     # The mode this profile was loaded under. Allows downstream code that
     # already has the profile in hand to inspect mode without re-reading
     # profile.yml. Mirrors what ``current_mode()`` returned at load time.

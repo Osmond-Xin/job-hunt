@@ -4,6 +4,8 @@ import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+import typer
 import yaml
 
 from job_hunt.cli import (
@@ -28,6 +30,7 @@ from job_hunt.cli import (
     _record_manual_submission,
     _load_saved_apply_answers,
     _resolve_report_path,
+    apply_assist,
 )
 from job_hunt.repositories.tracker_repo import TRACKER_HEADER, TrackerEntry, TrackerRepository
 
@@ -82,6 +85,92 @@ def test_record_manual_submission_imports_new_applied_row(tmp_path) -> None:
     assert entry.report.startswith("manual:")
     assert entry.pdf == "❌"  # no PDF supplied → keep historical default
     assert tracker.parse()[0].company == "New Co"
+
+
+def test_record_manual_submission_without_url_creates_row(tmp_path) -> None:
+    """Applications found without a URL (LinkedIn browsing, a referral) must
+    still land in the tracker — url is not required to record."""
+    tracker_path = tmp_path / "applications.md"
+    tracker_path.write_text(TRACKER_HEADER, encoding="utf-8")
+    tracker = TrackerRepository(tracker_path)
+
+    entry = _record_manual_submission(
+        tracker=tracker,
+        tracker_entry=None,
+        company="Referral Co",
+        role="Data Engineer",
+        url=None,
+        pdf=None,
+    )
+
+    assert entry.status == "Applied"
+    assert tracker.parse()[0].company == "Referral Co"
+    # No "url=None" text — the note should say plainly there was no URL.
+    assert "url=None" not in entry.notes
+    assert "no URL" in entry.notes
+
+
+_APPLY_ASSIST_DEFAULTS = dict(
+    tracker_id=None,
+    company=None,
+    role=None,
+    pdf=None,
+    cover_letter_pdf=None,
+    no_browser=False,
+    headless=False,
+    auto_fill=True,
+    fill_only=False,
+    confirmed=False,
+    auto_submit=False,
+    low_score_override=False,
+)
+
+
+def test_apply_assist_requires_url_without_no_browser(capsys) -> None:
+    """A missing url with no --no-browser must fail fast, naming the reason —
+    never silently skip opening the browser."""
+    with pytest.raises(typer.Exit) as excinfo:
+        apply_assist(url=None, **_APPLY_ASSIST_DEFAULTS)
+
+    assert excinfo.value.exit_code == 1
+    out = capsys.readouterr().out
+    assert "no-browser" in out
+    assert "URL" in out
+
+
+def test_apply_assist_no_browser_allows_missing_url(monkeypatch) -> None:
+    """--no-browser is the flag that makes a missing url legal; execution must
+    proceed past the gate instead of raising."""
+
+    class _GateCleared(Exception):
+        pass
+
+    def _raise(*args, **kwargs):
+        raise _GateCleared("reached load_settings — url gate did not block")
+
+    monkeypatch.setattr("job_hunt.cli.apply.load_settings", _raise)
+
+    kwargs = dict(_APPLY_ASSIST_DEFAULTS)
+    kwargs["no_browser"] = True
+    with pytest.raises(_GateCleared):
+        apply_assist(url=None, **kwargs)
+
+
+def test_apply_assist_url_provided_without_no_browser_still_passes_gate(monkeypatch) -> None:
+    """Existing with-URL behaviour is unchanged: a URL provided without
+    --no-browser must not trip the "missing url" gate."""
+
+    class _GateCleared(Exception):
+        pass
+
+    def _raise(*args, **kwargs):
+        raise _GateCleared("reached load_settings — url gate did not block")
+
+    monkeypatch.setattr("job_hunt.cli.apply.load_settings", _raise)
+
+    kwargs = dict(_APPLY_ASSIST_DEFAULTS)
+    with pytest.raises(_GateCleared):
+        apply_assist(url="https://example.com/jobs/1", **kwargs)
 
 
 def test_apply_review_json_persists_pdf_and_validation_issues(tmp_path) -> None:
@@ -395,12 +484,14 @@ def test_workday_textarea_uses_saved_answer(monkeypatch) -> None:
     )
     page = _fake_page_with_textareas([area])
     # _field_context is async + uses page.evaluate; stub it to return the question text directly.
+    # _fill_workday_textarea_answers (cli.apply) calls both as bare names, so
+    # the patch has to land on cli.apply's own copy.
     monkeypatch.setattr(
-        "job_hunt.cli._field_context",
+        "job_hunt.cli.apply._field_context",
         AsyncMock(return_value="Why are you interested in this role? *"),
     )
     monkeypatch.setattr(
-        "job_hunt.cli._field_contains_text",
+        "job_hunt.cli.apply._field_contains_text",
         AsyncMock(return_value=True),
     )
 
@@ -438,8 +529,10 @@ def test_workday_textarea_skips_already_filled_areas(monkeypatch) -> None:
     area.input_value = AsyncMock(return_value="user-typed answer")
     area.fill = AsyncMock()
     page = _fake_page_with_textareas([area])
-    monkeypatch.setattr("job_hunt.cli._field_context", AsyncMock(return_value="Question?"))
-    monkeypatch.setattr("job_hunt.cli._field_contains_text", AsyncMock(return_value=True))
+    # _fill_workday_textarea_answers (cli.apply) calls both as bare names, so
+    # the patch has to land on cli.apply's own copy.
+    monkeypatch.setattr("job_hunt.cli.apply._field_context", AsyncMock(return_value="Question?"))
+    monkeypatch.setattr("job_hunt.cli.apply._field_contains_text", AsyncMock(return_value=True))
 
     filled, skipped, answers = asyncio.run(
         _fill_workday_textarea_answers(
@@ -523,7 +616,7 @@ def test_workday_textarea_marks_no_answer_questions_as_skipped(monkeypatch) -> N
     area, _ = _fake_workday_textarea(question_html="Some unmatched custom question?")
     page = _fake_page_with_textareas([area])
     monkeypatch.setattr(
-        "job_hunt.cli._field_context",
+        "job_hunt.cli.apply._field_context",
         AsyncMock(return_value="Some unmatched custom question?"),
     )
 
@@ -658,8 +751,11 @@ def test_infer_loop_target_uses_url_metadata_without_description(tmp_path, monke
     pdf = output_dir / "cohere-security-agents-resume.pdf"
     pdf.write_text("pdf", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
+    # _infer_loop_target (cli.apply) calls this as a bare name resolved from
+    # its own module's import of services.web_extract, so the patch has to
+    # land on cli.apply's copy, not job_hunt.cli's re-export.
     monkeypatch.setattr(
-        "job_hunt.cli._extract_loop_url_metadata",
+        "job_hunt.cli.apply._extract_loop_url_metadata",
         lambda url: {"company": "Cohere", "title": "Senior Software Engineer, Security Agents", "text": ""},
     )
 
@@ -672,3 +768,61 @@ def test_infer_loop_target_uses_url_metadata_without_description(tmp_path, monke
     assert target["role"] == "Senior Software Engineer, Security Agents"
     assert target["tracker_entry"].number == 1
     assert target["pdf"] == Path("output/cohere-security-agents-resume.pdf")
+
+
+def test_match_threshold_constant_is_read_at_call_sites(tmp_path, monkeypatch) -> None:
+    """Verify that apply.py reads MATCH_THRESHOLD from employer_match, not a local literal.
+
+    When MATCH_THRESHOLD is monkeypatched to a higher value, _infer_loop_target
+    must respect that higher threshold, proving the call sites read the constant
+    rather than a hard-coded literal. Specifically, we test that the line 791 check
+    (if entry and score >= MATCH_THRESHOLD) changes behavior.
+    """
+    tracker_path = tmp_path / "data" / "applications.md"
+    tracker_path.parent.mkdir()
+    tracker_path.write_text(TRACKER_HEADER, encoding="utf-8")
+    tracker = TrackerRepository(tracker_path)
+    # Add an entry with company/role that scores between 0.70 and 0.85 when fuzzy-matched.
+    # "Acme Inc" vs "Acme" scores around 0.76-0.78 (company weight 0.65, ~0.85 ratio).
+    tracker.append_entry(
+        TrackerEntry(
+            number=1,
+            date="2026-04-29",
+            company="Acme Inc",
+            role="Software Engineer",
+            score="4.0/5",
+            status="Evaluated",
+            pdf="✅",
+            report="reports/acme.md",
+            notes="apply",
+        )
+    )
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        "job_hunt.cli.apply._extract_loop_url_metadata",
+        lambda url: {"company": "Acme", "title": "Data Engineer", "text": ""},
+    )
+
+    # With default threshold (0.70), the moderately good company match (0.76+)
+    # should pass and entry.role should be taken (line 791).
+    target_default = _infer_loop_target(
+        url="https://example.com/jobs/1",
+        description="",
+    )
+    assert target_default["role"] == "Software Engineer", \
+        "Default threshold 0.70 should apply entry.role from line 791"
+
+    # Patch MATCH_THRESHOLD to 0.90 in the apply module's namespace.
+    # Line 791 will now require score >= 0.90 before taking entry.role.
+    monkeypatch.setattr("job_hunt.cli.apply.MATCH_THRESHOLD", 0.90)
+
+    # With inflated threshold (0.90), the 0.76 score fails line 791, so
+    # entry.role is not overridden; role remains "Data Engineer" from metadata.
+    target_inflated = _infer_loop_target(
+        url="https://example.com/jobs/1",
+        description="",
+    )
+    assert target_inflated["role"] == "Data Engineer", \
+        "Inflated threshold 0.90 should skip line 791 and keep metadata role"
