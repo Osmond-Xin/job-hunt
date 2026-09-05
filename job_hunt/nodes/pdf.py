@@ -8,10 +8,11 @@ from pathlib import Path
 from langchain_core.runnables import RunnableConfig
 
 from job_hunt.models.state import JobHuntState
-from job_hunt.nodes._cv_fit import next_trim, pdf_page_count
-from job_hunt.nodes._prompts import render
+from job_hunt.nodes._cv_fit import next_trim
+from job_hunt.services.prompts import render
 from job_hunt.nodes._quality import generate_with_audit
 from job_hunt.nodes.artifact_paths import artifact_filename, run_output_dir
+from job_hunt.services.pdf import pdf_page_count
 
 _TEMPLATES_DIR = Path("templates")
 _FONTS_DIR = (_TEMPLATES_DIR / "fonts").resolve()
@@ -296,7 +297,7 @@ async def generate_cv_html_pdf(state: JobHuntState, config: RunnableConfig) -> d
             warnings.append(
                 f"CV trimmed to fit {MAX_CV_PAGES} pages: " + "; ".join(dropped)
             )
-        if pages is not None and pages > MAX_CV_PAGES:
+        if pages > MAX_CV_PAGES:
             warnings.append(
                 f"CV is {pages} pages after trimming everything droppable — "
                 f"budget is {MAX_CV_PAGES}. Shorten profile/cv.md or hand-render."
@@ -305,7 +306,17 @@ async def generate_cv_html_pdf(state: JobHuntState, config: RunnableConfig) -> d
         return {"pdf_path": str(pdf_path), "errors": [], "artifact_warnings": warnings}
 
     except Exception as exc:
-        return {"pdf_path": None, "errors": [f"PDF generation failed: {exc}"]}
+        # CLAUDE.md §1: `errors` only ever reaches the console (report.py
+        # never reads it), so on its own this failure would leave no trace in
+        # the document the operator actually reads before sending anything —
+        # the exact "looks finished but was not reviewed" silence the rule
+        # forbids, just from the other direction (no PDF at all, and nothing
+        # saying why). artifact_warnings is what report.py surfaces.
+        return {
+            "pdf_path": None,
+            "errors": [f"PDF generation failed: {exc}"],
+            "artifact_warnings": [f"CV PDF was not generated (render failed): {exc}"],
+        }
 
 
 async def skip_pdf(state: JobHuntState, config: RunnableConfig) -> dict:
@@ -332,17 +343,44 @@ async def _render_within_budget(
     pdf_path: Path,
     paper_size: str,
     max_pages: int,
-) -> tuple[int | None, list[str]]:
+) -> tuple[int, list[str]]:
     """Render, and while the PDF exceeds `max_pages`, drop one block and re-render.
 
     One browser is reused across attempts; a launch per attempt would dominate the
-    runtime. Returns the final page count (None if it could not be read) and the
-    list of things that were dropped, which the caller surfaces as warnings.
+    runtime. Returns the final page count and the list of things that were dropped,
+    which the caller surfaces as warnings.
     """
     from playwright.async_api import async_playwright
 
     fmt = "Letter" if paper_size.lower() == "letter" else "A4"
     dropped: list[str] = []
+
+    def measure() -> int:
+        try:
+            pages = pdf_page_count(pdf_path.read_bytes())
+        except Exception:
+            # CLAUDE.md §1: page.pdf() above just wrote a complete, valid-
+            # looking PDF to pdf_path. If we can't measure it, the page
+            # budget was never confirmed and this render never reaches
+            # redteam_review (the caller sets state["pdf_path"] = None on
+            # this failure) — left on disk, the file would sit in the run
+            # directory looking like a finished, reviewed résumé with
+            # nothing pointing at it. Removing it closes that gap; the
+            # tailored CV text this rendered from is untouched in state, so
+            # a retry re-renders it with no LLM cost.
+            pdf_path.unlink(missing_ok=True)
+            raise
+        if pages is None:
+            # Same "we don't know" outcome as the except block above, just
+            # signalled by pdf_page_count returning None (no /Count in the
+            # bytes) instead of raising. The page budget was never confirmed
+            # either way, so this must not be left looking like a finished,
+            # reviewed résumé — unlink and raise so it hits the same
+            # generate_cv_html_pdf except block that reports and withholds a
+            # measurement failure today.
+            pdf_path.unlink(missing_ok=True)
+            raise ValueError(f"PDF page count could not be read from {pdf_path.name}")
+        return pages
 
     async with async_playwright() as pw:
         browser = await pw.chromium.launch()
@@ -353,8 +391,8 @@ async def _render_within_budget(
                 await page.goto(html_path.resolve().as_uri())
                 await page.pdf(path=str(pdf_path), format=fmt, print_background=True)
 
-                pages = pdf_page_count(pdf_path.read_bytes())
-                if pages is None or pages <= max_pages:
+                pages = measure()
+                if pages <= max_pages:
                     return pages, dropped
 
                 step = next_trim(cv_md)
@@ -362,6 +400,6 @@ async def _render_within_budget(
                     return pages, dropped
                 cv_md, what = step
                 dropped.append(what)
-            return pdf_page_count(pdf_path.read_bytes()), dropped
+            return measure(), dropped
         finally:
             await browser.close()

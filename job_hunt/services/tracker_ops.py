@@ -26,10 +26,10 @@ from typing import Iterator
 import yaml
 from filelock import FileLock, Timeout
 
+from job_hunt.models.tracker import normalize as normalize_id
 from job_hunt.repositories.tracker_repo import (
     TrackerEntry,
     format_tracker_entry,
-    normalize as normalize_id,
     parse_tracker_line,
 )
 

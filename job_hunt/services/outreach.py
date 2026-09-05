@@ -1,28 +1,19 @@
 from __future__ import annotations
 
 import datetime as dt
-import json
 import uuid
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, TypeVar
 
 from pydantic import BaseModel, Field
+
+from job_hunt.repositories.jsonl_log import JsonlLog, MalformedLine
 
 
 CONTACTS_PATH = Path("data/contacts.jsonl")
 EVENTS_PATH = Path("data/outreach-events.jsonl")
 
 T = TypeVar("T", bound=BaseModel)
-
-
-@dataclass(frozen=True)
-class MalformedOutreachLine:
-    """A line in an outreach file that could not be read back as a structured record."""
-
-    line_number: int
-    reason: str
-    raw: str
 
 
 class Contact(BaseModel):
@@ -53,37 +44,8 @@ class OutreachEvent(BaseModel):
     updated_at: str = Field(default_factory=lambda: dt.datetime.now(dt.UTC).isoformat())
 
 
-def _read_jsonl(path: Path, model: type[T]) -> tuple[list[T], list[MalformedOutreachLine]]:
-    if not path.exists():
-        return [], []
-    items: list[T] = []
-    malformed: list[MalformedOutreachLine] = []
-    lines = path.read_text(encoding="utf-8").splitlines()
-    for number, line in enumerate(lines, start=1):
-        if not line.strip():
-            continue
-        try:
-            items.append(model.model_validate(json.loads(line)))
-        except Exception as exc:  # malformed JSON or a value outside the schema
-            malformed.append(
-                MalformedOutreachLine(
-                    line_number=number,
-                    reason=type(exc).__name__ + ": " + str(exc).split("\n")[0],
-                    raw=line,
-                )
-            )
-    return items, malformed
-
-
-def _write_jsonl(path: Path, items: list[BaseModel], malformed: list[MalformedOutreachLine] | None = None) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = "\n".join(item.model_dump_json() for item in items)
-    # Preserve malformed lines that existed in the file, appending them at the end.
-    if malformed:
-        if payload:
-            payload += "\n"
-        payload += "\n".join(m.raw for m in malformed)
-    path.write_text(payload + ("\n" if payload else ""), encoding="utf-8")
+def _read_jsonl(path: Path, model: type[T]) -> tuple[list[T], list[MalformedLine]]:
+    return JsonlLog(path, model).read()
 
 
 def list_contacts(path: Path = CONTACTS_PATH) -> list[Contact]:
@@ -91,16 +53,21 @@ def list_contacts(path: Path = CONTACTS_PATH) -> list[Contact]:
     return contacts
 
 
-def malformed_contacts(path: Path = CONTACTS_PATH) -> list[MalformedOutreachLine]:
+def malformed_contacts(path: Path = CONTACTS_PATH) -> list[MalformedLine]:
     """Lines in the contacts file that could not be read back. Empty when the file is healthy."""
     _, malformed = _read_jsonl(path, Contact)
     return malformed
 
 
 def add_contact(contact: Contact, path: Path = CONTACTS_PATH) -> Contact:
-    contacts, malformed = _read_jsonl(path, Contact)
-    contacts.append(contact)
-    _write_jsonl(path, contacts, malformed)
+    # Hold the lock across the whole read-modify-write: a lock taken only
+    # around the write still loses a concurrent writer's update, and can
+    # silently drop a malformed line another process appended in between.
+    log = JsonlLog(path, Contact)
+    with log.lock():
+        contacts, malformed = log.read()
+        contacts.append(contact)
+        log.write_all(contacts, malformed)
     return contact
 
 
@@ -124,38 +91,44 @@ def list_events(path: Path = EVENTS_PATH) -> list[OutreachEvent]:
     return events
 
 
-def malformed_events(path: Path = EVENTS_PATH) -> list[MalformedOutreachLine]:
+def malformed_events(path: Path = EVENTS_PATH) -> list[MalformedLine]:
     """Lines in the events file that could not be read back. Empty when the file is healthy."""
     _, malformed = _read_jsonl(path, OutreachEvent)
     return malformed
 
 
 def add_event(event: OutreachEvent, path: Path = EVENTS_PATH) -> OutreachEvent:
-    events, malformed = _read_jsonl(path, OutreachEvent)
-    events.append(event)
-    _write_jsonl(path, events, malformed)
+    # See add_contact(): the lock must span the read and the write.
+    log = JsonlLog(path, OutreachEvent)
+    with log.lock():
+        events, malformed = log.read()
+        events.append(event)
+        log.write_all(events, malformed)
     return event
 
 
 def update_event(event_id: str, *, status: str | None = None, follow_up_at: str = "", notes: str = "", path: Path = EVENTS_PATH) -> OutreachEvent | None:
-    events, malformed = _read_jsonl(path, OutreachEvent)
-    updated: OutreachEvent | None = None
-    for index, event in enumerate(events):
-        if not event.id.startswith(event_id):
-            continue
-        data = event.model_dump()
-        if status:
-            data["status"] = status
-        if follow_up_at:
-            data["follow_up_at"] = follow_up_at
-        if notes:
-            data["notes"] = notes
-        data["updated_at"] = dt.datetime.now(dt.UTC).isoformat()
-        updated = OutreachEvent.model_validate(data)
-        events[index] = updated
-        break
-    if updated:
-        _write_jsonl(path, events, malformed)
+    # See add_contact(): the lock must span the read and the write.
+    log = JsonlLog(path, OutreachEvent)
+    with log.lock():
+        events, malformed = log.read()
+        updated: OutreachEvent | None = None
+        for index, event in enumerate(events):
+            if not event.id.startswith(event_id):
+                continue
+            data = event.model_dump()
+            if status:
+                data["status"] = status
+            if follow_up_at:
+                data["follow_up_at"] = follow_up_at
+            if notes:
+                data["notes"] = notes
+            data["updated_at"] = dt.datetime.now(dt.UTC).isoformat()
+            updated = OutreachEvent.model_validate(data)
+            events[index] = updated
+            break
+        if updated:
+            log.write_all(events, malformed)
     return updated
 
 

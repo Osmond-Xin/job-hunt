@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from job_hunt.cli import apply_answers, outreach_draft
+from job_hunt.cli import apply_answers, linkedin_outreach, outreach_draft
 from job_hunt.nodes.apply_screen_assist import ApplyAnswersResult
 from job_hunt.services import redteam as svc
 from job_hunt.services.outreach import Contact, add_contact
@@ -73,7 +73,7 @@ def _drafted_message() -> Path:
 
 def test_outreach_draft_send_writes_review_beside_the_message(tmp_path, monkeypatch, capsys) -> None:
     contact = _make_contact(tmp_path, monkeypatch)
-    monkeypatch.setattr("job_hunt.cli._run_one_shot_prompt", lambda **kw: "Hi Jo, here's why I'm reaching out.")
+    monkeypatch.setattr("job_hunt.cli.outreach._run_one_shot_prompt", lambda **kw: "Hi Jo, here's why I'm reaching out.")
     monkeypatch.setattr(svc, "run_review", _fake_run_review("SEND", "VERDICT: SEND — looks fine"))
 
     _draft(contact)
@@ -87,7 +87,7 @@ def test_outreach_draft_send_writes_review_beside_the_message(tmp_path, monkeypa
 
 def test_outreach_draft_block_is_loud_but_keeps_the_message(tmp_path, monkeypatch, capsys) -> None:
     contact = _make_contact(tmp_path, monkeypatch)
-    monkeypatch.setattr("job_hunt.cli._run_one_shot_prompt", lambda **kw: "Hi Jo, here's why I'm reaching out.")
+    monkeypatch.setattr("job_hunt.cli.outreach._run_one_shot_prompt", lambda **kw: "Hi Jo, here's why I'm reaching out.")
     monkeypatch.setattr(svc, "run_review", _fake_run_review("BLOCK", "VERDICT: BLOCK — wrong email"))
 
     _draft(contact)
@@ -102,9 +102,30 @@ def test_outreach_draft_block_is_loud_but_keeps_the_message(tmp_path, monkeypatc
     assert "Do not send" in out
 
 
+def test_outreach_draft_verdict_prints_before_the_message_body(tmp_path, monkeypatch, capsys) -> None:
+    """CLAUDE.md §1: no artifact is delivered until it has passed the red
+    team. Printing the body to the console *is* delivery — the operator has
+    read it before any verdict exists if the verdict prints second. All three
+    earlier review passes checked whether the gate was wired in, never when
+    it ran; this pins the order so that regresses loudly."""
+    contact = _make_contact(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        "job_hunt.cli.outreach._run_one_shot_prompt",
+        lambda **kw: "Hi Jo, here's why I'm reaching out.",
+    )
+    monkeypatch.setattr(svc, "run_review", _fake_run_review("SEND", "VERDICT: SEND — looks fine"))
+
+    _draft(contact)
+
+    out = capsys.readouterr().out
+    verdict_pos = out.index("RED TEAM: SEND")
+    body_pos = out.index("Hi Jo, here's why I'm reaching out.")
+    assert verdict_pos < body_pos
+
+
 def test_outreach_draft_unreviewed_is_not_a_pass_and_names_no_file(tmp_path, monkeypatch, capsys) -> None:
     contact = _make_contact(tmp_path, monkeypatch)
-    monkeypatch.setattr("job_hunt.cli._run_one_shot_prompt", lambda **kw: "Hi Jo, here's why I'm reaching out.")
+    monkeypatch.setattr("job_hunt.cli.outreach._run_one_shot_prompt", lambda **kw: "Hi Jo, here's why I'm reaching out.")
     monkeypatch.setattr(svc, "run_review", _fake_run_review("UNREVIEWED", "", ["red team unavailable: mmx not on PATH"]))
 
     _draft(contact)
@@ -117,6 +138,36 @@ def test_outreach_draft_unreviewed_is_not_a_pass_and_names_no_file(tmp_path, mon
     assert "not reviewed" in out
     # Never send the reader to a review file that was never written.
     assert ".redteam.md" not in out
+
+
+def test_outreach_draft_unreviewed_with_raw_output_does_not_read_like_a_completed_review(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """mmx can produce output with no parsable `VERDICT:` line — `run_review`
+    then returns UNREVIEWED with non-empty `review` text. The raw output is
+    still worth keeping on disk, but the console line must not say "findings
+    in <path>": that phrasing is what a real verdict gets, and it would send
+    the operator to a file that contains no verdict at all (CLAUDE.md §1:
+    UNREVIEWED is not a pass, and must not be handed over looking like one)."""
+    contact = _make_contact(tmp_path, monkeypatch)
+    monkeypatch.setattr("job_hunt.cli.outreach._run_one_shot_prompt", lambda **kw: "Hi Jo, here's why I'm reaching out.")
+    monkeypatch.setattr(
+        svc, "run_review", _fake_run_review("UNREVIEWED", "The model rambled and never issued a verdict line.")
+    )
+
+    _draft(contact)
+
+    draft = _drafted_message()
+    # The raw output is still worth having, so it is still written to disk...
+    review = draft.with_name(f"{draft.stem}.redteam.md")
+    assert review.read_text(encoding="utf-8") == "The model rambled and never issued a verdict line."
+    # Rich wraps the console line at test width, so compare on collapsed
+    # whitespace rather than the raw (possibly mid-phrase-wrapped) output.
+    out = " ".join(capsys.readouterr().out.split())
+    assert "RED TEAM: UNREVIEWED" in out
+    # ...but the operator-facing line must not read like a completed review.
+    assert "findings in" not in out
+    assert "not a completed review" in out
 
 
 # ----- apply-answers -----
@@ -192,6 +243,27 @@ def test_apply_answers_unreviewed_is_not_a_pass_and_names_no_file(tmp_path, monk
     assert ".redteam.md" not in out
 
 
+def test_apply_answers_verdict_prints_before_the_answers_body(tmp_path, monkeypatch, capsys) -> None:
+    """CLAUDE.md §1: no artifact is delivered until it has passed the red
+    team. Printing the answers to the console *is* delivery — the operator
+    could paste them into an employer's form before any verdict exists if the
+    verdict prints second. All three earlier review passes checked whether
+    the gate was wired in, never when it ran; this pins the order so that
+    regresses loudly."""
+    monkeypatch.setattr(
+        "job_hunt.nodes.apply_screen_assist.generate_apply_answers",
+        _fake_generate_apply_answers("Because it combines applied AI and delivery."),
+    )
+    monkeypatch.setattr(svc, "run_review", _fake_run_review("SEND", "VERDICT: SEND — clean"))
+
+    _answer(tmp_path, monkeypatch)
+
+    out = capsys.readouterr().out
+    verdict_pos = out.index("RED TEAM: SEND")
+    body_pos = out.index("Because it combines applied AI and delivery.")
+    assert verdict_pos < body_pos
+
+
 def test_apply_answers_jd_text_reaches_the_review(tmp_path, monkeypatch, capsys) -> None:
     """The TARGETING pass (CLAUDE.md §1) needs the actual posting, not an empty
     string — `--jd` must carry through to `run_review`'s `jd_text` verbatim."""
@@ -227,3 +299,85 @@ def test_apply_answers_without_jd_warns_but_still_reviews(tmp_path, monkeypatch,
     out = capsys.readouterr().out
     assert "No JD supplied" in out
     assert "RED TEAM: SEND" in out
+
+
+# ----- linkedin outreach -----
+
+
+def _linkedin(tmp_path, monkeypatch, *, jd: str | None = None) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        "job_hunt.cli.outreach._run_one_shot_prompt",
+        lambda **kw: "Hi Jo, here's why I'm reaching out.",
+    )
+    linkedin_outreach(
+        company="Acme",
+        role="FDE",
+        jd=jd,
+        output=None,
+        max_tokens=900,
+        with_search=False,
+    )
+
+
+def test_linkedin_outreach_send_writes_review_beside_the_message(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.setattr(svc, "run_review", _fake_run_review("SEND", "VERDICT: SEND — looks fine"))
+
+    _linkedin(tmp_path, monkeypatch)
+
+    # No --output given, so linkedin_outreach falls back to a company/role
+    # slug path under output/, same convention as apply_answers.
+    message = Path("output/acme-fde-linkedin.md")
+    assert message.read_text(encoding="utf-8") == "Hi Jo, here's why I'm reaching out."
+    review = Path("output/acme-fde-linkedin.redteam.md")
+    assert review.read_text(encoding="utf-8") == "VERDICT: SEND — looks fine"
+    assert "RED TEAM: SEND" in capsys.readouterr().out
+
+
+def test_linkedin_outreach_block_is_loud_but_keeps_the_message(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.setattr(svc, "run_review", _fake_run_review("BLOCK", "VERDICT: BLOCK — wrong company"))
+
+    _linkedin(tmp_path, monkeypatch)
+
+    message = Path("output/acme-fde-linkedin.md")
+    # BLOCK does not delete or withhold the drafted text — the operator adjudicates.
+    assert message.read_text(encoding="utf-8") == "Hi Jo, here's why I'm reaching out."
+    review = Path("output/acme-fde-linkedin.redteam.md")
+    assert review.read_text(encoding="utf-8") == "VERDICT: BLOCK — wrong company"
+    out = capsys.readouterr().out
+    assert "RED TEAM: BLOCK" in out
+    assert "Do not send" in out
+
+
+def test_linkedin_outreach_verdict_prints_before_the_message_body(tmp_path, monkeypatch, capsys) -> None:
+    """CLAUDE.md §1: no artifact is delivered until it has passed the red
+    team. Printing the body to the console *is* delivery — the operator has
+    read it before any verdict exists if the verdict prints second. All three
+    earlier review passes checked whether the gate was wired in, never when
+    it ran; this pins the order so that regresses loudly."""
+    monkeypatch.setattr(svc, "run_review", _fake_run_review("SEND", "VERDICT: SEND — looks fine"))
+
+    _linkedin(tmp_path, monkeypatch)
+
+    out = capsys.readouterr().out
+    verdict_pos = out.index("RED TEAM: SEND")
+    body_pos = out.index("Hi Jo, here's why I'm reaching out.")
+    assert verdict_pos < body_pos
+
+
+def test_linkedin_outreach_unreviewed_is_not_a_pass_and_names_no_file(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        svc, "run_review", _fake_run_review("UNREVIEWED", "", ["red team unavailable: mmx not on PATH"])
+    )
+
+    _linkedin(tmp_path, monkeypatch)
+
+    message = Path("output/acme-fde-linkedin.md")
+    assert message.exists()  # the message itself is never withheld
+    review = Path("output/acme-fde-linkedin.redteam.md")
+    assert not review.exists()
+    out = capsys.readouterr().out
+    assert "RED TEAM: UNREVIEWED" in out
+    assert "not reviewed" in out
+    # Never send the reader to a review file that was never written.
+    assert ".redteam.md" not in out

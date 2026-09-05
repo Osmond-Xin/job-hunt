@@ -30,7 +30,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from job_hunt.nodes.pdf import _html_to_pdf, artifact_template_env  # noqa: E402
-from job_hunt.nodes._cv_fit import pdf_page_count  # noqa: E402
+from job_hunt.services.pdf import pdf_page_count  # noqa: E402
 
 SIZE_OVERRIDE = """
 <style>

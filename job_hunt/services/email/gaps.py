@@ -12,22 +12,12 @@ It is deliberately read-only. An email body is untrusted input (see
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from rapidfuzz import fuzz
-
-from job_hunt.repositories.tracker_repo import (
-    TrackerEntry,
-    TrackerRepository,
-    _distinctive_company_name,
-    _GENERIC_COMPANY_TOKENS,
-    normalize,
-)
+from job_hunt.repositories.tracker_repo import TrackerEntry, TrackerRepository
 from job_hunt.services.email.summarize import SUMMARY_PATH
-
-ALIAS_PATH = Path("config/company-aliases.yml")
+from job_hunt.services.employer_match import EmployerMatcher, load_aliases
 
 # Categories that mean "this application exists".
 _APPLIED_CATEGORIES = {"application_ack", "interview_invite", "offer", "rejection"}
@@ -39,8 +29,6 @@ _ADVANCED_STATUSES = {"Interview", "Offer", "Responded"}
 # Statuses that already record an outcome, so a rejection mail is not news.
 _SETTLED_STATUSES = {"Rejected", "Discarded", "SKIP", "Withdrawn", "Offer"}
 
-_MATCH_THRESHOLD = 0.70
-
 
 @dataclass
 class Gap:
@@ -51,17 +39,6 @@ class Gap:
     category: str
     subject: str
     entry: TrackerEntry | None = None
-
-
-def load_aliases(path: Path = ALIAS_PATH) -> dict[str, str]:
-    """Mail-side employer name -> the name the tracker uses."""
-    if not path.exists():
-        return {}
-    import yaml
-
-    raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    pairs = (raw.get("aliases") or {}).items()
-    return {normalize(str(k)): str(v) for k, v in pairs}
 
 
 def _load_summaries(path: Path, since: str) -> list[dict]:
@@ -86,78 +63,6 @@ def _load_summaries(path: Path, since: str) -> list[dict]:
     return rows
 
 
-_COMPANY_ONLY_THRESHOLD = 0.85
-
-
-# Words an ATS receipt adds to the employer's legal name but the tracker omits.
-# Kept local: widening the shared list would loosen the match gate that
-# `apply` uses to decide which row an application belongs to.
-_FILLER_TOKENS = _GENERIC_COMPANY_TOKENS | {"cloud", "consulting", "services", "holdings"}
-
-
-def _distinctive_tokens(name: str) -> frozenset[str]:
-    """The company's own words, minus legal suffixes and industry filler."""
-    tokens = frozenset(
-        token
-        for token in re.findall(r"[a-z0-9]+", name.lower())
-        if token not in _FILLER_TOKENS
-    )
-    return tokens or frozenset([normalize(name)])
-
-
-def _company_only_match(tracker: TrackerRepository, company: str) -> TrackerEntry | None:
-    """Match on the company alone, on its distinctive tokens.
-
-    "Clariti Cloud Inc." in a receipt and "Clariti" in the tracker are the same
-    employer; the legal-suffix noise is exactly what the distinctive-token
-    reduction strips. The bar is high because there is no role to confirm with.
-    """
-    wanted_tokens = _distinctive_tokens(company)
-    for entry in tracker.parse():
-        if _same_employer(entry.company, company):
-            return entry
-        if not wanted_tokens or not _distinctive_tokens(entry.company):
-            continue
-        score = fuzz.ratio(_distinctive_company_name(entry.company), "".join(sorted(wanted_tokens))) / 100
-        if score >= _COMPANY_ONLY_THRESHOLD:
-            return entry
-    return None
-
-
-def _same_employer(entry_company: str, wanted_company: str) -> bool:
-    """Same employer, allowing one side to name a department or legal suffix.
-
-    The tracker records the department the competition was posted by
-    ("Government of Manitoba — Health, Seniors and Long Term Care"); the
-    SuccessFactors receipt names only the government. Requiring exact equality
-    reported rows #725 and #728 as missing applications on 2026-09-01 — the
-    shape of false positive that makes the whole check unusable, since six of
-    the twelve gaps that day were name mismatches for work already recorded.
-    """
-    if normalize(entry_company) == normalize(wanted_company):
-        return True
-    wanted_tokens = _distinctive_tokens(wanted_company)
-    entry_tokens = _distinctive_tokens(entry_company)
-    if not wanted_tokens or not entry_tokens:
-        return False
-    return wanted_tokens <= entry_tokens or entry_tokens <= wanted_tokens
-
-
-def _decorated_role_match(
-    tracker: TrackerRepository, company: str, role: str
-) -> TrackerEntry | None:
-    wanted_role = normalize(role)
-    for entry in tracker.parse():
-        if not _same_employer(entry.company, company):
-            continue
-        entry_role = normalize(entry.role)
-        if not entry_role:
-            continue
-        if entry_role in wanted_role or wanted_role in entry_role:
-            return entry
-    return None
-
-
 def find_gaps(
     *,
     since: str,
@@ -167,32 +72,27 @@ def find_gaps(
     """Applications the mailbox knows about that the tracker does not."""
     tracker = tracker or TrackerRepository(Path("data/applications.md"))
     aliases = load_aliases()
+    # Read-only: the tracker never changes mid-run, so one snapshot is safe
+    # and avoids re-parsing applications.md per summary row.
+    matcher = EmployerMatcher(tracker.parse(), aliases=aliases)
     gaps: list[Gap] = []
     seen_untracked: set[str] = set()
     for row in _load_summaries(summary_path, since):
-        company = aliases.get(normalize(row["company"]), row["company"])
+        company = matcher.resolve_alias(row["company"])
         role = row.get("role") or ""
-        entry, score = tracker.find_match(company=company, role=role)
-        matched = entry is not None and score >= _MATCH_THRESHOLD
-        if not matched and role:
-            # An ATS receipt decorates the title the tracker stores plainly:
-            # "…, Agentic Platform (ET - Canada/US)" vs "…, Agentic Platform".
-            # find_match requires 0.85 role similarity once the company is an
-            # exact hit, so the decorated title scores nothing at all.
-            entry = _decorated_role_match(tracker, company, role)
-            matched = entry is not None
-        if not matched and not role:
-            # An acknowledgement often names only the company. find_match scores
-            # role at 0.0 then, so even an exact company lands under the
-            # threshold; fall back to an exact company name instead.
-            entry = _company_only_match(tracker, company)
-            matched = entry is not None
+        match = matcher.best(company=company, role=role, intent="report")
+        entry = match.entry if match else None
+        matched = entry is not None
         if not matched and row.get("category") in _ADVANCE_CATEGORIES:
             # An interview invitation from an employer already in the tracker is
             # not a missing application — it is a status the row has not caught
             # up with. Reporting it as "untracked" is how a real advance from
             # GNWT sat unnoticed for eleven days among forty-six false alarms.
-            entry = _company_only_match(tracker, company)
+            # Pass role=None regardless of whether one was given: this forces
+            # the matcher's company-only fallback, which is the only one that
+            # ignores a role mismatch entirely.
+            advance_match = matcher.best(company=company, role=None, intent="report")
+            entry = advance_match.entry if advance_match else None
             if entry is not None:
                 if entry.status not in _ADVANCED_STATUSES | _SETTLED_STATUSES:
                     gaps.append(

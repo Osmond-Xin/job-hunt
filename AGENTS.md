@@ -121,6 +121,17 @@ the Slack notification, and it is how rows drift out of sync:
     --pdf '<resume.pdf>' --no-browser --confirmed
 ```
 
+`url` is only required to open a browser. When the application has no URL —
+something found while browsing LinkedIn, or a referral into a role with no
+posting to link — omit it and pass `--no-browser`; leaving `--no-browser` off
+with no URL fails with a message naming the reason instead of silently
+skipping the browser:
+
+```bash
+.venv/bin/job-hunt apply --company '<company>' --role '<role>' \
+    --pdf '<resume.pdf>' --no-browser --confirmed
+```
+
 Pass `--pdf` even when the form took the file by hand: it is what links the
 `output/` directory to the row, and `job-hunt checkup` relies on that link.
 Then write the real detail into the row's notes — verdicts, dates, stated
@@ -207,16 +218,19 @@ Never click the Submit button yourself. Never record before user confirms.
 
 ## Stable Apply Implementation
 
-- `job_hunt/cli.py::apply_assist` — the `job-hunt apply` command. Key flags:
+- `job_hunt/cli/apply.py::apply_assist` — the `job-hunt apply` command. `url` is
+  an optional positional argument: required to open a browser, not required to
+  record. Omitting it without `--no-browser` fails fast with an explanatory
+  message rather than opening a browser with nothing to navigate to. Key flags:
   - `--fill-only`: opens visible browser, fills form, keeps open with heartbeat-driven loop. Idle timeout is 60 minutes (no command/refill); not a hard 30-min deadline anymore.
   - `--confirmed`: skips browser and confirmation, records directly as Applied
-  - `--no-browser`: skips Playwright, prompts for confirmation via stdin
+  - `--no-browser`: skips Playwright, prompts for confirmation via stdin; also what allows `url` to be omitted (e.g. a LinkedIn-browsed or referral application with no URL)
   - `--headless`: runs Chromium headless (smoke tests only)
 - `apply-replace-pdf` / `apply-capture-page` / `apply-refill-current-page` / `apply-close-session` write per-command `.cmd-<uuid>.json` sentinels (race-free). Each subcommand warns when the heartbeat is >30s stale ("session likely dead, restart with apply --fill-only").
 - `apply-status [--controls]` / `apply-do --click/--fill/--select/--check` are request/response commands: sentinel in, `.res-<uuid>.json` out (30 s poll). They are the token-cheap replacement for reading screenshots or driving a browser MCP; `apply-do` rejects submit-like click labels at both ends.
 - Verification order for agents: `apply-review.json` → `apply-status` → screenshot image only when the JSON shows a problem. Never drive application pages through a browser MCP.
-- `job_hunt/cli.py::_open_apply_page` — opens Playwright with a persistent browser profile (`storage/browser-profile/`), navigates to the URL, runs auto-fill, then attaches the PDF.
-- `job_hunt/cli.py::_attach_resume` — attaches PDF using file chooser (clicking the exact-name "Upload File"/"Replace" button) before falling back to `set_input_files`. Auto-fill runs before PDF attachment so React components are fully initialized.
+- `job_hunt/cli/apply.py::_open_apply_page` — opens Playwright with a persistent browser profile (`storage/browser-profile/`), navigates to the URL, runs auto-fill, then attaches the PDF.
+- `job_hunt/cli/apply.py::_attach_resume` — attaches PDF using file chooser (clicking the exact-name "Upload File"/"Replace" button) before falling back to `set_input_files`. Auto-fill runs before PDF attachment so React components are fully initialized.
 - `_record_manual_submission` is the only helper that mutates tracker state for manual submissions.
 - Application events use source `system_apply` and activity type `apply.submitted`.
 - Slack notifications are emitted through `ActivityLogger`; do not call Slack directly from apply code.

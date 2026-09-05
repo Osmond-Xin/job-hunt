@@ -5,7 +5,7 @@ from typing import Annotated, Any, Literal, TypedDict
 
 from job_hunt.models.evaluation import EvaluationScores
 from job_hunt.models.job import ArchetypeResult, CandidateProfile, JobMeta
-from job_hunt.repositories.tracker_repo import TrackerEntry
+from job_hunt.models.tracker import TrackerEntry
 
 
 def _merge_dicts(a: dict, b: dict) -> dict:

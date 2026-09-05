@@ -1,9 +1,11 @@
 """Pipeline triage: turning an unreadable inbox into a day's shortlist.
 
 The ordering encodes standing decisions, so these tests are mostly about those
-decisions holding — role fit outranking immigration value, region breaking ties
-rather than deciding them, Toronto ranked last rather than dropped, and
-already-applied work never resurfacing.
+decisions holding — role shape deciding rank on its own now that geography
+scores and orders nothing (removed 2026-09-03: the operator looks for a
+matching job first and immigration second, and immigration reaches him
+downstream in `services/immigration.py` instead), and already-applied work
+never resurfacing.
 """
 
 from __future__ import annotations
@@ -13,10 +15,12 @@ from datetime import date
 from job_hunt.services.triage import (
     PipelineRow,
     already_applied,
+    applied_employer,
     excluded,
     parse_pipeline,
     rank,
     score,
+    submitted_employers,
     tracker_seen,
 )
 
@@ -66,26 +70,53 @@ def test_a_url_already_settled_does_not_come_back_under_a_new_company_name():
     assert "https://example.invalid/6" not in {row.url for row in parse_pipeline(text)}
 
 
-def test_region_breaks_ties_but_does_not_outrank_role_fit():
-    """Reversed 2026-08-31 on the operator's ruling.
+def test_location_no_longer_affects_the_score_at_all():
+    """Removed entirely 2026-09-03 on the operator's ruling.
 
-    This test used to assert the opposite: a Manitoba public-sector row beat a
-    Toronto "Senior AI Engineer". Under those weights a Brandon equipment
+    This test used to assert region as a bounded tie-break (a correction of
+    an earlier version where region dominated outright: a Brandon equipment
     operator scored 7.5 against 4.0 for Mistral's Applied AI forward-deployed
-    role, 130 of the top 300 rows were government postings, and three weeks of
-    matching work was never seen. Region is now the tie-break, not the score.
+    role, and 130 of the top 300 rows were government postings). Bounding it
+    still wasn't the fix — the tiers were built for an immigration-path
+    ranking the operator's own later research reversed. His decision: a job
+    match first, immigration second — "两个能一起解决最好，但是不一起肯定先
+    找工作" — so a Toronto row and a Halifax row with otherwise identical
+    content must score identically, full stop.
     """
-    rows = parse_pipeline(PIPELINE)
-    manitoba = next(r for r in rows if r.company == "Government of Manitoba")
-    toronto = next(r for r in rows if r.company == "BigCo")
+    toronto = PipelineRow(
+        url="https://example.invalid/toronto", company="Foundry", role="AI Engineer",
+        location="Toronto, Ontario", posted="2026-08-11", source="direct",
+    )
+    halifax = PipelineRow(
+        url="https://example.invalid/halifax", company="Foundry", role="AI Engineer",
+        location="Halifax, NS", posted="2026-08-11", source="direct",
+    )
     today = date(2026, 8, 12)
-    # The Manitoba row is a Data Engineer — on-target AND in a nomination
-    # region, so it may still lead. What must not survive is the SIZE of the
-    # lead: region used to buy 3.5 points over a strong AI title, enough to bury
-    # matching work under hundreds of government postings. Within one point, the
-    # two compete on their merits and both reach the operator.
-    gap = score(manitoba, today=today)[0] - score(toronto, today=today)[0]
-    assert gap <= 1.0, f"region still dominates role fit by {gap}"
+    assert score(toronto, today=today) == score(halifax, today=today)
+
+
+def test_rank_order_does_not_depend_on_location():
+    """Same property at the rank() level: ties are broken by freshness then
+    company name, never by geography.
+
+    Under the tier scheme this replaced, a nomination-qualifying region beat
+    a major metro in the tie-break regardless of company name — so a
+    Halifax "Zeta" would have outranked a Toronto "Alpha" even though "Alpha"
+    sorts first alphabetically. It must not now: with scores tied, company
+    name alone decides, so "Alpha" (Toronto) comes first despite Toronto
+    being listed second in the input.
+    """
+    toronto = PipelineRow(
+        url="https://example.invalid/alpha", company="Alpha", role="AI Engineer",
+        location="Toronto, Ontario", posted="2026-08-11", source="direct",
+    )
+    halifax = PipelineRow(
+        url="https://example.invalid/zeta", company="Zeta", role="AI Engineer",
+        location="Halifax, NS", posted="2026-08-11", source="direct",
+    )
+    today = date(2026, 8, 12)
+    ranked = rank([halifax, toronto], limit=10, today=today)
+    assert [item.row.company for item in ranked] == ["Alpha", "Zeta"]
 
 
 def test_a_role_matching_no_target_vocabulary_sinks_below_a_matching_one():
@@ -102,12 +133,15 @@ def test_a_role_matching_no_target_vocabulary_sinks_below_a_matching_one():
     assert points < score(toronto, today=today)[0]
 
 
-def test_toronto_is_ranked_last_not_excluded():
+def test_toronto_is_not_excluded_or_scored_on_location():
+    """Toronto used to be down-ranked, then merely a tie-break loser; now
+    location plays no part in the score at all."""
     rows = parse_pipeline(PIPELINE)
     toronto = next(r for r in rows if r.company == "BigCo")
     assert excluded(toronto) == ""
     points, reasons = score(toronto, today=date(2026, 8, 12))
-    assert "major metro" in reasons
+    assert "major metro" not in reasons
+    assert "PNP/AIP region" not in reasons
     assert points > 0
 
 
@@ -171,6 +205,214 @@ def test_urls_already_in_the_tracker_are_skipped():
         "- [ ] https://example.invalid/applied | Someone | AI Engineer | Halifax, NS | source: x\n"
     )
     assert rank(rows, limit=5, seen_urls=urls) == []
+
+
+def test_applied_ai_outranks_generic_full_stack():
+    """Role shape is a tier list, not a tally.
+
+    The three vocabularies used to accumulate, so "Full Stack Engineer" took
+    one-person scope (+2) *and* adjacent (+1) while "Forward Deployed Engineer"
+    took applied AI (+3) alone — and lost the tie, because the FDE rows arrive
+    through aggregators and forfeit the direct-source half point. On 2026-09-04
+    that put twelve generic full-stack rows on the shortlist and left 631
+    applied-AI and forward-deployed rows below the cut.
+    """
+    fde = PipelineRow(
+        url="https://example.invalid/fde", company="Startup", role="Forward Deployed Engineer",
+        location="Toronto, Ontario", posted="", source="adzuna",
+    )
+    full_stack = PipelineRow(
+        url="https://example.invalid/fs", company="Startup", role="Full Stack Engineer",
+        location="Toronto, Ontario", posted="", source="ashby",
+    )
+    assert score(fde)[0] > score(full_stack)[0]
+
+
+def test_the_freshest_posting_wins_a_tie_and_an_undated_one_loses_it():
+    """Ties sorted on the raw date string, ascending, until 2026-09-04 — so the
+    oldest posting won, and an undated row ("" sorts before any date) won
+    outright. Most rows are undated, which left company name alphabetically as
+    the real tie-break and returned nothing from Calgary out of a pool of 200
+    while 290 Calgary rows waited in the inbox."""
+    rows = parse_pipeline(
+        "- [ ] https://example.invalid/old | Zeta | AI Engineer | Calgary AB | posted 2026-08-01 | source: adzuna\n"
+        "- [ ] https://example.invalid/new | Yankee | AI Engineer | Calgary AB | posted 2026-08-30 | source: adzuna\n"
+        "- [ ] https://example.invalid/none | Alpha | AI Engineer | Calgary AB | source: adzuna\n"
+    )
+    ranked = rank(rows, limit=10, today=date(2026, 8, 31))
+    assert [item.row.company for item in ranked] == ["Yankee", "Zeta", "Alpha"]
+
+
+EMPLOYER_TRACKER = """| # | Date | Company | Role | Score | Status | PDF | Notes |
+| 737 | 2026-08-15 | Procurify | Engineering Manager, AI Engineering | 3.6/5 | Applied | y | sent |
+| 865 | 2026-09-01 | Citigroup | Agentic AI Solutions Architect | 2.6/5 | Evaluated | y | skip |
+| 723 | 2026-08-12 | Government of New Brunswick — OCIO | AI Integration Specialist | 4.0/5 | Applied | y | sent |
+"""
+
+
+def test_a_second_role_at_an_employer_already_applied_to_is_hidden():
+    """One role per employer. The pair rule cannot see this: a different title
+    at the same company matches nothing, which is how Procurify, Irving Oil and
+    Signal 1 all came back on 2026-09-04 after being applied to."""
+    employers = submitted_employers(EMPLOYER_TRACKER)
+    row = parse_pipeline(
+        "- [ ] https://example.invalid/p | Procurify | Senior Full Stack Engineer | "
+        "Canada Remote | source: ashby\n"
+    )[0]
+    assert applied_employer(row, employers) == "737"
+    assert rank([row], limit=5, seen_employers=employers) == []
+
+
+def test_a_public_employer_is_exempt_under_the_name_the_tracker_uses():
+    """The exemption has to survive the naming variant, or it isn't an exemption.
+
+    Measured 2026-09-04: the tracker calls the employer "Nova Scotia Health", not
+    "Nova Scotia Health Authority", so it missed the `health authority` pattern and one
+    application hid nine other NSHA postings — one of them a Senior Systems Analyst
+    role squarely in the target. "Town of Whitby" and "Acadia University" failed the
+    same way.
+    """
+    tracker = (
+        "| # | Date | Company | Role | Score | Status | PDF | Notes |\n"
+        "| 726 | 2026-08-13 | Nova Scotia Health | Systems Analyst, IM&T | 3.5/5 | Applied | y | s |\n"
+        "| 747 | 2026-08-16 | Town of Whitby | AI Solutions Architect | 3.7/5 | Applied | y | s |\n"
+        "| 738 | 2026-08-15 | Acadia University | Systems Analyst, Data | 3.6/5 | Applied | y | s |\n"
+    )
+    employers = submitted_employers(tracker)
+    assert employers == {}, "no public employer should be able to hide its own siblings"
+    for company, role in [
+        ("Nova Scotia Health", "Senior Systems Analyst - One Person One Record"),
+        ("Nova Scotia Health Authority", "Senior Systems Analyst"),
+        ("Town of Whitby", "Business Systems Analyst"),
+        ("Acadia University", "Data Engineer"),
+    ]:
+        row = parse_pipeline(f"- [ ] https://x.invalid/1 | {company} | {role} | NS | source: x\n")[0]
+        assert applied_employer(row, employers) == "", company
+
+
+def test_a_longer_name_matches_but_a_different_company_does_not():
+    """One name may extend the other, but only at a word boundary: a character
+    prefix would hide "Citigroup Financial Advisors" *and* "Citizens Bank"."""
+    employers = submitted_employers(EMPLOYER_TRACKER)
+    longer, unrelated = parse_pipeline(
+        "- [ ] https://example.invalid/a | Procurify Technologies Inc | Data Engineer | "
+        "Vancouver | source: ashby\n"
+        "- [ ] https://example.invalid/b | Procure Ninja | Data Engineer | Vancouver | source: x\n"
+    )
+    assert applied_employer(longer, employers) == "737"
+    assert applied_employer(unrelated, employers) == ""
+
+
+def test_an_employer_only_evaluated_is_not_hidden():
+    """Materials built and a decision not to send is not an application."""
+    employers = submitted_employers(EMPLOYER_TRACKER)
+    row = parse_pipeline(
+        "- [ ] https://example.invalid/c | Citigroup | Full Stack Developer | "
+        "Mississauga | source: adzuna\n"
+    )[0]
+    assert applied_employer(row, employers) == ""
+
+
+def test_the_employer_rule_does_not_hide_a_government():
+    """A public competition is scored against stated qualifications, so one GNB
+    competition is not a reason to hide the rest of the civil service."""
+    employers = submitted_employers(EMPLOYER_TRACKER)
+    row = parse_pipeline(
+        "- [ ] https://example.invalid/g | Government of New Brunswick | "
+        "Quality Assurance Analyst | NB | source: nb_gov\n"
+    )[0]
+    assert applied_employer(row, employers) == ""
+
+
+def test_a_row_whose_employer_is_a_location_is_dropped():
+    """The company field holds an aggregator's page title, so the employer is
+    nowhere in the row. Two of these ranked in the top ten on 2026-09-04 and
+    neither could be evaluated: Indeed answers 401, and no résumé can be
+    tailored to a postal code."""
+    rows = parse_pipeline(
+        "- [ ] https://ca.indeed.com/viewjob?jk=1 | Greater Sudbury, ON P3A 5N8 - Indeed.com | "
+        "business systems analyst | Sudbury | source: indeed_smalltown\n"
+        "- [ ] https://ca.indeed.com/viewjob?jk=2 | Halifax, NS - Job posting - Job Bank | "
+        "Data Analyst | Halifax | source: jobbank\n"
+        "- [ ] https://x.invalid/3 | Feathery | Full Stack Engineer | Toronto | source: ashby\n"
+    )
+    assert excluded(rows[0]) == "employer not identified"
+    assert excluded(rows[1]) == "employer not identified"
+    assert excluded(rows[2]) == ""
+
+
+def test_the_public_sector_point_does_not_rescue_an_off_target_role():
+    """A preference between comparable jobs, not a rescue.
+
+    Paid flat, it let a service-desk analyst and a bilingual French language
+    services officer tie with every applied-AI role in the inbox on 2026-09-04.
+    """
+    service_desk = PipelineRow(
+        url="https://example.invalid/sd", company="Government of New Brunswick",
+        role="Service Desk Analyst", location="NB", posted="2026-09-01", source="nb_gov",
+    )
+    gov_ai = PipelineRow(
+        url="https://example.invalid/ga", company="Government of New Brunswick",
+        role="AI Integration Specialist", location="NB", posted="2026-09-01", source="nb_gov",
+    )
+    today = date(2026, 9, 4)
+    assert "public sector" not in score(service_desk, today=today)[1]
+    assert "public sector" in score(gov_ai, today=today)[1]
+    assert score(gov_ai, today=today)[0] > score(service_desk, today=today)[0]
+
+
+def test_a_linkedin_page_title_is_unpacked_into_company_and_role():
+    """A websearch row copies the search result's whole title line.
+
+    "Symend (Calgary) | Symend hiring Senior Machine Learning Engineer in
+    Calgary, Alberta, Canada" is one posting, not a listing page, and reading
+    it as a role hid a Calgary target the operator had been looking for.
+    """
+    row = parse_pipeline(
+        "- [ ] https://ca.linkedin.com/jobs/view/1 | Symend (Calgary) | "
+        "Symend hiring Senior Machine Learning Engineer in Calgary, Alberta, Canada | "
+        "source: websearch\n"
+    )[0]
+    assert row.company == "Symend"
+    assert row.role == "Senior Machine Learning Engineer"
+    assert excluded(row) == ""
+
+
+def test_a_role_that_merely_contains_hiring_keeps_its_own_company():
+    row = parse_pipeline(
+        "- [ ] https://x.invalid/1 | Acme Robotics | Engineering Manager, Hiring Platform | "
+        "Toronto | source: ashby\n"
+    )[0]
+    assert row.company == "Acme Robotics"
+    assert row.role == "Engineering Manager, Hiring Platform"
+
+
+def test_the_direct_employer_bonus_reads_the_url_not_the_source_label():
+    """"websearch" is not a source, it is a way of finding one.
+
+    It collected the direct-employer half point on 2026-09-04 for rows whose
+    URL was linkedin.com — a host this system refuses to fetch — so those
+    outranked postings on the employer's own ATS, which are the only ones that
+    can be read and applied to.
+    """
+    rows = parse_pipeline(
+        "- [ ] https://ca.linkedin.com/jobs/view/ml-engineer-at-kinaxis-1 | Kinaxis | "
+        "Applied Scientist AI | Halifax | source: websearch\n"
+        "- [ ] https://job-boards.greenhouse.io/warp/jobs/1 | Warp | "
+        "Forward Deployed Engineer | Remote | source: websearch\n"
+    )
+    assert score(rows[1])[0] > score(rows[0])[0]
+
+
+def test_a_listing_page_and_a_french_role_are_dropped():
+    rows = parse_pipeline(
+        "- [ ] https://wellfound.com/role/l/ml/canada | Startups | "
+        "Machine Learning Engineer Jobs in Canada | Canada | source: websearch\n"
+        "- [ ] https://x.invalid/fr | Government of Manitoba | "
+        "Bilingual French Language Services Analyst | Winnipeg MB | source: mb_gov\n"
+    )
+    assert excluded(rows[0]) == "a listing page, not one posting"
+    assert excluded(rows[1]) == "French required"
 
 
 def test_large_employers_are_dropped_but_governments_are_not():

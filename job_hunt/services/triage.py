@@ -9,14 +9,24 @@ that decides the ordering is already in the row.
 
 Priorities, in the order they were established:
 
-1. **Immigration value first.** A permanent role in an AIP province, a
-   territory, or an SINP/MPNP province outranks a better-matched job in
-   Toronto, because the offer is what converts into status.
-2. **Non-major-metro next.** Toronto, Vancouver and Montréal are ranked
-   last, not excluded — the operator cleared Toronto explicitly once the
-   remote pool thinned.
-3. **Role shape.** Applied-AI work, and roles whose real content is one
+1. **Role shape.** Applied-AI work, and roles whose real content is one
    person owning everything, over generic engineering.
+2. **Freshness.** A month-old posting on a board that reposts weekly is
+   usually already filled.
+3. **Direct employer over aggregator redirect.**
+
+Geography scored and ordered rows here until 2026-09-03: a nomination-
+qualifying province or territory outranked a major metro, which outranked
+nothing in particular. That tier list was built for an immigration-path
+ranking the operator's own later research reversed — his 2026-07-07 notes
+rank the paths ① OINP (Ontario, including Toronto) ② RCIP ③ AIP, with AIP
+tightening to ~4,000 national places — and it duplicated, badly, the region
+list actually maintained at `profile/profile.yml::immigration_priority` and
+read by `services/immigration.py`. The operator's own ruling settled it: he
+looks for a matching job first and immigration second — "两个能一起解决最好，
+但是不一起肯定先找工作" — so location has been removed from this file
+entirely, score and tie-break both. Immigration still reaches him downstream,
+in `services/immigration.py`, against the list that is actually kept current.
 
 Exclusions are the categories that were measured to convert at zero: staffing
 agencies, roles above the reachable level, clearance-gated defence work, and
@@ -56,6 +66,49 @@ CLEARANCE_RE = re.compile(
 )
 # Explicitly excluded job function.
 EXCLUDED_FUNCTION_RE = re.compile(r"\b(procurement|purchasing|buyer)\b", re.I)
+# The company field holds a search-result title, not an employer. A websearch
+# hit on an aggregator is titled "<role> - <city, province> - <site>", so the
+# half after the first separator is a location and the employer is nowhere in
+# the row: "Greater Sudbury, ON P3A 5N8 - Indeed.com", "Halifax, NS - Job
+# posting - Job Bank". Two of these ranked in the top ten on 2026-09-04, and
+# neither could be evaluated — Indeed answers 401 and nobody knows who the
+# employer is, so there is nothing to tailor a résumé to.
+UNIDENTIFIED_EMPLOYER_RE = re.compile(
+    r"(indeed\.com|glassdoor|ziprecruiter|jooble|talent\.com|simplyhired|neuvoo|"
+    r"jobillico|job posting - job bank)",
+    re.I,
+)
+LOCATION_AS_COMPANY_RE = re.compile(
+    r"^[^,|]+,\s*(AB|BC|MB|NB|NL|NS|NT|NU|ON|PE|QC|SK|YT)\b", re.I
+)
+# Hosts that are a hop to the posting rather than the posting: the employer
+# name, the location and sometimes the role come from the aggregator's own page
+# furniture, and two of them (LinkedIn, Indeed) cannot be fetched at all.
+AGGREGATOR_HOST_RE = re.compile(
+    r"^https?://(?:[^/]*\.)?(?:linkedin\.com|indeed\.[a-z.]+|adzuna\.[a-z.]+|jobbank\.gc\.ca|"
+    r"glassdoor\.[a-z.]+|wellfound\.com|angel\.co|startup\.jobs|welcometothejungle\.com|"
+    r"ziprecruiter\.[a-z.]+|jooble\.org|talent\.com|simplyhired\.[a-z.]+|neuvoo\.[a-z.]+|"
+    r"jobillico\.com|monster\.[a-z.]+|careerbeacon\.com|jobbank\.gc\.ca)/",
+    re.I,
+)
+# The row's "role" is a search-listing title, not one posting: a wellfound
+# category page ("Machine Learning Engineer Jobs in Canada"). There is no
+# single job behind these to evaluate. LinkedIn's "<Company> hiring <Role> in
+# <City>" is NOT one of these — it names exactly one posting, and dropping it
+# hid Symend's Senior Machine Learning Engineer, a Calgary target the operator
+# had been looking for. That title is unpacked below instead.
+LISTING_TITLE_RE = re.compile(r"\bjobs in\b|\bjob posting\b", re.I)
+# LinkedIn titles its posting pages "<Company> hiring <Role> in <City, Region,
+# Country>", and a websearch row copies the whole line into the role field. The
+# employer and the role are both in there; this takes them back out.
+# The " in <place>" tail is required, and "hiring" is matched in lower case:
+# both are part of the convention, and without them the pattern also eats a
+# real title like "Engineering Manager, Hiring Platform".
+LINKEDIN_TITLE_RE = re.compile(r"^(?P<company>.{2,60}?) hiring (?P<role>.+?) in .+$")
+# French is a hard requirement in these, and the operator has none. Only a role
+# that says so in its own title is dropped — "bilingualism an asset" in a JD
+# body is a different thing and is not read here.
+FRENCH_REQUIRED_RE = re.compile(r"\bbilingual\b|french language|\bfrançais\b", re.I)
 # Operator's decision, 2026-08-13: "大厂不缺我这样的人" — a bank or a global
 # consultancy has a full funnel of candidates who look like him on paper and
 # screens on credentials he does not have. A twelve-person company in Halifax
@@ -73,22 +126,22 @@ BIG_EMPLOYER_RE = re.compile(
     re.I,
 )
 
-# AIP provinces, the three territories, and the two Prairie PNP provinces.
-TIER_A_RE = re.compile(
-    r"\b(nova scotia|new brunswick|prince edward|newfoundland|labrador|halifax|dartmouth|"
-    r"sydney|moncton|fredericton|saint john|charlottetown|st\.? john's|"
-    r"northwest territories|yukon|nunavut|yellowknife|whitehorse|iqaluit|inuvik|"
-    r"saskatchewan|manitoba|saskatoon|regina|winnipeg|brandon|nb|ns|pe|nl|nt|yt|nu|sk|mb)\b",
-    re.I,
-)
-TIER_C_RE = re.compile(
-    r"\b(toronto|vancouver|montr[ée]al|greater toronto|gta|mississauga|brampton|markham|"
-    r"north york|scarborough|etobicoke|vaughan|richmond hill|burnaby|surrey)\b",
-    re.I,
-)
+# Public-sector employers, which the one-role-per-employer rule exempts: a public
+# competition is scored against stated qualifications, so one application is no
+# reason to hide the rest of the postings.
+#
+# The list is wider than "government" because the exemption was being defeated by
+# naming variants. Measured 2026-09-04: the tracker calls Nova Scotia Health exactly
+# that, without "Authority", so it missed `health authority` and one application was
+# hiding nine other NSHA postings — including a Senior Systems Analyst role squarely
+# in the operator's target. "Town of Whitby" and "Acadia University" failed the same
+# way. Universities and colleges are here for the same reason as a municipality:
+# they post continuously and hire against published qualifications.
 GOVERNMENT_RE = re.compile(
-    r"\b(government|gouvernement|province of|city of|municipality|public service|"
-    r"health authority|school district|crown corporation)\b",
+    r"\b(government|gouvernement|province of|city of|town of|village of|township of|"
+    r"municipality|regional municipality|public service|health authority|"
+    r"nova scotia health|regional health|health services|school district|"
+    r"school board|university|college|crown corporation)\b",
     re.I,
 )
 AI_ROLE_RE = re.compile(
@@ -163,17 +216,39 @@ def parse_pipeline(text: str) -> list[PipelineRow]:
                 posted = posted_match.group(1)
             if part.startswith("source:"):
                 source = part.removeprefix("source:").strip()
+        company, role = _unpack_board_title(
+            parts[1] if len(parts) > 1 else "",
+            parts[2] if len(parts) > 2 else "",
+        )
         rows.append(
             PipelineRow(
                 url=parts[0],
-                company=parts[1] if len(parts) > 1 else "",
-                role=parts[2] if len(parts) > 2 else "",
+                company=company,
+                role=role,
                 location=parts[3] if len(parts) > 3 else "",
                 posted=posted,
                 source=source,
             )
         )
     return rows
+
+
+def _unpack_board_title(company: str, role: str) -> tuple[str, str]:
+    """Recover (company, role) when the role field is a board's page title.
+
+    A websearch row copies the search result's whole title line, so LinkedIn's
+    "Symend hiring Senior Machine Learning Engineer in Calgary, Alberta,
+    Canada" arrives as the role. Both halves are in there. The company found
+    this way only fills an empty or parenthesised company field — the row's own
+    company is better evidence when it has one.
+    """
+    match = LINKEDIN_TITLE_RE.match(role)
+    if not match:
+        return company, role
+    found = match.group("company").strip()
+    if not company or _norm(found).startswith(_norm(company).split(" ")[0]):
+        company = found
+    return company, match.group("role").strip()
 
 
 def excluded(row: PipelineRow) -> str:
@@ -186,6 +261,12 @@ def excluded(row: PipelineRow) -> str:
         return "clearance-gated"
     if EXCLUDED_FUNCTION_RE.search(row.role):
         return "excluded function"
+    if UNIDENTIFIED_EMPLOYER_RE.search(row.company) or LOCATION_AS_COMPANY_RE.match(row.company):
+        return "employer not identified"
+    if LISTING_TITLE_RE.search(row.role):
+        return "a listing page, not one posting"
+    if FRENCH_REQUIRED_RE.search(row.role):
+        return "French required"
     if BIG_EMPLOYER_RE.search(row.company) and not GOVERNMENT_RE.search(row.company):
         return "large employer"
     return ""
@@ -196,39 +277,55 @@ def score(row: PipelineRow, *, today: date | None = None) -> tuple[float, list[s
     points = 0.0
     reasons: list[str] = []
 
-    # 1. Immigration value is real but must not stand in for role fit. Until
-    #    2026-08-31 a nomination-qualifying region was worth +4 while the three
-    #    metros that hold essentially every Canadian AI job scored 0 — less than
-    #    an unrecognised location — so a Brandon equipment operator (7.5)
-    #    outranked Mistral's Applied AI forward-deployed role in Montréal (4.0),
-    #    and 130 of the top 300 rows were government postings. The operator's
-    #    ruling: region belongs in the ORDERING, not in the score. The spread is
-    #    now 1.0 instead of 4.0, and ties break toward the region below.
-    if TIER_A_RE.search(row.location):
-        points += 1.5
-        reasons.append("PNP/AIP region")
-    elif TIER_C_RE.search(row.location):
-        points += 0.5
-        reasons.append("major metro")
-    else:
-        points += 1.0
-    if GOVERNMENT_RE.search(row.company):
+    # 1. Geography scored here until 2026-09-03, on a scale that inverted the
+    #    priority it was meant to serve: a nomination-qualifying region was
+    #    worth +1.5, a major metro only +0.5 — less than an unrecognised
+    #    location's flat +1.0 — so a Brandon equipment operator (7.5)
+    #    outranked Mistral's Applied AI forward-deployed role in Montréal
+    #    (4.0), and 130 of the top 300 rows were government postings. That
+    #    was already the second version of the rule, tightened once from an
+    #    even worse +4 spread; the tightening didn't fix the premise. The
+    #    operator's ruling, 2026-09-03: "两个能一起解决最好，但是不一起肯定
+    #    先找工作" — a job match first, immigration second, always — and the
+    #    tiers here were built for an immigration-path ranking his own later
+    #    research reversed (see the module docstring). Geography no longer
+    #    scores or orders anything in this file; immigration still reaches
+    #    him, downstream of triage, through `services/immigration.py`
+    #    against the region list that is actually kept current.
+    # 1b. Public sector, but only for a role that is already on target. The
+    #     point is a preference between comparable jobs, not a rescue: paid
+    #     flat, it let a service-desk analyst and a bilingual French language
+    #     services officer tie with every applied-AI role in the inbox on
+    #     2026-09-04, which is the same plateau the tier fix below removes.
+    on_target = bool(AI_ROLE_RE.search(row.role) or SOLO_ROLE_RE.search(row.role))
+    if on_target and GOVERNMENT_RE.search(row.company):
         points += 1
         reasons.append("public sector")
 
-    # 2. Role shape, which now outweighs every location term combined.
+    # 2. Role shape, the dominant term now that geography scores nothing.
+    #
+    #    The three vocabularies are TIERS — applied AI beats one-person scope
+    #    beats merely adjacent — so exactly one of them scores. They used to
+    #    accumulate, and that inverted the tier list they were meant to
+    #    express: "Full Stack Engineer" collected one-person scope (+2) *and*
+    #    adjacent (+1) for 3.0, while "Forward Deployed Engineer" collected
+    #    applied AI (+3) alone for 3.0 — and lost the direct-source half point
+    #    on top, because the FDE roles come through aggregators. Measured
+    #    2026-09-04: every one of the twelve rows triage surfaced was a generic
+    #    full-stack post, while 631 pending applied-AI and forward-deployed
+    #    rows — the operator's actual track — sat below the cut.
+    #
+    #    A row matching none of the three is not a near miss: it is an
+    #    equipment operator, a collections officer, a language coordinator.
     if AI_ROLE_RE.search(row.role):
         points += 3
         reasons.append("applied AI")
-    if SOLO_ROLE_RE.search(row.role):
+    elif SOLO_ROLE_RE.search(row.role):
         points += 2
         reasons.append("one-person scope")
-    if not AI_ROLE_RE.search(row.role) and ADJACENT_ROLE_RE.search(row.role):
+    elif ADJACENT_ROLE_RE.search(row.role):
         points += 1
-    # A row matching none of the three vocabularies is not a near miss — it is
-    # an equipment operator, a collections officer, a language coordinator. The
-    # region and public-sector points alone used to float those to the top.
-    if not (AI_ROLE_RE.search(row.role) or SOLO_ROLE_RE.search(row.role) or ADJACENT_ROLE_RE.search(row.role)):
+    else:
         points -= 2
         reasons.append("off-target role")
 
@@ -251,7 +348,15 @@ def score(row: PipelineRow, *, today: date | None = None) -> tuple[float, list[s
 
     # 4. A direct employer beats an aggregator redirect: the aggregator link
     #    is a hop, and its employer field has been wrong before.
-    if row.source and row.source not in {"adzuna", "jobbank", "linkedin", "indeed"}:
+    #
+    #    Read off the URL, not the `source:` label. The label says where the
+    #    row was found, and "websearch" — which is most of them — is not a
+    #    source at all: on 2026-09-04 it collected this half point for rows
+    #    whose URL was linkedin.com, a host this system will not fetch under
+    #    any circumstances, and for wellfound pages that carry the operator's
+    #    own city as the job's location. Those outranked postings on the
+    #    employer's own ATS, which are the ones that can actually be read.
+    if not AGGREGATOR_HOST_RE.search(row.url):
         points += 0.5
 
     return points, reasons
@@ -290,6 +395,67 @@ def tracker_seen(tracker_text: str) -> tuple[set[str], set[tuple[str, str]]]:
     return urls, pairs
 
 
+#: Tracker statuses that mean an application was actually sent. `Evaluated` and
+#: `SKIP` are materials built and a decision not to send. `Discarded` is
+#: ambiguous in the file's own history — it covers both "withdrew after
+#: applying" and "decided against before applying" — so it does not hide an
+#: employer; the pair rule still catches the exact posting either way.
+SUBMITTED_STATUSES = frozenset({"applied", "interview", "responded", "rejected", "offer"})
+
+
+def submitted_employers(tracker_text: str) -> dict[str, str]:
+    """Normalised employer -> the tracker row already sent to that employer.
+
+    The standing rule is one role per employer: chase the closest-fit posting,
+    and if that one does not land, its siblings at the same company are not
+    worth the postage. The (company, role) pair alone cannot enforce it — a
+    different title at the same employer matches nothing, which is how
+    Procurify, Irving Oil and Signal 1 all came back on 2026-09-04 after being
+    applied to, and how the same Connor, Clark & Lunn posting came back a
+    sixth day later under the affiliate name its aggregator used.
+
+    Governments are exempt, deliberately: a public competition is scored
+    against stated qualifications, so one GNB competition is not a reason to
+    hide the rest of the New Brunswick civil service. Those stay on the pair.
+    """
+    employers: dict[str, str] = {}
+    for line in tracker_text.splitlines():
+        if not line.startswith("|"):
+            continue
+        cells = [cell.strip() for cell in line.split("|")]
+        if len(cells) <= 6 or cells[3] == "Company":
+            continue
+        company, status = cells[3], cells[6].lower()
+        if status not in SUBMITTED_STATUSES or GOVERNMENT_RE.search(company):
+            continue
+        key = _norm(company)
+        if len(key) >= 4:
+            employers.setdefault(key, cells[1] or "?")
+    return employers
+
+
+def applied_employer(row: PipelineRow, employers: dict[str, str]) -> str:
+    """The tracker row already sent to this row's employer, or ``""``.
+
+    The two sides never agree on wording — "PointClickCare" against
+    "PointClickCare Technologies", "J.D. Irving" against "J.D. Irving,
+    Limited" — so one name may extend the other, but only at a word boundary.
+    A character prefix would be enough to hide "Citizens Bank" because "Citi"
+    is in the tracker, and this rule deletes rows the operator never sees.
+
+    It cannot catch an employer that appears under an unrelated trading name —
+    an aggregator called Connor, Clark & Lunn "FortWood Capital LP" — and
+    nothing string-shaped can.
+    """
+    company = _norm(row.company)
+    if len(company) < 4:
+        return ""
+    for tracked, entry in employers.items():
+        if company == tracked or company.startswith(tracked + " ") or tracked.startswith(company + " "):
+            return entry
+    return ""
+
+
 def already_applied(row: PipelineRow, pairs: set[tuple[str, str]]) -> bool:
     """True when this row is a posting the tracker already covers."""
     company, role = _norm(row.company), _norm(row.role)
@@ -311,17 +477,19 @@ def rank(
     limit: int = 10,
     seen_urls: set[str] | None = None,
     seen_pairs: set[tuple[str, str]] | None = None,
+    seen_employers: dict[str, str] | None = None,
     today: date | None = None,
 ) -> list[Ranked]:
     """Best `limit` rows, dropping anything already applied to or duplicated."""
     seen_urls = seen_urls or set()
     seen_pairs = seen_pairs or set()
+    seen_employers = seen_employers or {}
     ranked: list[Ranked] = []
     pairs: set[tuple[str, str]] = set()
     for row in rows:
         if row.url in seen_urls or excluded(row):
             continue
-        if already_applied(row, seen_pairs):
+        if already_applied(row, seen_pairs) or applied_employer(row, seen_employers):
             continue
         pair = (row.company.lower(), row.role.lower())
         # Boards repost the same job under several locations; one is enough.
@@ -330,15 +498,29 @@ def rank(
         pairs.add(pair)
         points, reasons = score(row, today=today)
         ranked.append(Ranked(row=row, score=points, reasons=tuple(reasons)))
-    # Region is the tie-break, not the score: among equally well-matched roles a
-    # nomination-qualifying province comes first, but it can no longer lift an
-    # off-target posting above a matching one.
+    # Geography broke ties here until 2026-09-03 (see score() above and the
+    # module docstring for why that stopped). Ties now fall to freshness,
+    # then company name — both already inherent to the row, neither of them
+    # a location, and both stable regardless of the order rows arrived in.
+    #
+    # Freshness sorted on the raw string until 2026-09-04, ascending: the
+    # oldest posting won the tie, and a row with no date at all — "" sorts
+    # before any date — won it outright. Most rows carry no date, so the tie
+    # was decided by company name alphabetically, which is how a pool of 200
+    # returned nothing from Calgary while 290 Calgary rows waited in the inbox.
     ranked.sort(
         key=lambda item: (
             -item.score,
-            0 if TIER_A_RE.search(item.row.location) else (1 if not TIER_C_RE.search(item.row.location) else 2),
-            item.row.posted or "",
+            _freshness_key(item.row.posted),
             item.row.company,
         )
     )
     return ranked[:limit]
+
+
+def _freshness_key(posted: str) -> tuple[int, int]:
+    """Newest first; a row with no usable date sorts last, never first."""
+    try:
+        return 0, -datetime.strptime(posted, "%Y-%m-%d").date().toordinal()
+    except ValueError:
+        return 1, 0

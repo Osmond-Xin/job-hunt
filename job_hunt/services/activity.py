@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import json
 import os
 import uuid
-from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Literal
@@ -12,18 +10,10 @@ import httpx
 from pydantic import BaseModel, Field
 
 from job_hunt.config.models import ActivityConfig
+from job_hunt.repositories.jsonl_log import JsonlLog, MalformedLine
 
 
 ActivityLevel = Literal["debug", "info", "warning", "error"]
-
-
-@dataclass(frozen=True)
-class MalformedActivityLine:
-    """A line in the activity log file that could not be read back as an activity event."""
-
-    line_number: int
-    reason: str
-    raw: str
 
 
 class ActivityEvent(BaseModel):
@@ -91,30 +81,12 @@ def resolve_secret_ref(ref: str) -> str | None:
     return None
 
 
-def _read_activity_internal(path: Path) -> tuple[list[ActivityEvent], list[MalformedActivityLine]]:
+def _read_activity_internal(path: Path) -> tuple[list[ActivityEvent], list[MalformedLine]]:
     """Read activity events, tolerating malformed lines. Return both good events and malformed records."""
-    if not path.exists():
-        return [], []
-    events: list[ActivityEvent] = []
-    malformed: list[MalformedActivityLine] = []
-    lines = path.read_text(encoding="utf-8").splitlines()
-    for number, line in enumerate(lines, start=1):
-        if not line.strip():
-            continue
-        try:
-            events.append(ActivityEvent.model_validate(json.loads(line)))
-        except Exception as exc:  # malformed JSON or a value outside the schema
-            malformed.append(
-                MalformedActivityLine(
-                    line_number=number,
-                    reason=type(exc).__name__ + ": " + str(exc).split("\n")[0],
-                    raw=line,
-                )
-            )
-    return events, malformed
+    return JsonlLog(path, ActivityEvent).read()
 
 
-def activity_malformed(path: Path = Path("data/activity.jsonl")) -> list[MalformedActivityLine]:
+def activity_malformed(path: Path = Path("data/activity.jsonl")) -> list[MalformedLine]:
     """Lines in the activity log that could not be read back. Empty when the file is healthy."""
     _, malformed = _read_activity_internal(path)
     return malformed

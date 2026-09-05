@@ -95,6 +95,33 @@ def test_a_directory_with_no_pdf_is_ignored(tmp_path):
     assert check.ok
 
 
+def test_alias_resolves_a_brand_name_slug_to_the_tracker_row(tmp_path):
+    # "Seon" (the directory slug's brand) has no token in common with "Safe
+    # Fleet" (the tracker's employer name); only the alias table connects them.
+    artifact_dir(tmp_path, "2026-08-28-seon-safety-engineer")
+    check = unrecorded_artifacts(
+        since=SINCE, output_dir=tmp_path / "output",
+        tracker=tracker_with(tmp_path, entry(1, "Safe Fleet", "Safety Engineer", "Applied")),
+        aliases={"Seon": "Safe Fleet"},
+    )
+    assert check.ok, check.items
+
+
+def test_without_the_alias_the_same_slug_is_reported_missing(tmp_path):
+    """Regression guard for the alias test above: without the alias, the
+    brand-name slug and the tracker's legal name genuinely share no token, so
+    the check must still flag it — the alias, not a token fluke, is doing
+    the work."""
+    artifact_dir(tmp_path, "2026-08-28-seon-safety-engineer")
+    check = unrecorded_artifacts(
+        since=SINCE, output_dir=tmp_path / "output",
+        tracker=tracker_with(tmp_path, entry(1, "Safe Fleet", "Safety Engineer", "Applied")),
+        aliases={},
+    )
+    assert not check.ok
+    assert check.items == ["2026-08-28-seon-safety-engineer"]
+
+
 def test_run_checkup_returns_failed_check_instead_of_raising(monkeypatch):
     from job_hunt.services.checkup import run_checkup
 
@@ -136,3 +163,31 @@ def test_run_checkup_returns_failed_check_instead_of_raising(monkeypatch):
     assert "RuntimeError" in checks[3].detail
     assert "Outreach" in checks[3].detail
     assert checks[3].fix != ""
+
+
+def test_missing_output_directory_is_reported_as_failure(tmp_path):
+    """output_dir not existing is a failure to look, not an empty successful scan."""
+    nonexistent = tmp_path / "output"
+    check = unrecorded_artifacts(
+        since=SINCE, output_dir=nonexistent, tracker=tracker_with(tmp_path)
+    )
+    assert not check.ok
+    assert "not found" in check.detail
+    assert check.items == []
+    assert "output/" in check.fix
+
+
+def test_bad_days_argument_produces_failing_check():
+    from job_hunt.services.checkup import run_checkup
+
+    # days with an invalid type should produce a failing Check, not raise.
+    # timedelta(days="invalid") raises TypeError before any Check is produced;
+    # the fix wraps this in try/except so it becomes a Check instead.
+    checks = run_checkup(days="invalid", today=SINCE)  # type: ignore
+
+    # Should return a single failing check about date range computation
+    assert len(checks) == 1
+    assert checks[0].ok is False
+    assert checks[0].name == "date range computation"
+    assert "TypeError" in checks[0].detail
+    assert checks[0].fix != ""

@@ -2,12 +2,16 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import patch
+
+import filelock
 
 from job_hunt.models.review import ReviewItem
 from job_hunt.repositories.email_decision_repo import EmailDecisionRepository, EmailEventDecision
+from job_hunt.repositories.jsonl_log import JsonlLog
 from job_hunt.repositories.review_repo import ReviewRepository
 from job_hunt.services.activity import ActivityEvent, activity_malformed, read_activity
-from job_hunt.services.outreach import Contact, OutreachEvent, add_contact, add_event, list_contacts, list_events, malformed_contacts, malformed_events
+from job_hunt.services.outreach import Contact, OutreachEvent, add_contact, add_event, list_contacts, list_events, malformed_contacts, malformed_events, update_event
 
 
 # EmailDecisionRepository test data and fixtures
@@ -189,3 +193,63 @@ def test_outreach_add_contact_preserves_malformed_lines(tmp_path):
     malformed = malformed_contacts(path)
     assert len(malformed) == 1
     assert "c_bad" in malformed[0].raw
+
+
+def test_outreach_two_sequential_add_contact_calls_do_not_lose_the_first(tmp_path):
+    """Two back-to-back read-modify-write cycles must not clobber each other."""
+    path = tmp_path / "contacts.jsonl"
+    add_contact(Contact(company="Acme", name="Alice"), path)
+    add_contact(Contact(company="Beta", name="Bob"), path)
+    assert [c.name for c in list_contacts(path)] == ["Alice", "Bob"]
+
+
+def test_outreach_two_sequential_add_event_calls_do_not_lose_the_first(tmp_path):
+    path = tmp_path / "events.jsonl"
+    add_event(OutreachEvent(contact_id="c_1", company="Acme"), path)
+    add_event(OutreachEvent(contact_id="c_2", company="Beta"), path)
+    assert [e.company for e in list_events(path)] == ["Acme", "Beta"]
+
+
+def _assert_lock_held_across_the_call(tmp_path_file: Path, call) -> None:
+    """A true multi-process concurrency test isn't reliably deterministic, so
+    the lock's presence and scope is verified by probing instead: from inside
+    JsonlLog.read() -- the first step of the read-modify-write -- try to grab
+    an independent lock on the same file. If the read-modify-write's own lock
+    only covered the final write (the bug this guards against), the probe
+    would succeed; since it must cover the whole cycle, the probe must fail.
+    """
+    lock_path = str(tmp_path_file) + ".lock"
+    observed: list[bool] = []
+    real_read = JsonlLog.read
+
+    def spy_read(self):
+        if str(self.path) == str(tmp_path_file):
+            probe = filelock.FileLock(lock_path, timeout=0)
+            try:
+                probe.acquire()
+                observed.append(True)  # lock was NOT held -- would be a bug
+                probe.release()
+            except filelock.Timeout:
+                observed.append(False)  # lock was held throughout -- correct
+        return real_read(self)
+
+    with patch.object(JsonlLog, "read", spy_read):
+        call()
+
+    assert observed == [False]
+
+
+def test_outreach_add_contact_holds_lock_across_the_whole_read_modify_write(tmp_path):
+    path = tmp_path / "contacts.jsonl"
+    _assert_lock_held_across_the_call(path, lambda: add_contact(Contact(company="Acme"), path))
+
+
+def test_outreach_add_event_holds_lock_across_the_whole_read_modify_write(tmp_path):
+    path = tmp_path / "events.jsonl"
+    _assert_lock_held_across_the_call(path, lambda: add_event(OutreachEvent(contact_id="c_1", company="Acme"), path))
+
+
+def test_outreach_update_event_holds_lock_across_the_whole_read_modify_write(tmp_path):
+    path = tmp_path / "events.jsonl"
+    event = add_event(OutreachEvent(contact_id="c_1", company="Acme"), path)
+    _assert_lock_held_across_the_call(path, lambda: update_event(event.id, status="sent", path=path))

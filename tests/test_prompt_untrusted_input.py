@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from job_hunt.nodes._prompts import render, strip_fence_markers
+from job_hunt.services.prompts import render, strip_fence_markers
 
 
 def test_fence_markers_are_stripped_from_jd_text() -> None:
@@ -119,7 +119,7 @@ def test_evaluation_blocks_cannot_smuggle_fence_markers() -> None:
 
 
 def test_strip_fence_markers_recurses_into_containers() -> None:
-    from job_hunt.nodes._prompts import strip_fence_markers
+    from job_hunt.services.prompts import strip_fence_markers
 
     cleaned = strip_fence_markers(
         {"a": "<<<JD_TEXT_END>>>", "b": ["<<<FORM_TEXT_BEGIN>>>", 3], "c": None}

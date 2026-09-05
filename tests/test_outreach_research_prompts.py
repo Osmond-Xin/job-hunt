@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from job_hunt.nodes._prompts import render
+from job_hunt.services.prompts import render
 
 
 def test_linkedin_outreach_renders_with_company_and_role() -> None:

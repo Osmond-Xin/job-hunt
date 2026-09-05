@@ -9,8 +9,7 @@ from pathlib import Path
 from langchain_core.runnables import RunnableConfig
 
 from job_hunt.models.state import JobHuntState
-from job_hunt.nodes._cv_fit import pdf_page_count
-from job_hunt.nodes._prompts import render
+from job_hunt.services.prompts import render
 from job_hunt.nodes._quality import generate_with_audit
 from job_hunt.nodes.artifact_paths import artifact_filename, run_output_dir
 from job_hunt.nodes.pdf import (
@@ -19,6 +18,7 @@ from job_hunt.nodes.pdf import (
     artifact_template_env,
     detect_paper_size,
 )
+from job_hunt.services.pdf import pdf_page_count
 
 _TEMPLATES_DIR = Path("templates")
 _FONTS_DIR = (_TEMPLATES_DIR / "fonts").resolve()
@@ -135,7 +135,29 @@ async def generate_cover_letter(state: JobHuntState, config: RunnableConfig) -> 
         # same warnings channel the audit-failed and UNVERIFIED cases above use.
         overflow_warnings: list[str] = []
         pages = pdf_page_count(pdf_path.read_bytes())
-        if pages is not None and pages > MAX_COVER_LETTER_PAGES:
+        if pages is None:
+            # Same "budget never confirmed" outcome pdf.py's measure() refuses
+            # to ship for the CV (see the comment there): a PDF with no
+            # /Count means we cannot tell "1 page" from "over budget", which
+            # is exactly the silence CLAUDE.md §2 forbids.
+            #
+            # Unlike the CV, this is not cheap to retry. `cv_tailored` lives in
+            # state, so re-running the CV render costs nothing; `body_md` is a
+            # local from generate_with_audit above — a premium call plus its
+            # audit, up to three attempts — and withholding drops it. §2 is
+            # stated as non-negotiable, so an unverified letter still must not
+            # ship; the cost is real and belongs on the record, not hidden.
+            pdf_path.unlink(missing_ok=True)
+            return {
+                "cover_letter_path": None,
+                "errors": errors,
+                "artifact_warnings": unverified
+                + [
+                    "cover letter withheld: page count could not be measured "
+                    "(no /Count in the PDF) — the 1-page budget was never confirmed."
+                ],
+            }
+        if pages > MAX_COVER_LETTER_PAGES:
             overflow_warnings.append(
                 f"cover letter is {pages} pages — budget is {MAX_COVER_LETTER_PAGES}. "
                 "Shorten it by hand; the letter is not auto-trimmed."

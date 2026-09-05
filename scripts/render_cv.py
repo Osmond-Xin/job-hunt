@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parent.parent
 FONTS_DIR = (ROOT / "templates" / "fonts").resolve()
 sys.path.insert(0, str(ROOT))
 
-from job_hunt.nodes._cv_fit import pdf_page_count  # noqa: E402
+from job_hunt.services.pdf import pdf_page_count  # noqa: E402
 
 
 def md_inline(text: str) -> str:

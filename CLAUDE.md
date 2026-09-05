@@ -66,6 +66,19 @@ Recording goes through the CLI, never by editing the markdown:
     --pdf '<pdf under output/>' --no-browser --confirmed
 ```
 
+A URL is required to open a browser, not to record. If the application has no
+URL — found while browsing LinkedIn, or a referral into a role with no posting
+— omit it; `--no-browser` is what makes that legal:
+
+```bash
+.venv/bin/job-hunt apply --company '...' --role '...' \
+    --pdf '<pdf under output/>' --no-browser --confirmed
+```
+
+Leaving off `--no-browser` with no URL fails immediately with a message
+explaining why — there is nothing to open. It does not silently skip the
+browser.
+
 `--pdf` is not optional: it stamps the tracker row number into the `output/`
 directory, which is the only exact link between materials and row. Then write the real
 detail into the row's notes — the red-team verdict, the submission date, any stated

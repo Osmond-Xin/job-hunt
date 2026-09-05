@@ -29,8 +29,8 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from job_hunt.models.state import JobHuntState
-from job_hunt.nodes._llm import call_node_llm_or_fallback
-from job_hunt.nodes._prompts import render
+from job_hunt.services.llm.call import call_node_llm_or_fallback
+from job_hunt.services.prompts import render
 from job_hunt.services.llm.content import extract_json_object, normalize_llm_content
 
 _MAX_ATTEMPTS = 3

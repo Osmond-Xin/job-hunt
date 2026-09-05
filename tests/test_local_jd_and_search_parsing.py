@@ -43,6 +43,24 @@ def test_parse_search_result_empty_string() -> None:
     assert parse_search_result_title("") == (None, None)
 
 
+def test_an_aggregator_title_yields_the_role_but_no_company() -> None:
+    """Aggregators title their pages "<role> - <city, province> - <site>", so
+    the half after the separator is a location, not an employer. Writing it
+    into the company field produced pipeline rows whose employer was "Greater
+    Sudbury, ON P3A 5N8 - Indeed.com", and two of them ranked in triage's top
+    ten on 2026-09-04. The title is still good; "Unknown" is a truthful company
+    field where a postal code is not."""
+    title, company = parse_search_result_title(
+        "business systems analyst - Greater Sudbury, ON P3A 5N8 - Indeed.com"
+    )
+    assert title == "business systems analyst"
+    assert company is None
+
+    title, company = parse_search_result_title("Data Analyst - Halifax, NS - Job posting - Job Bank")
+    assert title == "Data Analyst"
+    assert company is None
+
+
 def test_extract_url_text_local_prefix_reads_file(tmp_path: Path, monkeypatch) -> None:
     """`local:<path>` must short-circuit to local file read, no HTTP."""
     monkeypatch.chdir(tmp_path)

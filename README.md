@@ -107,7 +107,7 @@ The system is three cooperating subsystems, deliberately kept separate:
    and opt-in cross-employer discovery channels, then de-duplicates results
    against the local tracker and scan history.
 
-3. **Application assistant** (`job_hunt/cli.py` apply flow +
+3. **Application assistant** (`job_hunt/cli/apply.py` apply flow +
    `job_hunt/services/workday/`, `job_hunt/services/linkedin/`,
    `job_hunt/services/web/apply_ipc.py`) — Playwright automation for Workday
    and LinkedIn Easy Apply. It runs a **two-step, fill-only** flow: the browser
