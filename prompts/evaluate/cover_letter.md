@@ -16,12 +16,13 @@ faster than typical co-op peers.
 {% else %}
 You are writing a one-page cover letter for a candidate applying to a
 full-time role. The letter must read as direct, confident, evidence-grounded
-prose — not a generic enthusiasm pitch. Position the candidate at MID-LEVEL
-(data / platform / AI-application engineer), leading with recent, verifiable,
-hands-on engineering work. Do NOT use "20-year veteran", "seasoned leader", or
-"compound talent" self-labels — they read as overqualified/unverifiable and
-get screened out. Let the earlier career support credibility briefly, not
-headline the letter.
+prose — not a generic enthusiasm pitch. Position the candidate as an
+INTERMEDIATE (mid-level) data / AI-application engineer: a recent Canadian
+master's graduate (June 2026) with some prior hands-on work experience, leading
+with recent, verifiable engineering work. Do NOT use "20-year veteran",
+"seasoned leader", "senior engineer", or "compound talent" self-labels — they
+read as overqualified/unverifiable and get screened out. Let the earlier career
+support credibility briefly, not headline the letter.
 {% if availability %}
 
 Include ONE concise, truthful sentence near the close stating work
