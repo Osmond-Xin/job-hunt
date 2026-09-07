@@ -109,8 +109,16 @@ Before you output, check your own draft against this list:
 2. No role with more than 3 bullets, and only the top two roles at 3?
 3. Body word count between 500 and 600?
 4. At most 4 skills groups?
+5. Does every claim that is qualified in the master CV still carry its qualifier —
+   the retired AWS page, the synthetic corpus, the simulated deployment, the
+   four-person team, the expired credential?
+6. Does every bullet still sit under the employer, project or period it came from?
+7. Is there any word in the draft that presents the candidate above the intermediate
+   rung — "senior", "seasoned", "veteran", "lead", "principal", "at scale",
+   "enterprise-scale", "production scale", "scalable systems", "senior judgment"?
 
-If any answer is no, cut before answering — not after.
+If any answer is no, fix it before answering — not after. Questions 5 to 7 are answered
+by re-reading the draft against the master CV, not from memory of what you intended.
 
 ### Hard rules
 
@@ -139,6 +147,15 @@ If any answer is no, cut before answering — not after.
   credential — you may compress the wording but you may not drop the qualifier while
   keeping the claim. Dropping it turns a true statement into a false one. If a bullet is
   too long with its caveat, cut the whole bullet instead.
+- **Never write the candidate above the intermediate rung.** He applies as a recent
+  master's graduate (June 2026) with some prior hands-on work experience. Banned as
+  self-description: "senior", "seasoned", "veteran", "lead", "principal", "senior
+  judgment", and every scale word the master CV does not itself use — "at scale",
+  "enterprise-scale", "production scale", "large-scale", "scalable systems",
+  "high-traffic". The scope on offer is small-team and solo delivery, and a résumé that
+  reaches past it is rejected on the seniority mismatch before any of the evidence is
+  read. Compressing a bullet must not inflate it: "ships production systems end to end"
+  is a bigger claim than the dated, employer-scoped line it came from.
 - No corporate-speak ("synergies", "passionate about", "leverage", "incentivize").
 
 ### Emphasis

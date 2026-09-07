@@ -55,7 +55,21 @@ Compare the artifact against the JOB DESCRIPTION. Answer concretely:
 - Which passages are generic filler that would read identically for a different posting?
 - Is the strongest available evidence for this specific JD buried late, or missing?
 - Does the artifact claim any skill the JD asks for that the ground truth does not support?
-Each finding: quote the JD requirement and the artifact text (or note its absence).
+Each finding: quote the JD requirement and the artifact text (or note its absence), and
+rate it BLOCK or WARN on this scale:
+
+- **BLOCK** only when the artifact says something untrue or unsupported to reach the JD —
+  a claimed skill the ground truth does not support, an inflated scope, a caveat dropped
+  to make a claim fit. A defect the artifact contains.
+- **WARN** when the artifact simply lacks something the JD asks for. A missing must-have
+  is a WARN however central it is to the posting. The operator decides which gaps are
+  worth applying into; his standing rule is that a technical gap (a language, a
+  framework, a cloud vendor, a named tool) is closable and does not disqualify him,
+  while domain knowledge and professional background do. You do not make that call for
+  him — you tell him precisely what is missing, and he weighs it.
+
+Do not recommend adding coverage the ground truth cannot support. "Absent" is the finding;
+inventing the evidence is never the fix.
 
 ## 3. HR READ
 Now read it cold, as a recruiter screening for this role with roughly 40 seconds and no
@@ -67,11 +81,23 @@ on the page.
   under-qualification?
 - If you rejected this in 40 seconds, what would the reason be?
 
+Rate each finding BLOCK or WARN on the same scale as the TARGETING pass: BLOCK for
+something on the page that is untrue, inflated, or self-contradictory; WARN for anything
+that is merely weak, thin, or missing. "A recruiter would pass on this" is a WARN — the
+decision to apply is the operator's.
+
 ## VERDICT
 One line, exactly one of:
-VERDICT: BLOCK — <reason>      (a factual error or a defect that must be fixed before sending)
-VERDICT: REVISE — <reason>     (send only after addressing the WARN findings)
-VERDICT: SEND — <reason>       (no defect worth holding the artifact for)"""
+VERDICT: BLOCK — <reason>      (at least one BLOCK finding: something the artifact ASSERTS
+                                is false, unsupported, or inflated. Reserved for defects in
+                                what is written, never for what is absent.)
+VERDICT: REVISE — <reason>     (WARN findings only — including missing must-haves, thin
+                                evidence and targeting gaps. The operator may still send it
+                                as-is; say what he is choosing to live with.)
+VERDICT: SEND — <reason>       (no defect worth holding the artifact for)
+
+The three passes share one verdict, so take the most severe finding across all three. A
+document with no BLOCK finding in any pass may not be given VERDICT: BLOCK."""
 
 
 @dataclass
