@@ -49,15 +49,59 @@ AGENCY_RE = re.compile(
     r"\b(accruetalent|tech talent|emergitel|carbon60|3pillar|robert half|randstad|teema|"
     r"insight global|aston carter|maarut|s\.?\s?i\.?\s?systems|procom|lorven|diverse lynx|"
     r"softpath|talentburst|apex systems|compunnel|nlb services|dexian|akkodis|experis|hays|"
-    r"adecco|lancesoft|astra north|staffing|recruiting|recruitment|consulting services)\b",
+    r"adecco|lancesoft|astra north|actalent|cynet systems|staffing|recruiting|recruitment|"
+    r"consulting services)\b",
     re.I,
 )
-# Above the level the operator can currently reach.
+# Above the level the operator can currently reach. Widened 2026-09-05 on his
+# instruction: he applies as an intermediate engineer — a recent master's
+# graduate with some prior work experience — and no longer applies to senior
+# titles at all, so "Senior" / "Sr." / "Lead" / "Staff" / "Manager" are excluded
+# outright rather than merely scored below an intermediate posting.
 TOO_SENIOR_RE = re.compile(
-    r"\b(director|vice president|\bvp\b|head of|principal|staff engineer|chief|"
-    r"distinguished|fellow|partner)\b",
+    r"\b(director|vice president|\bvp\b|head of|principal|staff|chief|"
+    r"distinguished|fellow|partner|senior|sr\.?|lead|manager)\b",
     re.I,
 )
+# A title that names the intermediate rung alongside "Senior" is open to him:
+# "Intermediate/Senior Software Engineer", "Data Engineer (Intermediate -
+# Senior)", "AI Developer, Senior Associate" (a PwC mid grade), Amgen's "Sr
+# Associate". Measured 2026-09-05: the widened pattern above caught 394 such
+# titles. Only "Senior"/"Sr." is rescued, and only by a word that names a
+# lower rung. "II" is not one — the Codex review the same day showed it
+# rescuing "AI Lead Engineer II", "Software Engineering Manager II" and
+# "Senior Software Engineer II" — and Lead / Manager / Staff / Director are
+# never rescued: "Associate Director" and "Manager II" stay out.
+#
+# 2026-09-07: the "mid" rung joined the list. Salesforce's "Forward Deployed
+# Engineer (FDE) (Mid/Senior Level)" was excluded here even though the posting
+# body says the Mid half wants 3+ years and only the Senior half wants 6–10 — a
+# band he meets outright. It reached him anyway, by employee referral, and
+# became tracker #912; nothing in this pipeline would have surfaced it.
+# "Mid/Senior" is the same shape as "Intermediate/Senior", which this list
+# already rescued, so the omission was an accident of vocabulary.
+#
+# It is spelled out rather than added as a bare `mid`, because `\bmid\b` also
+# fires inside hyphenated compounds that say nothing about seniority: it let
+# "Senior Software Engineer - Mid-Market Platform" back in on the first
+# attempt. Only "mid" bound to a rung word counts.
+MID_MARKER_RE = re.compile(
+    r"\b(intermediate|junior|jr\.?|associate|entry[- ]level|new grad(uate)?|co-?op"
+    r"|mid[-\s]?level|mid\s*[/&,-]\s*senior|senior\s*[/&,-]\s*mid)\b",
+    re.I,
+)
+_SOFT_SENIOR_RE = re.compile(r"\b(senior|sr\.?)\b", re.I)
+_HARD_SENIOR_RE = re.compile(
+    r"\b(director|vice president|\bvp\b|head of|principal|chief|distinguished|fellow|"
+    r"partner|lead|manager|staff)\b",
+    re.I,
+)
+
+
+def _too_senior(role: str) -> bool:
+    if _HARD_SENIOR_RE.search(role):
+        return True
+    return bool(_SOFT_SENIOR_RE.search(role)) and not MID_MARKER_RE.search(role)
 # Canadian security clearance generally requires citizenship or PR.
 CLEARANCE_RE = re.compile(
     r"\b(anvil|thales|general dynamics|lockheed|raytheon|calian|babcock|"
@@ -153,6 +197,28 @@ SOLO_ROLE_RE = re.compile(
     r"\b(first technical hire|sole developer|only developer|founding engineer|generalist|"
     r"digital transformation|automation specialist|systems analyst|solutions? (engineer|"
     r"architect|specialist)|technical lead|full[- ]stack)\b",
+    re.I,
+)
+# Work arrangement (score step 5). "Hybrid" still pins the job to a city, so
+# it is not remote here; "Remote (Canada)", "Remote NORAM", "Telework" are.
+REMOTE_RE = re.compile(r"\b(remote|telework|teletravail|télétravail|work from home|wfh)\b", re.I)
+# The on-site half point needs a recognisable Canadian place. The location
+# field is free text copied from whichever board the row came from, and the
+# Codex review of 2026-09-05 found "Upto $85/hr", "Chef(fe), Développement…"
+# and "source: websearch" collecting it. A province, its abbreviation, or a
+# city large enough to have its own board is the bar; a neighbourhood alone
+# ("Regent Park") is not, but boards write those as "Regent Park, City of
+# Toronto", which passes on the city.
+PLACE_RE = re.compile(
+    r"\b(ontario|qu[eé]bec|alberta|british columbia|manitoba|saskatchewan|nova scotia|"
+    r"new brunswick|newfoundland|labrador|prince edward island|yukon|northwest territories|"
+    r"nunavut|on|qc|ab|bc|mb|sk|ns|nb|nl|pe|pei|yt|nt|nu|"
+    r"toronto|montr[eé]al|vancouver|calgary|edmonton|ottawa|winnipeg|halifax|victoria|"
+    r"saskatoon|regina|fredericton|moncton|saint john|st\.? john'?s|kitchener|waterloo|"
+    r"london|hamilton|mississauga|brampton|markham|burnaby|surrey|richmond|kelowna|"
+    r"guelph|kingston|oshawa|whitby|niagara|st\.? catharines|barrie|sudbury|thunder bay|"
+    r"windsor|yellowknife|whitehorse|iqaluit|charlottetown|sherbrooke|laval|gatineau|"
+    r"lethbridge|red deer|nanaimo|prince george|brandon)\b",
     re.I,
 )
 ADJACENT_ROLE_RE = re.compile(
@@ -255,7 +321,7 @@ def excluded(row: PipelineRow) -> str:
     """Reason this row should never reach the operator, or ``""``."""
     if AGENCY_RE.search(row.company):
         return "staffing agency"
-    if TOO_SENIOR_RE.search(row.role):
+    if _too_senior(row.role):
         return "above reachable level"
     if CLEARANCE_RE.search(row.haystack):
         return "clearance-gated"
@@ -358,6 +424,23 @@ def score(row: PipelineRow, *, today: date | None = None) -> tuple[float, list[s
     #    employer's own ATS, which are the ones that can actually be read.
     if not AGGREGATOR_HOST_RE.search(row.url):
         points += 0.5
+
+    # 5. Work arrangement, on the operator's instruction 2026-09-05: "在加拿大
+    #    远程的这些工作 … 减一下分，因为这种远程的话，明显是竞争会非常激烈的。
+    #    然后要求坐班的这种，把他的意愿级提高." A Canada-wide remote posting
+    #    draws applicants from the whole country; a posting tied to one city
+    #    competes only with people who live there or will move — and he will.
+    #    This is not geography coming back (see 1 above): which city is still
+    #    irrelevant, only whether the job is pinned to one at all.
+    #    The title is read too: "AI/ML Engineer - Remote / Telecommute" with
+    #    location "Toronto, Ontario" is a remote job that a board tagged with
+    #    its office city.
+    if REMOTE_RE.search(row.location) or REMOTE_RE.search(row.role):
+        points -= 0.5
+        reasons.append("remote (crowded)")
+    elif PLACE_RE.search(row.location):
+        points += 0.5
+        reasons.append("on-site")
 
     return points, reasons
 
@@ -485,17 +568,24 @@ def rank(
     seen_pairs = seen_pairs or set()
     seen_employers = seen_employers or {}
     ranked: list[Ranked] = []
-    pairs: set[tuple[str, str]] = set()
+    pairs: dict[tuple[str, str], int] = {}
     for row in rows:
         if row.url in seen_urls or excluded(row):
             continue
         if already_applied(row, seen_pairs) or applied_employer(row, seen_employers):
             continue
         pair = (row.company.lower(), row.role.lower())
-        # Boards repost the same job under several locations; one is enough.
+        # Boards repost the same job under several locations; one is enough —
+        # but keep the copy that names a place. The blank-location copy of
+        # Feathery's Forward Deployed Engineer was winning over its Toronto
+        # twin (Codex review 2026-09-05), which hid the city from the operator.
         if pair in pairs:
+            kept = ranked[pairs[pair]]
+            if not kept.row.location.strip() and row.location.strip():
+                points, reasons = score(row, today=today)
+                ranked[pairs[pair]] = Ranked(row=row, score=points, reasons=tuple(reasons))
             continue
-        pairs.add(pair)
+        pairs[pair] = len(ranked)
         points, reasons = score(row, today=today)
         ranked.append(Ranked(row=row, score=points, reasons=tuple(reasons)))
     # Geography broke ties here until 2026-09-03 (see score() above and the

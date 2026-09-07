@@ -159,7 +159,6 @@ def _normalize_profile(raw: dict) -> dict:
         "target_roles": [*primary_roles, *secondary_roles],
         "target_locations": target_locations,
         "min_salary": _resolve_min_salary(compensation, mode),
-        "years_experience": 20,
         "open_to_remote": True,
         "relocation_stance": (location.get("open_to_relocation") or "").strip(),
         "level_acceptance": (target_roles.get("level_acceptance") or "").strip(),
