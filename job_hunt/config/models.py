@@ -149,6 +149,15 @@ class AdzunaConfig(BaseModel):
     # Drop postings older than this. Adzuna honours it server-side, unlike
     # Brave's freshness filter, because it has real posting dates.
     max_days_old: int = 30
+    # Cities to re-query each role with ``where=<city>`` after the national
+    # pass. The national query is capped at results_per_page x max_pages of
+    # the NEWEST postings, and Toronto's volume fills that cap: measured
+    # 2026-09-05, "AI Engineer" had 1,580 national matches in 30 days, 511 in
+    # Toronto and 52 in Calgary, yet the inbox held 14 AI-titled Calgary rows.
+    # A city-scoped query is capped per city, so the smaller markets get
+    # their own budget. Empty by default; the module docstring's warning
+    # about ``where`` filtering hard is about tiny markets, not about this.
+    where_sweep: list[str] = Field(default_factory=list)
     # Adzuna tags every posting with a category. Used as a NEGATIVE screen,
     # not an allowlist: measured across our target roles, it-jobs carries the
     # bulk (165) but genuine matches also land in engineering-jobs (15),

@@ -216,6 +216,51 @@ def test_adzuna_stops_paging_on_empty_page() -> None:
     assert len(pages) == 2  # page 1 had data, page 2 was empty -> stop
 
 
+def test_adzuna_where_sweep_requeries_each_city_after_the_national_pass() -> None:
+    """2026-09-05: the national pass is capped at the newest N and Toronto
+    fills it, so each configured city gets its own scoped query and budget.
+    Duplicates across passes collapse on URL; stats are keyed per pass."""
+    class Cfg:
+        enabled = True
+        country = "ca"
+        results_per_page = 50
+        max_pages = 1
+        max_days_old = 30
+        delay_s = 0
+        timeout_s = 5
+        where_sweep = ["Calgary", " Halifax "]
+
+    wheres: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        where = request.url.params.get("where", "")
+        wheres.append(where)
+        results = {
+            "": [{"title": "AI Engineer", "redirect_url": "https://a/toronto"},
+                 {"title": "AI Engineer", "redirect_url": "https://a/calgary-1"}],
+            "Calgary": [{"title": "AI Engineer", "redirect_url": "https://a/calgary-1"},
+                        {"title": "AI Engineer", "redirect_url": "https://a/calgary-2"}],
+            "Halifax": [],
+        }[where]
+        return httpx.Response(200, json={"results": results, "count": len(results)}, request=request)
+
+    stats: dict = {}
+    rows = scan_adzuna(
+        Cfg(),
+        ["AI Engineer"],
+        app_id="i",
+        app_key="k",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        sleep=lambda s: None,
+        stats=stats,
+    )
+    assert wheres == ["", "Calgary", "Halifax"]
+    assert [r["url"] for r in rows] == ["https://a/toronto", "https://a/calgary-1", "https://a/calgary-2"]
+    assert stats["AI Engineer"]["collected"] == 2
+    assert stats["AI Engineer @ Calgary"]["collected"] == 1  # calgary-1 was already seen
+    assert stats["AI Engineer @ Halifax"]["collected"] == 0
+
+
 # ----- occupation-based screening instead of title matching (2026-08-06) -----
 
 

@@ -87,6 +87,7 @@ def fetch_adzuna_page(
     country: str = "ca",
     results_per_page: int = 50,
     max_days_old: int = 30,
+    where: str = "",
     client: httpx.Client,
 ) -> dict[str, Any]:
     """One search page. Returns ``{}`` on any transport or API failure."""
@@ -99,6 +100,8 @@ def fetch_adzuna_page(
         "max_days_old": max_days_old,
         "sort_by": "date",
     }
+    if where:
+        params["where"] = where
     try:
         response = client.get(url, params=params)
     except httpx.HTTPError:
@@ -135,7 +138,10 @@ def scan_adzuna(
     that is truthy and would otherwise read as the same thing one layer
     deeper. Each entry also reports ``advertised`` (the API's ``count``, or
     ``None`` if a page never returned one) and ``truncated`` (the page budget
-    ran out with more advertised than collected). Keyed by role.
+    ran out with more advertised than collected). Keyed by role for the
+    national pass and by ``"<role> @ <city>"`` for each ``where_sweep`` city;
+    the city passes exist because the national pass is a cap on the newest
+    postings and the biggest market fills it (see ``AdzunaConfig``).
     """
     if config is None or not getattr(config, "enabled", False):
         return []
@@ -148,6 +154,12 @@ def scan_adzuna(
     max_days_old = int(getattr(config, "max_days_old", 30))
     delay = float(getattr(config, "delay_s", 1.0))
     timeout = float(getattr(config, "timeout_s", 20.0))
+    # "" is the national pass; each city after it is a scoped re-query.
+    sweeps = [""] + [
+        str(city).strip()
+        for city in (getattr(config, "where_sweep", None) or [])
+        if str(city).strip()
+    ]
 
     owns_client = client is None
     if client is None:
@@ -156,10 +168,11 @@ def scan_adzuna(
         seen: set[str] = set()
         out: list[dict[str, str]] = []
         first = True
-        for role in roles:
+        for role, where in ((role, where) for role in roles for where in sweeps):
+            key = f"{role} @ {where}" if where else role
             entry = (
                 stats.setdefault(
-                    role,
+                    key,
                     {"collected": 0, "errors": 0, "advertised": None, "truncated": False},
                 )
                 if stats is not None
@@ -177,6 +190,7 @@ def scan_adzuna(
                     country=country,
                     results_per_page=per_page,
                     max_days_old=max_days_old,
+                    where=where,
                     client=client,
                 )
                 # `{}` covers transport failure, a non-200 or invalid JSON (see
