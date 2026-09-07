@@ -54,6 +54,12 @@ The 3 strongest CV achievements to lead with for this role. For each:
 10–15 keywords from the JD that appear or should appear in the resume/cover letter.
 Distinguish: Already in CV / Missing but claimable / Should not claim.
 
+"Missing but claimable" means the CV already supports it and the wording simply has not
+been surfaced. A claim the CV qualifies stays qualified — a retired page, a synthetic or
+toy-scale corpus, a simulated deployment, shared team credit, an expired credential — and
+belongs under "Already in CV" with its caveat attached, never under "Missing but
+claimable" stripped of it.
+
 ### Cover letter hook
 One opening sentence that is specific to this company (use research, not generic praise).
 
