@@ -79,11 +79,17 @@ word**. What you write has about one and a quarter pages left, not two.
 This budget is not advisory. When the body overflows, a deterministic trimmer drops whole
 blocks to force the fit, and it drops them by position, not by value — on 2026-08-15 it
 threw away the AWS case study, the Iqidao architecture-ownership bullet and the freelance
-delivery bullet, which were the strongest employment evidence in the document. **Anything
-you write past the budget is not "extra"; it evicts something better.**
+delivery bullet, which were the strongest employment evidence in the document. On
+2026-09-06 it dropped **nine** blocks from a Salesforce FDE resume, including "Delivered
+end-to-end data solutions and RESTful APIs as a solo contractor" — the one line that
+evidenced the posting's single non-negotiable requirement, customer-facing technical
+delivery. **Anything you write past the budget is not "extra"; it evicts something better.**
 
-- **Total body: 600–750 words.** Count them before you answer and cut to fit. Over 800
-  words the trimmer starts deleting employment evidence.
+- **Total body: 500–600 words.** Count them before you answer and cut to fit. Over 650
+  words the trimmer starts deleting employment evidence. These numbers are measured, not
+  guessed: the 2026-09-06 resume fit two pages only once the trimmer had cut the body to
+  **583 words**, under a 304-word header. The earlier 600–750 figure was above what
+  actually fits and is why that run lost nine blocks.
 - **Projects: exactly 2**, at most **3 bullets** each, at most ~30 words per bullet.
   Long build-log bullets from the master CV must be compressed to their result, not copied.
 - **Experience: every dated role stays**, but bullets are capped — at most **3** for the
@@ -101,7 +107,7 @@ Before you output, check your own draft against this list:
 
 1. Exactly 2 projects, none with more than 3 bullets?
 2. No role with more than 3 bullets, and only the top two roles at 3?
-3. Body word count between 600 and 750?
+3. Body word count between 500 and 600?
 4. At most 4 skills groups?
 
 If any answer is no, cut before answering — not after.
