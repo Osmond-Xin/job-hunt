@@ -27,7 +27,11 @@ import os, re, json, time, sys
 from pathlib import Path
 import httpx
 
-os.chdir("/Users/osmond/Documents/project/job-hunt")
+# Run from the repo root whichever directory it was invoked from: the .env
+# read below, the `job_hunt` import and `data/pipeline.md` are all relative.
+REPO_ROOT = Path(__file__).resolve().parent.parent
+os.chdir(REPO_ROOT)
+sys.path.insert(0, str(REPO_ROOT))
 for line in Path(".env").read_text().splitlines():
     if "=" in line and not line.strip().startswith("#"):
         k, v = line.split("=", 1)
