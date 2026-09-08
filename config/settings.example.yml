@@ -23,18 +23,22 @@ llm:
     api_key_env: MINIMAX_API_KEY
     proxy_token_env: MINIMAX_PROXY_TOKEN
     proxy_header_name: X-Proxy-Token
+  # The tier that writes every artifact a recruiter reads. It defaults to a
+  # local CLI wrapper rather than a metered API on purpose: `evaluate-batch`
+  # calls it once per job that clears the score gate, so a careless batch can
+  # spend a lot without anyone deciding to. Point it at a paid endpoint only
+  # when you mean to, and know what a full batch costs before you do.
+  #
+  # scripts/codex_llm.sh (codex) and scripts/agy_llm.sh (agy/Gemini) both read
+  # the prompt on stdin and print the answer on stdout, which is the whole
+  # contract LocalCommandProvider needs. Any CLI meeting it will work.
   premium:
     provider: local_command
-    model: claude-cli
+    model: codex-cli
     invocation: local_command
-    # {prompt_path} is substituted by LocalCommandProvider. Without it the
-    # bare path would be appended as the whole prompt, leaving the model no
-    # instruction to actually read the file.
     command:
-      - claude
-      - -p
-      - "Read the file {prompt_path} and execute the instructions in it. Output ONLY the requested artifact — no preamble, no commentary, no code fences."
-    timeout_seconds: 300
+      - ./scripts/codex_llm.sh
+    timeout_seconds: 600
 
 observability:
   local_ledger:

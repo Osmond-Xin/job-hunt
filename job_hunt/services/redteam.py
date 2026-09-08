@@ -13,6 +13,8 @@ module so the rubric cannot drift between them.
 from __future__ import annotations
 
 import json
+import os
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -209,7 +211,8 @@ def run_review(
 ) -> RedTeamResult:
     if not artifacts:
         return RedTeamResult("UNREVIEWED", "", ["red team skipped: no artifacts"])
-    if not shutil.which("mmx"):
+    reviewer = os.environ.get("JOB_HUNT_REDTEAM_CMD", "").strip()
+    if not reviewer and not shutil.which("mmx"):
         return RedTeamResult("UNREVIEWED", "", ["red team unavailable: mmx not on PATH"])
 
     try:
@@ -219,25 +222,42 @@ def run_review(
     except Exception as exc:  # unreadable artifact
         return RedTeamResult("UNREVIEWED", "", [f"red team could not read artifact: {exc}"])
 
-    payload = json.dumps([{"role": "user", "content": prompt}], ensure_ascii=False)
-    # mmx reads `--messages-file -` non-blockingly and dies with EAGAIN against a
-    # subprocess pipe, so it gets a real file.
-    with tempfile.NamedTemporaryFile(
-        "w", suffix=".json", delete=False, encoding="utf-8"
-    ) as fh:
-        fh.write(payload)
-        messages_path = fh.name
+    # `JOB_HUNT_REDTEAM_CMD` names a command that reads the whole prompt on
+    # stdin and prints the review on stdout — `scripts/codex_llm.sh`, or any
+    # other local CLI. It exists because the reviewer must keep running when the
+    # MiniMax plan is out of quota: an UNREVIEWED artifact is not a pass, so a
+    # provider outage otherwise stops every application in the pipeline.
+    #
+    # Prefer a model here that did NOT write the artifact. The review earns its
+    # keep by disagreeing with the generator, and one model marking its own
+    # homework finds less.
+    messages_path = ""
+    if reviewer:
+        command = shlex.split(reviewer)
+        stdin_text: str | None = f"{SYSTEM}\n\n{prompt}"
+    else:
+        payload = json.dumps([{"role": "user", "content": prompt}], ensure_ascii=False)
+        # mmx reads `--messages-file -` non-blockingly and dies with EAGAIN against a
+        # subprocess pipe, so it gets a real file.
+        with tempfile.NamedTemporaryFile(
+            "w", suffix=".json", delete=False, encoding="utf-8"
+        ) as fh:
+            fh.write(payload)
+            messages_path = fh.name
+        command = [
+            "mmx", "text", "chat",
+            "--messages-file", messages_path,
+            "--model", model,
+            "--system", SYSTEM,
+            "--max-tokens", str(max_tokens),
+            "--temperature", "0.3",
+            "--quiet",
+        ]
+        stdin_text = None
     try:
         proc = subprocess.run(
-            [
-                "mmx", "text", "chat",
-                "--messages-file", messages_path,
-                "--model", model,
-                "--system", SYSTEM,
-                "--max-tokens", str(max_tokens),
-                "--temperature", "0.3",
-                "--quiet",
-            ],
+            command,
+            input=stdin_text,
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -245,7 +265,8 @@ def run_review(
     except subprocess.TimeoutExpired:
         return RedTeamResult("UNREVIEWED", "", [f"red team timed out after {timeout}s"])
     finally:
-        Path(messages_path).unlink(missing_ok=True)
+        if messages_path:
+            Path(messages_path).unlink(missing_ok=True)
 
     if proc.returncode != 0:
         detail = (proc.stderr or proc.stdout or "").strip()[:300]

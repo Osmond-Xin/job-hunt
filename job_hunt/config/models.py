@@ -238,6 +238,13 @@ def load_dotenv_file(path: Path) -> None:
 
 def apply_llm_env_overrides(settings: Settings) -> None:
     cheap = settings.llm.cheap
+    # Every variable below names MiniMax. When the cheap tier is pointed at a
+    # different provider they describe nothing, and applying them anyway
+    # rewrites that provider's model label: with the tier on a local CLI, a
+    # leftover MINIMAX_MODEL in .env made the usage ledger attribute every call
+    # to MiniMax-M3, a model that had not run.
+    if cheap.provider != "minimax":
+        return
     if os.getenv("MINIMAX_MODEL"):
         cheap.model = os.environ["MINIMAX_MODEL"]
     if os.getenv("MINIMAX_BASE_URL"):
