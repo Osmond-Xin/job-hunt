@@ -14,12 +14,18 @@
 # is exactly the failure this guards against.
 set -euo pipefail
 
-model="${JOB_HUNT_CODEX_MODEL:-gpt-5.5}"
 last_message="$(mktemp -t codex-llm)"
 trap 'rm -f "$last_message"' EXIT
 
+# No --model by default. `--ignore-user-config` is what makes this reliable:
+# without it codex reads the operator's own config, and the model named there
+# 404s ("The model `gpt-5.5` does not exist or you do not have access to it").
+# Pinning a model here reintroduces exactly that failure — an early version of
+# this wrapper defaulted to the name off the session banner and every call in a
+# nine-job batch died on it. Let the CLI pick its own default; set
+# JOB_HUNT_CODEX_MODEL only to override deliberately, and check it works first.
 codex exec \
-    --model "$model" \
+    ${JOB_HUNT_CODEX_MODEL:+--model "$JOB_HUNT_CODEX_MODEL"} \
     --sandbox read-only \
     --skip-git-repo-check \
     --ephemeral \

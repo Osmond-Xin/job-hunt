@@ -28,8 +28,19 @@ if [ "$size" -gt "$budget" ]; then
     exit 1
 fi
 
+# --sandbox and --dangerously-skip-permissions go together and neither is
+# optional. The prompt is self-contained — artifacts, JD and ground truth are
+# all inlined — but it quotes file paths, and agy reaches for `read_file` when
+# it sees one. In headless mode there is nobody to approve that, so the tool is
+# auto-denied and agy exits 0 having produced nothing at all: the reviewer then
+# returns UNREVIEWED with no error text, which is the least debuggable possible
+# failure. Skipping the prompts stops the silent exit; the sandbox is what
+# actually bounds what a review can touch, and it has to stay on, because part
+# of this prompt is a job description fetched from the open web.
 exec agy \
     --output-format text \
     --print-timeout "${JOB_HUNT_AGY_TIMEOUT:-9m}" \
+    --sandbox \
+    --dangerously-skip-permissions \
     ${JOB_HUNT_AGY_MODEL:+--model "$JOB_HUNT_AGY_MODEL"} \
     -p="$prompt"
