@@ -261,16 +261,24 @@ def _batch_preflight(budget_enforced: bool = False) -> None:
             raise typer.Exit(1)
 
     settings = load_settings()
-    command = settings.llm.premium.command
-    if not command:
-        console.print("[red]No premium command configured (llm.premium.command is empty).[/red]")
-        raise typer.Exit(1)
-    if not shutil.which(command[0]):
-        console.print(
-            f"[red]Premium command '{command[0]}' is not on PATH.[/red] Every CV and cover "
-            "letter in this batch would silently fall back to the cheap tier."
-        )
-        raise typer.Exit(1)
+    # Only a `local_command` premium tier has a command to check. The tier is
+    # allowed to be an HTTP provider — it was one on 2026-09-07, when the local
+    # CLIs were rate-limited and MiniMax was the only artifact generator left —
+    # and this preflight used to reject that outright, so a working setup could
+    # not start a batch at all.
+    if settings.llm.premium.provider == "local_command":
+        command = settings.llm.premium.command
+        if not command:
+            console.print(
+                "[red]Premium tier is local_command but llm.premium.command is empty.[/red]"
+            )
+            raise typer.Exit(1)
+        if not shutil.which(command[0]):
+            console.print(
+                f"[red]Premium command '{command[0]}' is not on PATH.[/red] Every CV and cover "
+                "letter in this batch would silently fall back to the cheap tier."
+            )
+            raise typer.Exit(1)
 
     if budget_enforced:
         # --max-cost is computed from ledger records. Without the ledger, or

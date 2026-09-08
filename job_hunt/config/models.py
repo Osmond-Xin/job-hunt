@@ -237,19 +237,29 @@ def load_dotenv_file(path: Path) -> None:
 
 
 def apply_llm_env_overrides(settings: Settings) -> None:
-    cheap = settings.llm.cheap
-    # Every variable below names MiniMax. When the cheap tier is pointed at a
-    # different provider they describe nothing, and applying them anyway
-    # rewrites that provider's model label: with the tier on a local CLI, a
-    # leftover MINIMAX_MODEL in .env made the usage ledger attribute every call
-    # to MiniMax-M3, a model that had not run.
-    if cheap.provider != "minimax":
-        return
-    if os.getenv("MINIMAX_MODEL"):
-        cheap.model = os.environ["MINIMAX_MODEL"]
-    if os.getenv("MINIMAX_BASE_URL"):
-        cheap.base_url = os.environ["MINIMAX_BASE_URL"]
-    if os.getenv("MINIMAX_ENDPOINT_STYLE"):
-        cheap.endpoint_style = os.environ["MINIMAX_ENDPOINT_STYLE"]  # type: ignore[assignment]
-    if os.getenv("MINIMAX_PROXY_HEADER_NAME"):
-        cheap.proxy_header_name = os.environ["MINIMAX_PROXY_HEADER_NAME"]
+    """Resolve the MINIMAX_* variables into every tier that is actually MiniMax.
+
+    Applied to the cheap tier only until 2026-09-07, on the assumption that the
+    premium tier is always a local command. It is not: with both local CLIs
+    rate-limited, premium was pointed at MiniMax, and its `base_url` stayed the
+    literal string "MINIMAX_BASE_URL" — the name of the variable rather than its
+    value. Every artifact call died on `UnsupportedProtocol: Request URL is
+    missing an 'http://' or 'https://' protocol` and fell back to placeholder
+    content that still went on to be scored and reviewed.
+
+    The provider check stays, per tier: these variables all name MiniMax, and a
+    tier on some other provider must not have its model label rewritten by a
+    leftover MINIMAX_MODEL. That misattributed every local-CLI call in the usage
+    ledger to a model that had not run.
+    """
+    for tier in (settings.llm.cheap, settings.llm.premium):
+        if tier.provider != "minimax":
+            continue
+        if os.getenv("MINIMAX_MODEL"):
+            tier.model = os.environ["MINIMAX_MODEL"]
+        if os.getenv("MINIMAX_BASE_URL"):
+            tier.base_url = os.environ["MINIMAX_BASE_URL"]
+        if os.getenv("MINIMAX_ENDPOINT_STYLE"):
+            tier.endpoint_style = os.environ["MINIMAX_ENDPOINT_STYLE"]  # type: ignore[assignment]
+        if os.getenv("MINIMAX_PROXY_HEADER_NAME"):
+            tier.proxy_header_name = os.environ["MINIMAX_PROXY_HEADER_NAME"]

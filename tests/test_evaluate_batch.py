@@ -200,6 +200,7 @@ def test_batch_rejects_a_budget_it_cannot_measure(tmp_path, monkeypatch) -> None
         local_ledger = _Ledger()
 
     class _Premium:
+        provider = "local_command"
         command = ["claude", "-p"]
 
     class _Llm:
@@ -234,7 +235,7 @@ def _stub_settings(*, ledger_enabled: bool = True, command: list[str] | None = N
         local_ledger = _Ledger()
 
     class _Premium:
-        pass
+        provider = "local_command"
 
     _Premium.command = ["claude", "-p", "--output-format", "json"] if command is None else command
 
@@ -425,3 +426,18 @@ def test_batch_runs_on_when_every_premium_call_is_priced(tmp_path, monkeypatch) 
     assert result.exit_code == 0, result.output
     assert len(graph.states) == 3
     assert "recorded no cost" not in result.output
+
+
+def test_preflight_accepts_a_premium_tier_that_is_not_a_local_command(monkeypatch) -> None:
+    """An HTTP premium provider has no command, and that is not a misconfiguration.
+
+    On 2026-09-07 both local CLIs were rate-limited and MiniMax was the only
+    artifact generator left. Pointing the premium tier at it was correct, and
+    the preflight rejected the batch outright because `llm.premium.command` was
+    empty — a check that only makes sense for a `local_command` tier.
+    """
+    settings = _stub_settings(command=[])
+    settings.llm.premium.provider = "minimax"
+    monkeypatch.setattr(cli.evaluation, "load_settings", lambda: settings)
+    monkeypatch.setenv("JOB_HUNT_SKIP_CV_SYNC_CHECK", "1")
+    _REAL_PREFLIGHT()  # must not raise
