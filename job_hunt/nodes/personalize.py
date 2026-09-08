@@ -8,7 +8,7 @@ from pathlib import Path
 
 from langchain_core.runnables import RunnableConfig
 
-from job_hunt.models.state import JobHuntState
+from job_hunt.models.state import JobHuntState, letter_only
 from job_hunt.services.llm.call import call_node_llm_or_fallback
 from job_hunt.services.prompts import render
 
@@ -57,6 +57,8 @@ async def personalization_plan(state: JobHuntState, config: RunnableConfig) -> d
 
 
 async def interview_prep(state: JobHuntState, config: RunnableConfig) -> dict:
+    if letter_only(state):
+        return {"errors": []}
     jd_meta = state.get("jd_meta")
     prompt = render(
         "evaluate/interview_prep.md",
@@ -82,6 +84,8 @@ async def interview_prep(state: JobHuntState, config: RunnableConfig) -> dict:
 
 async def draft_application_answers(state: JobHuntState, config: RunnableConfig) -> dict:
     """Generate Section G draft answers only for roles the scorer says to apply to."""
+    if letter_only(state):
+        return {"errors": []}
     scores = state.get("scores")
     if not scores or scores.weighted_total < _DRAFT_ANSWERS_SCORE_THRESHOLD:
         return {"errors": []}

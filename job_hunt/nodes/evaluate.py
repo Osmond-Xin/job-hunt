@@ -5,7 +5,7 @@ from __future__ import annotations
 from langchain_core.runnables import RunnableConfig
 
 from job_hunt.models.evaluation import DimensionScore, EvaluationScores, PdfContent
-from job_hunt.models.state import JobHuntState
+from job_hunt.models.state import JobHuntState, letter_only
 from job_hunt.services.llm.call import call_node_llm_or_fallback
 from job_hunt.services.prompts import render
 from job_hunt.services.immigration import immigration_context
@@ -37,6 +37,8 @@ async def cv_match(state: JobHuntState, config: RunnableConfig) -> dict:
 
 
 async def role_summary(state: JobHuntState, config: RunnableConfig) -> dict:
+    if letter_only(state):
+        return {"errors": []}
     prompt = render(
         "evaluate/role_summary.md",
         jd_meta=state.get("jd_meta"),
@@ -58,6 +60,8 @@ async def role_summary(state: JobHuntState, config: RunnableConfig) -> dict:
 
 
 async def level_strategy(state: JobHuntState, config: RunnableConfig) -> dict:
+    if letter_only(state):
+        return {"errors": []}
     prompt = render(
         "evaluate/level_strategy.md",
         jd_meta=state.get("jd_meta"),
@@ -80,6 +84,8 @@ async def level_strategy(state: JobHuntState, config: RunnableConfig) -> dict:
 
 
 async def score_and_recommend(state: JobHuntState, config: RunnableConfig) -> dict:
+    if letter_only(state):
+        return {"errors": []}
     blocks = state.get("evaluation_blocks", {})
     mode = state.get("mode", "full")
     jd_meta = state.get("jd_meta")

@@ -63,6 +63,12 @@ class JobHuntState(TypedDict, total=False):
 
     # --- evaluation toggles (set from CLI / profile) ---
     generate_cover_letter: bool
+    # Write the cover letter and nothing else: skip tailor_cv and the CV PDF.
+    # The cover-letter prompt reads the master `cv`, never `cv_tailored`, so
+    # the letter has no dependency on that branch — and re-running it to get a
+    # letter costs the slowest node in the graph and overwrites a résumé that
+    # may already have passed its review.
+    cover_letter_only: bool
 
     # --- tracker ---
     tracker_entry: TrackerEntry | None
@@ -76,3 +82,25 @@ class JobHuntState(TypedDict, total=False):
     # audit. Separate from `errors` because these must reach the operator as a
     # decision ("do not send this until you read it"), not as run noise.
     artifact_warnings: Annotated[list[str], operator.add]
+
+
+def letter_only(state: "JobHuntState") -> bool:
+    """Is this run producing a cover letter and nothing else?
+
+    `prompts/evaluate/cover_letter.md` reads exactly two evaluation blocks —
+    `cv_match` and `personalization` — plus the archetype, the master CV and the
+    JD. `personalization` in turn reads `cv_match` and `comp_research`. Every
+    other node in the chain is written for a full evaluation and is dead weight
+    when only a letter is wanted.
+
+    Measured on one Area52 letter, 2026-09-08: role_summary 14.9s,
+    level_strategy 15.0s, interview_prep 41.8s, score_and_recommend 177.9s and
+    draft_application_answers 98.2s — 348 seconds of a 679-second run, none of
+    it reaching the letter.
+
+    score_and_recommend has to go for a second reason. It rewrites the tracker
+    row's score and report pointer, so asking for a letter re-scored an
+    application already sent: Area52 moved from the 3.8 the operator submitted
+    against to a 4.1 produced by a run that wrote no résumé at all.
+    """
+    return bool(state.get("cover_letter_only"))

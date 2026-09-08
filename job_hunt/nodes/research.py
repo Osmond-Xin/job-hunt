@@ -8,7 +8,7 @@ from langchain_core.runnables import RunnableConfig
 
 from job_hunt.config.models import load_settings
 from job_hunt.models.job import JobMeta
-from job_hunt.models.state import JobHuntState
+from job_hunt.models.state import JobHuntState, letter_only
 from job_hunt.services.llm.call import call_node_llm_or_fallback
 from job_hunt.services.prompts import render
 from job_hunt.services.web_search import WebSearchProvider, build_web_search_provider
@@ -84,6 +84,22 @@ def build_comp_research_context(
 
 
 async def company_comp_research(state: JobHuntState, config: RunnableConfig) -> dict:
+    # A cover letter does not need this. Half of it is compensation, which
+    # never reaches the letter, and the company half duplicates `article_digest`
+    # — which `prompts/evaluate/cover_letter.md` already reads directly. It cost
+    # 77s of a 332s letter run on 2026-09-08, the single largest remaining item.
+    #
+    # The block still has to be written. `personalization.md` interpolates
+    # `evaluation_blocks.comp_research` and the Jinja environment is strict, so
+    # returning nothing raises UndefinedError inside personalization_plan rather
+    # than rendering an empty section.
+    if letter_only(state):
+        return {
+            "evaluation_blocks": {
+                "comp_research": "(not researched — this run produces a cover letter only)"
+            },
+            "errors": [],
+        }
     jd_meta = state.get("jd_meta")
     provider = _resolve_web_search_provider(config)
     research_context = build_comp_research_context(

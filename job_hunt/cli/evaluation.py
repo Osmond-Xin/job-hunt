@@ -40,6 +40,16 @@ def evaluate(
         "--cover-letter/--no-cover-letter",
         help="Generate a standalone one-page cover letter PDF. Defaults to apply.cover_letter_default in profile.yml.",
     ),
+    cover_letter_only: bool = typer.Option(
+        False,
+        "--cover-letter-only",
+        help=(
+            "Write the cover letter and skip the tailored CV entirely. Implies --cover-letter. "
+            "Use when a résumé for this job already exists: the letter is written from the master "
+            "CV either way, so regenerating the résumé only costs the slowest node in the graph "
+            "and overwrites the one already reviewed."
+        ),
+    ),
 ) -> None:
     if trace is not None:
         os.environ["JOB_HUNT_LANGSMITH_ENABLED"] = "true" if trace else "false"
@@ -61,6 +71,10 @@ def evaluate(
         generate_cover_letter_flag = bool(profile_values.get("apply_cover_letter_default"))
     else:
         generate_cover_letter_flag = cover_letter
+    if cover_letter_only:
+        # Asking for only a letter and then switching the letter off would run
+        # the graph to produce nothing at all.
+        generate_cover_letter_flag = True
     state = {
         "run_id": run_id,
         "thread_id": run_id,
@@ -68,6 +82,7 @@ def evaluate(
         "source_type": resolved_source,
         "url": target if resolved_source == "url" else None,
         "generate_cover_letter": generate_cover_letter_flag,
+        "cover_letter_only": cover_letter_only,
         "errors": [],
     }
 
