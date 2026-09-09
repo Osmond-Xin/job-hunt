@@ -755,7 +755,7 @@ def test_infer_loop_target_uses_url_metadata_without_description(tmp_path, monke
     # its own module's import of services.web_extract, so the patch has to
     # land on cli.apply's copy, not job_hunt.cli's re-export.
     monkeypatch.setattr(
-        "job_hunt.cli.apply._extract_loop_url_metadata",
+        "job_hunt.services.apply.agent_prompt._extract_loop_url_metadata",
         lambda url: {"company": "Cohere", "title": "Senior Software Engineer, Security Agents", "text": ""},
     )
 
@@ -771,7 +771,8 @@ def test_infer_loop_target_uses_url_metadata_without_description(tmp_path, monke
 
 
 def test_match_threshold_constant_is_read_at_call_sites(tmp_path, monkeypatch) -> None:
-    """Verify that apply.py reads MATCH_THRESHOLD from employer_match, not a local literal.
+    """Verify that _infer_loop_target reads MATCH_THRESHOLD from employer_match,
+    not a local literal.
 
     When MATCH_THRESHOLD is monkeypatched to a higher value, _infer_loop_target
     must respect that higher threshold, proving the call sites read the constant
@@ -801,7 +802,7 @@ def test_match_threshold_constant_is_read_at_call_sites(tmp_path, monkeypatch) -
     output_dir.mkdir()
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(
-        "job_hunt.cli.apply._extract_loop_url_metadata",
+        "job_hunt.services.apply.agent_prompt._extract_loop_url_metadata",
         lambda url: {"company": "Acme", "title": "Data Engineer", "text": ""},
     )
 
@@ -814,9 +815,10 @@ def test_match_threshold_constant_is_read_at_call_sites(tmp_path, monkeypatch) -
     assert target_default["role"] == "Software Engineer", \
         "Default threshold 0.70 should apply entry.role from line 791"
 
-    # Patch MATCH_THRESHOLD to 0.90 in the apply module's namespace.
+    # Patch MATCH_THRESHOLD in the module that owns _infer_loop_target -- patching
+    # a re-exported copy elsewhere would rebind a name the function never reads.
     # Line 791 will now require score >= 0.90 before taking entry.role.
-    monkeypatch.setattr("job_hunt.cli.apply.MATCH_THRESHOLD", 0.90)
+    monkeypatch.setattr("job_hunt.services.apply.agent_prompt.MATCH_THRESHOLD", 0.90)
 
     # With inflated threshold (0.90), the 0.76 score fails line 791, so
     # entry.role is not overridden; role remains "Data Engineer" from metadata.

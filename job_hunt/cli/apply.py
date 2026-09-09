@@ -5,7 +5,6 @@ import asyncio
 import json
 import os
 import re
-import shlex
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,7 +15,6 @@ from job_hunt.models.events import ApplicationEvent
 from job_hunt.repositories.tracker_repo import TrackerRepository
 from job_hunt.repositories.email_event_repo import EmailEventRepository
 from job_hunt.services.activity import ActivityEvent, ActivityLogger
-from job_hunt.services.employer_match import EmployerMatcher, MATCH_THRESHOLD
 from job_hunt.services.profile_loader import (
     workday_education_entries as _load_workday_education_entries,
     workday_experience_entries as _load_workday_experience_entries,
@@ -36,16 +34,118 @@ from job_hunt.services.workday.required_empty import (
 from job_hunt.services.workday.review_gate import (
     ReviewIssue,
     detect_review_issues,
-    issues_to_payload,
     review_needs_repair as _workday_review_needs_repair_from_module,
+)
+
+from job_hunt.services.apply.agent_prompt import (
+    _build_agent_apply_prompt,
+    _infer_loop_target,
+    _loop_agent_apply_command,
+)
+from job_hunt.services.apply.answers import (
+    _answer_for_application_question,
+    _load_saved_apply_answers,
+    _radio_choice_for_question,
+)
+from job_hunt.services.apply.artifacts import (
+    _apply_artifact_dir,
+)
+from job_hunt.services.apply.linking import (
+    _append_apply_review_event,
+    _link_artifacts_to_row,
+    _record_manual_submission,
+    _tracker_entry_blocks_apply,
+    _write_apply_review_summary,
+)
+from job_hunt.services.apply.reporting import (
+    _load_apply_report_context,
+    _report_fit_warnings,
+    low_score_verdict,
 )
 
 from ._render import _short, console
 from job_hunt.services.profile_loader import _apply_profile_values
-from job_hunt.services.web_extract import _extract_loop_url_metadata
 from job_hunt.services.source_type import _resolve_source_type
 from .outreach import _gate_outward_artifact
 from . import app
+
+
+# These two resolve a session for a CLI command and say why when they cannot,
+# so they print and exit. That keeps them here rather than in
+# services/apply/ -- "pure" in this refactor means no Playwright *and* no
+# console (docs/apply-seam-plan.md, Phase 1).
+def _active_apply_artifact_dir(session: str | None = None) -> Path:
+    """Find the most-recent active session and warn if its heartbeat is stale.
+
+    Phase 3.3: prefer ``.session.json`` heartbeat freshness; fall back to
+    ``.cdp`` for sessions started by an older runner that doesn't write a
+    heartbeat yet. ``session`` (a substring of the artifact dir name)
+    disambiguates when several sessions are alive at once.
+    """
+    root = Path("artifacts/apply")
+    alive = apply_ipc.find_alive_session_dirs(root)
+    if session:
+        matches = [d for d in alive if session in d.name]
+        if len(matches) == 1:
+            return matches[0]
+        console.print(
+            f"[red]--session '{session}' matches {len(matches)} live session(s): "
+            f"{', '.join(d.name for d in matches) or 'none'}[/red]"
+        )
+        raise typer.Exit(1)
+    if len(alive) > 1:
+        console.print(
+            "[red]Multiple live fill-only sessions; pick one with --session:[/red]"
+        )
+        for d in alive:
+            console.print(f"- {d.name}")
+        raise typer.Exit(1)
+    art_dir = apply_ipc.find_active_session_dir(root)
+    if art_dir is None:
+        console.print(
+            "[red]No active fill-only session found. Start one with: apply --fill-only[/red]"
+        )
+        raise typer.Exit(1)
+    if not apply_ipc.session_is_alive(art_dir):
+        console.print(
+            f"[yellow]Warning:[/yellow] {art_dir.name} has no recent heartbeat — "
+            "the fill-only loop may be dead. The command will be queued but may "
+            "never run; consider restarting with `apply --fill-only`."
+        )
+    return art_dir
+
+
+def _tracker_entry_by_id(tracker: TrackerRepository, tracker_id: int | None):
+    if tracker_id is None:
+        return None
+    for entry in tracker.parse():
+        if entry.number == tracker_id:
+            return entry
+    console.print(f"[red]Tracker row #{tracker_id} not found.[/red]")
+    raise typer.Exit(1)
+
+
+def _report_low_score_verdict(verdict) -> None:
+    """Say what the ethical-use gate decided, and act on it.
+
+    The decision itself is `services/apply/reporting.low_score_verdict`; the
+    wording and the exit are here, where the rest of the user-facing text lives.
+    """
+    if verdict.overridden:
+        console.print(
+            f"[yellow]warning:[/yellow] tracker score {verdict.score}/5 < "
+            f"{verdict.threshold} — applying anyway (--low-score-override)."
+        )
+        return
+    if verdict.allowed:
+        return
+    console.print(
+        f"[red]Aborting:[/red] tracker score {verdict.score}/5 is below the ethical-use "
+        f"threshold of {verdict.threshold}/5.\n"
+        f"Recruiter time has cost. Re-evaluate with `job-hunt evaluate`, or pass "
+        f"`--low-score-override` if you have a specific reason to apply anyway."
+    )
+    raise typer.Exit(1)
 
 
 @app.command("apply")
@@ -159,7 +259,7 @@ def apply_assist(
         report_context = {}
     report_context["saved_answers"] = _load_saved_apply_answers(artifact_dir)
 
-    _enforce_low_score_gate(report_context, override=low_score_override)
+    _report_low_score_verdict(low_score_verdict(report_context, override=low_score_override))
 
     if confirmed:
         submitted = True
@@ -628,285 +728,24 @@ class ApplyDoRefused(Exception):
     """An apply-do op was refused by a safety/ambiguity check (not a miss)."""
 
 
-def _active_apply_artifact_dir(session: str | None = None) -> Path:
-    """Find the most-recent active session and warn if its heartbeat is stale.
-
-    Phase 3.3: prefer ``.session.json`` heartbeat freshness; fall back to
-    ``.cdp`` for sessions started by an older runner that doesn't write a
-    heartbeat yet. ``session`` (a substring of the artifact dir name)
-    disambiguates when several sessions are alive at once.
-    """
-    root = Path("artifacts/apply")
-    alive = apply_ipc.find_alive_session_dirs(root)
-    if session:
-        matches = [d for d in alive if session in d.name]
-        if len(matches) == 1:
-            return matches[0]
-        console.print(
-            f"[red]--session '{session}' matches {len(matches)} live session(s): "
-            f"{', '.join(d.name for d in matches) or 'none'}[/red]"
-        )
-        raise typer.Exit(1)
-    if len(alive) > 1:
-        console.print(
-            "[red]Multiple live fill-only sessions; pick one with --session:[/red]"
-        )
-        for d in alive:
-            console.print(f"- {d.name}")
-        raise typer.Exit(1)
-    art_dir = apply_ipc.find_active_session_dir(root)
-    if art_dir is None:
-        console.print(
-            "[red]No active fill-only session found. Start one with: apply --fill-only[/red]"
-        )
-        raise typer.Exit(1)
-    if not apply_ipc.session_is_alive(art_dir):
-        console.print(
-            f"[yellow]Warning:[/yellow] {art_dir.name} has no recent heartbeat — "
-            "the fill-only loop may be dead. The command will be queued but may "
-            "never run; consider restarting with `apply --fill-only`."
-        )
-    return art_dir
 
 
-def _build_agent_apply_prompt(
-    *,
-    url: str,
-    company: str | None,
-    role: str | None,
-    pdf: Path | None,
-    tracker_id: int | None,
-) -> str:
-    parts = [".venv/bin/job-hunt", "apply", url]
-    if tracker_id is not None:
-        parts.extend(["--tracker-id", str(tracker_id)])
-    if company:
-        parts.extend(["--company", company])
-    if role:
-        parts.extend(["--role", role])
-    if pdf:
-        parts.extend(["--pdf", str(pdf)])
-    base_command = " ".join(shlex.quote(part) for part in parts)
-    fill_command = base_command + " --fill-only"
-    record_command = base_command + " --no-browser --confirmed"
-    smoke_command = "printf 'n\\n' | " + base_command + " --headless"
-    replace_command = ".venv/bin/job-hunt apply-replace-pdf '<new-resume.pdf>'"
-    capture_command = ".venv/bin/job-hunt apply-capture-page"
-    status_command = ".venv/bin/job-hunt apply-status"
-
-    return f"""# Agent Apply Runbook
-
-You are operating the job-hunt application assistant from this repository.
-
-Goal: open the application form, fill it with the candidate's real profile and selected PDF, let the user review and request edits, and only record the application after the user manually submits it.
-
-Hard safety rules:
-- Never click the final Submit/Apply button yourself.
-- Do not invent candidate facts. Use `profile/profile.yml`, `profile/cv.md`, the selected PDF, and any matching report under `reports/`.
-- If a required question cannot be answered truthfully, pause and ask the user.
-- Do not expose secrets, cookies, OAuth tokens, or webhook URLs in the conversation.
-- Do not record the application as Applied until the user explicitly confirms they clicked Submit.
-
-Token rules (cheapest source of truth first):
-- Never drive the application page through a browser MCP (Playwright MCP etc.); all browser interaction goes through these CLI commands.
-- Verify results from `apply-review.json` (and `{status_command}`) first. Read a screenshot image only when the JSON shows a problem (`required_empty`, `validation_issues`, `warnings`, or `pdf: null` when a PDF was expected).
-- Fix a single missed field with `.venv/bin/job-hunt apply-do --fill 'label=value'` (also `--click/--select/--check`) instead of taking over the browser.
-
-Fill command, run this in the background so the browser stays open:
-
-```bash
-{fill_command}
-```
-
-Execution protocol:
-1. Run `pwd` and confirm you are in the job-hunt repository.
-2. Run `.venv/bin/job-hunt config doctor` if configuration looks stale.
-3. Confirm the PDF exists if `--pdf` is present.
-4. Run the fill command in visible browser mode.
-5. Read the terminal output. It should list attached PDF, auto-filled fields, skipped fields, visible actions, artifact dir, and a review screenshot path.
-6. Read `apply-review.json` in the artifact dir (NOT the screenshot). Summarize for the user:
-   - company and role
-   - fields filled
-   - fields needing attention (`required_empty`, `validation_issues`, `warnings`)
-   - PDF filename (`pdf` key)
-   - any risk, missing answer, or work-authorization question
-   Only read the newest `apply-review-*.jpg` when the JSON shows a problem. For a live view of the page state, run `{status_command}` (add `--controls` for the full field list).
-7. Ask the user to review the visible browser. If the user requests edits, fix single fields with `apply-do --fill 'label=value'`; otherwise tell the user the exact field/value to change.
-8. If the user asks to swap the PDF, run:
-
-```bash
-{replace_command}
-```
-
-9. Wait a few seconds, then confirm the swap from the command output or `{status_command}`.
-10. When the user says it is ready, instruct the user to manually click the final Submit/Apply button in the browser.
-11. After the user confirms they submitted, capture the current confirmation page while the browser is still open:
-
-```bash
-{capture_command}
-```
-
-12. Wait a few seconds, then inspect the newest `apply-page-*.jpg` screenshot for a confirmation such as "Thank you for applying" or "application received".
-13. Record the application:
-
-```bash
-{record_command}
-```
-
-14. Verify the terminal reports `Recorded Applied`. Then run:
-
-```bash
-.venv/bin/job-hunt activity list --since 1d
-```
-
-Optional headless smoke test, use only when you are not submitting:
-
-```bash
-{smoke_command}
-```
-
-Expected smoke behavior: it fills safe fields, captures a screenshot, answers `n`, and makes no tracker changes.
-"""
 
 
-def _infer_loop_target(*, url: str, description: str) -> dict:
-    tracker = TrackerRepository(Path("data/applications.md"))
-    metadata = _extract_loop_url_metadata(url)
-    inferred_text = " ".join(
-        part
-        for part in [
-            description,
-            metadata.get("company", ""),
-            metadata.get("title", ""),
-            metadata.get("location", ""),
-            metadata.get("text", "")[:1200],
-        ]
-        if part
-    )
-    company, role = _parse_company_role_from_description(description)
-    company = company or metadata.get("company") or None
-    role = role or metadata.get("title") or None
-    entry = None
-    score = 0.0
-    if company:
-        entry, score = EmployerMatcher(tracker.parse()).raw_match(company=company, role=role)
-    if (not entry or score < MATCH_THRESHOLD) and inferred_text:
-        entry, score = _best_tracker_text_match(tracker.parse(), inferred_text)
-    if entry and score >= 0.55:
-        company = company or entry.company
-        role = role or entry.role
-    if not company or not role:
-        ats_company = _company_from_apply_url(url)
-        if ats_company:
-            company = company or ats_company
-    if company and role:
-        role = re.sub(rf"^{re.escape(company)}\s+", "", role, flags=re.IGNORECASE).strip() or role
-    if entry and score >= MATCH_THRESHOLD:
-        role = entry.role
-    if entry:
-        pdf = _select_pdf_for_entry(entry)
-    else:
-        pdf = _select_pdf_for_text(" ".join(part for part in [company or "", role or "", description] if part))
-    return {
-        "company": company,
-        "role": role,
-        "pdf": pdf,
-        "tracker_entry": entry if entry and score >= 0.55 else None,
-        "metadata": metadata,
-    }
 
 
-def _parse_company_role_from_description(description: str) -> tuple[str | None, str | None]:
-    text = " ".join(description.split())
-    if not text:
-        return None, None
-    separators = [" — ", " - ", " at ", " @ ", " for "]
-    for sep in separators:
-        if sep in text:
-            left, right = text.split(sep, 1)
-            if sep.strip() in {"at", "for"}:
-                return right.strip() or None, left.strip() or None
-            return left.strip() or None, right.strip() or None
-    return None, text
 
 
-def _company_from_apply_url(url: str) -> str | None:
-    patterns = [
-        r"jobs\.ashbyhq\.com/([^/?#]+)",
-        r"job-boards\.greenhouse\.io/([^/?#]+)",
-        r"boards\.greenhouse\.io/([^/?#]+)",
-        r"jobs\.lever\.co/([^/?#]+)",
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, url)
-        if match:
-            return match.group(1).replace("-", " ").replace("_", " ").title()
-    return None
 
 
-def _best_tracker_text_match(entries: list, description: str):
-    from rapidfuzz import fuzz
-
-    best = None
-    best_score = 0.0
-    desc = description.lower()
-    for entry in entries:
-        haystack = f"{entry.company} {entry.role} {entry.notes}".lower()
-        score = fuzz.token_set_ratio(desc, haystack) / 100
-        if score > best_score:
-            best_score = score
-            best = entry
-    return best, best_score
 
 
-def _select_pdf_for_entry(entry) -> Path | None:
-    text = f"{entry.company} {entry.role} {entry.report} {entry.notes}"
-    return _select_pdf_for_text(text)
 
 
-def _select_pdf_for_text(text: str) -> Path | None:
-    pdfs = [path for path in Path("output").rglob("*.pdf") if path.is_file()]
-    generic = Path("output/ai-engineer-resume-preview/yi-xin-ai-engineer-resume.pdf")
-    if not pdfs:
-        return generic if generic.exists() else None
-    tokens = [token for token in re.findall(r"[a-z0-9]+", text.lower()) if len(token) >= 3]
-    best = None
-    best_score = -1
-    for pdf in pdfs:
-        name = str(pdf).lower()
-        score = sum(2 for token in tokens if token in name)
-        if "resume" in name or name.startswith("cv"):
-            score += 2
-        if "candidate" in name:
-            score -= 1
-        if "cover" in name:
-            score -= 4
-        if "ai-engineer-resume-preview" in str(pdf):
-            score += 1
-        if score > best_score:
-            best_score = score
-            best = pdf
-    if best and best_score > 0:
-        return best
-    return generic if generic.exists() else best
 
 
-def _tracker_entry_blocks_apply(entry) -> bool:
-    score_match = re.search(r"(\d+(?:\.\d+)?)\s*/\s*5", entry.score or "")
-    if score_match and float(score_match.group(1)) < 3.0:
-        return True
-    return "skip" in f"{entry.notes} {entry.status}".lower()
 
 
-def _loop_agent_apply_command(*, url: str, company: str | None, role: str | None, pdf: Path | None) -> str:
-    parts = [".venv/bin/job-hunt", "agent-apply", url]
-    if company:
-        parts.extend(["--company", company])
-    if role:
-        parts.extend(["--role", role])
-    if pdf:
-        parts.extend(["--pdf", str(pdf)])
-    return " ".join(shlex.quote(part) for part in parts)
 
 
 _BROWSER_PROFILE = Path("storage/browser-profile")
@@ -4732,467 +4571,44 @@ async def _click_radio_near_text(page, name: str, choice: str) -> bool:
     return False
 
 
-def _apply_artifact_dir(company: str | None, role: str | None) -> Path:
-    """Return a per-application artifact directory under artifacts/apply/."""
-    import re as _re
-    today = datetime.now().date().isoformat()
-    def _slug(s: str, max_len: int) -> str:
-        return _re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-")[:max_len]
-    parts = [today]
-    if company:
-        parts.append(_slug(company, 25))
-    if role:
-        parts.append(_slug(" ".join(role.split()[:4]), 30))
-    return Path("artifacts/apply") / "-".join(parts)
 
 
-# Tracks the Ethical Use threshold in `prompts/shared.md`, lowered 4.0 → 3.0 on
-# 2026-08-16. Leaving it at 4.0 would have aborted the apply flow for every role
-# the scorer now recommends in the 3.0–4.0 band — Whitby at 3.73 among them.
-_LOW_SCORE_GATE_THRESHOLD = 3.0
-
-# Bumped when apply-review.json fields are renamed, removed, or change semantics.
-# Additive fields do NOT require a bump. Downstream tooling (`jq`, dashboards)
-# can read this to decide whether to apply migration logic.
-APPLY_REVIEW_SCHEMA_VERSION = 1
 
 
-def _enforce_low_score_gate(report_context: dict | None, *, override: bool) -> None:
-    """Abort the apply flow if the matched tracker row scores below the threshold.
-
-    Per `prompts/shared.md` Ethical Use rules, applying to a low-score role costs
-    recruiter attention. "Low" now means a blocker the candidate cannot satisfy,
-    not an imperfect match. The gate fires only when (a) we have a tracker match
-    with a parseable score and (b) that score is below the threshold. When no
-    score is available (manual cases, fresh tracker rows, "N/A" / "DUP"), the
-    gate stays silent rather than blocking legitimate manual workflows.
-    """
-    if not report_context:
-        return
-    score_str = (report_context.get("score") or "").strip()
-    match = re.match(r"^([\d.]+)/5", score_str)
-    if not match:
-        return
-    score = float(match.group(1))
-    if score >= _LOW_SCORE_GATE_THRESHOLD:
-        return
-    if override:
-        console.print(
-            f"[yellow]warning:[/yellow] tracker score {score}/5 < "
-            f"{_LOW_SCORE_GATE_THRESHOLD} — applying anyway (--low-score-override)."
-        )
-        return
-    console.print(
-        f"[red]Aborting:[/red] tracker score {score}/5 is below the ethical-use "
-        f"threshold of {_LOW_SCORE_GATE_THRESHOLD}/5.\n"
-        f"Recruiter time has cost. Re-evaluate with `job-hunt evaluate`, or pass "
-        f"`--low-score-override` if you have a specific reason to apply anyway."
-    )
-    raise typer.Exit(1)
 
 
-def _load_apply_report_context(
-    *,
-    tracker: TrackerRepository,
-    tracker_entry,
-    company: str | None,
-    role: str | None,
-) -> dict | None:
-    entry = tracker_entry
-    score = 1.0 if entry else 0.0
-    if entry is None:
-        entry, score = EmployerMatcher(tracker.parse()).raw_match(company=company, role=role)
-    if not entry or score < MATCH_THRESHOLD:
-        return None
-
-    report_path = _resolve_report_path(entry.report)
-    if not report_path or not report_path.exists():
-        return {
-            "tracker_id": entry.number,
-            "company": entry.company,
-            "role": entry.role,
-            "score": entry.score,
-            "status": entry.status,
-            "path": "",
-            "application_section": "",
-        }
-    text = report_path.read_text(encoding="utf-8")
-    return {
-        "tracker_id": entry.number,
-        "company": entry.company,
-        "role": entry.role,
-        "score": entry.score,
-        "status": entry.status,
-        "path": str(report_path),
-        "recommendation": _extract_report_recommendation(text),
-        "application_section": _extract_application_section(text),
-    }
 
 
-def _resolve_report_path(report_ref: str) -> Path | None:
-    if not report_ref:
-        return None
-    match = re.search(r"\((reports/[^)]+)\)", report_ref)
-    raw = match.group(1) if match else report_ref.strip()
-    raw = raw.strip("[]")
-    if raw.startswith("manual:"):
-        return None
-    path = Path(raw)
-    if path.exists():
-        return path
-    if not raw.startswith("reports/") and raw.endswith(".md"):
-        path = Path("reports") / raw
-        if path.exists():
-            return path
-    return None
 
 
-def _extract_application_section(report_text: str) -> str:
-    headings = [
-        r"section g",
-        r"application answers",
-        r"application framing",
-        r"draft answers",
-        r"key talking points",
-        r"application requirements",
-    ]
-    pattern = re.compile(rf"^##+\s+.*({'|'.join(headings)}).*$", re.IGNORECASE | re.MULTILINE)
-    match = pattern.search(report_text)
-    if not match:
-        return ""
-    start = match.start()
-    next_heading = re.search(r"^##\s+", report_text[match.end():], re.MULTILINE)
-    end = match.end() + next_heading.start() if next_heading else len(report_text)
-    return report_text[start:end].strip()[:6000]
 
 
-def _extract_report_recommendation(report_text: str) -> str:
-    match = re.search(r"Recommendation\*\*:\s*([A-Za-z]+)", report_text)
-    return match.group(1).upper() if match else ""
 
 
-def _report_fit_warnings(report_context: dict | None) -> list[str]:
-    if not report_context:
-        return []
-    warnings = []
-    score_text = report_context.get("score") or ""
-    recommendation = (report_context.get("recommendation") or "").upper()
-    score_match = re.search(r"(\d+(?:\.\d+)?)\s*/\s*5", score_text)
-    if recommendation == "SKIP":
-        warnings.append("Matched report recommendation is SKIP; confirm with the user before applying.")
-    if score_match and float(score_match.group(1)) < 3.0:
-        warnings.append(f"Matched report score is low ({score_text}); treat this as a review blocker.")
-    return warnings
 
 
-def _find_report_answer(question: str, report_context: dict | None) -> str:
-    if not report_context:
-        return ""
-    section = report_context.get("application_section") or ""
-    if not section:
-        return ""
-    q = question.lower()
-    candidates: list[str] = []
-    if "why" in q:
-        candidates = _section_blocks_matching(section, ["why", "role", "company"])
-    elif "additional" in q or "anything else" in q or "other information" in q:
-        candidates = _section_blocks_matching(section, ["additional", "talking points", "application"])
-    elif "fit" in q or "great" in q:
-        candidates = _section_blocks_matching(section, ["fit", "good fit", "great fit"])
-    elif "achievement" in q or "experience" in q or "background" in q or "relevant" in q:
-        candidates = _section_blocks_matching(section, ["achievement", "experience", "relevant"])
-    if not candidates:
-        return ""
-    answer = _clean_report_answer(candidates[0])
-    return answer[:1800]
 
 
-def _find_saved_apply_answer(question: str, report_context: dict | None) -> str:
-    if not report_context:
-        return ""
-    saved = report_context.get("saved_answers") or []
-    if not saved:
-        return ""
-    from rapidfuzz import fuzz
-
-    question_norm = _normalize_question(question)
-    if not question_norm:
-        return ""
-    best_answer = ""
-    best_score = 0.0
-    for item in saved:
-        candidate_q = _normalize_question(str(item.get("question") or ""))
-        answer = str(item.get("answer") or "").strip()
-        if not candidate_q or not answer:
-            continue
-        score = fuzz.token_set_ratio(question_norm, candidate_q) / 100
-        if score > best_score:
-            best_score = score
-            best_answer = answer
-    return best_answer if best_score >= 0.82 else ""
 
 
-def _normalize_question(question: str) -> str:
-    text = re.sub(r"\s+", " ", question or "").strip().lower()
-    text = re.sub(r"\s*\*\s*", " ", text)
-    text = re.sub(r"\bthis field is required\b", " ", text)
-    text = re.sub(r"\b\d+\s*-\s*\d+\s*paragraphs?\b", " ", text)
-    text = re.sub(r"\b\d+\s*paragraphs?\b", " ", text)
-    return re.sub(r"\s+", " ", text).strip()
 
 
-def _load_saved_apply_answers(artifact_dir: Path) -> list[dict[str, str]]:
-    path = artifact_dir / "apply-review.json"
-    if not path.exists():
-        return []
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return []
-    answers = payload.get("answers") or []
-    if not isinstance(answers, list):
-        return []
-    cleaned: list[dict[str, str]] = []
-    for item in answers:
-        if not isinstance(item, dict):
-            continue
-        question = str(item.get("question") or "").strip()
-        answer = str(item.get("answer") or "").strip()
-        if question and answer:
-            cleaned.append({"question": question, "answer": answer})
-    return cleaned
 
 
-def _section_blocks_matching(section: str, keywords: list[str]) -> list[str]:
-    blocks = re.split(r"\n(?=###?\s+|\*\*[^*\n]+:\*\*)", section)
-    matches = []
-    for block in blocks:
-        lower = block.lower()
-        if any(keyword in lower for keyword in keywords):
-            matches.append(block)
-    return matches
 
 
-def _clean_report_answer(block: str) -> str:
-    lines = []
-    for line in block.splitlines():
-        cleaned = re.sub(r"^#{2,4}\s*", "", line).strip()
-        cleaned = re.sub(r"^\*\*([^*]+)\*\*:?\s*", "", cleaned).strip()
-        cleaned = cleaned.lstrip("> ").strip()
-        if cleaned and not cleaned.lower().startswith("section g"):
-            lines.append(cleaned)
-    return "\n".join(lines).strip()
 
 
-def _answer_for_application_question(
-    question: str,
-    *,
-    company: str | None,
-    role: str | None,
-    report_context: dict | None = None,
-) -> str:
-    """Return an answer for an application question.
-
-    Sources, in order:
-      1. Saved answer from a prior apply session (``saved_answers`` in report_context).
-      2. Section G draft answers from the evaluation report (``application_section``).
-
-    Returns "" when no source is available so the form is left blank for the user
-    to fill manually. The function does not synthesise candidate facts.
-    """
-    q = question.lower()
-    if "reference" in q:
-        return ""
-    saved_answer = _find_saved_apply_answer(question, report_context)
-    if saved_answer:
-        return saved_answer
-    report_answer = _find_report_answer(question, report_context)
-    if report_answer:
-        return report_answer
-    return ""
 
 
-def _radio_choice_for_question(question: str) -> str:
-    q = question.lower()
-    if "emea" in q or "apac" in q:
-        return "No"
-    if "north america" in q or "located in" in q:
-        return "Yes"
-    if "legally" in q and "work" in q:
-        return "Yes"
-    if "sponsor" in q or "sponsorship" in q:
-        return "No"
-    return ""
 
 
-def _write_apply_review_summary(
-    *,
-    artifact_dir: Path,
-    url: str,
-    final_url: str,
-    title: str,
-    company: str | None,
-    role: str | None,
-    report_context: dict | None,
-    filled: list[str],
-    skipped: list[str],
-    answers: list[dict[str, str]],
-    required_empty: list[str],
-    actions: list[str],
-    screenshot: Path,
-    pdf: Path | None,
-    role_warnings: list[str],
-    validation_issues: list[ReviewIssue] | None = None,
-) -> Path:
-    payload = {
-        "schema_version": APPLY_REVIEW_SCHEMA_VERSION,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "url": url,
-        "final_url": final_url,
-        "title": title,
-        "company": company,
-        "role": role,
-        "matched_report": report_context,
-        "filled": filled,
-        "skipped": skipped,
-        "answers": answers,
-        "required_empty": required_empty,
-        "actions": actions,
-        "screenshot": str(screenshot),
-        "pdf": str(pdf) if pdf else None,
-        "warnings": role_warnings,
-        "validation_issues": issues_to_payload(validation_issues or []),
-    }
-    json_path = artifact_dir / "apply-review.json"
-    json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-
-    md_path = artifact_dir / "apply-review.md"
-    lines = [
-        f"# Apply Review — {company or 'Unknown'} / {role or 'Unknown'}",
-        "",
-        f"- URL: {url}",
-        f"- Final URL: {final_url}",
-        f"- Page title: {title}",
-        f"- Screenshot: {screenshot}",
-        f"- PDF: {pdf if pdf else 'not attached'}",
-    ]
-    if report_context and report_context.get("path"):
-        lines.append(f"- Matched report: {report_context['path']}")
-    if role_warnings:
-        lines.extend(["", "## Warnings", *[f"- {item}" for item in role_warnings]])
-    lines.extend(["", "## Filled Fields", *[f"- {item}" for item in filled or ["none"]]])
-    lines.extend(["", "## Needs Review", *[f"- {item}" for item in skipped or ["none"]]])
-    lines.extend(["", "## Required Empty Fields", *[f"- {item}" for item in required_empty or ["none detected"]]])
-    if answers:
-        lines.append("")
-        lines.append("## Drafted Answers")
-        for item in answers:
-            lines.append(f"### {item['question']}")
-            lines.append(item["answer"])
-            lines.append("")
-    lines.extend(["", "## Visible Actions", *[f"- {item}" for item in actions or ["none"]]])
-    md_path.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
-    return md_path
 
 
-def _append_apply_review_event(*, artifact_dir: Path, event: str, screenshot: Path | None = None) -> None:
-    path = artifact_dir / "apply-review.md"
-    line = f"\n## Event — {datetime.now(timezone.utc).isoformat()}\n- {event}"
-    if screenshot:
-        line += f"\n- Screenshot: {screenshot}"
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(line + "\n")
 
 
-def _tracker_entry_by_id(tracker: TrackerRepository, tracker_id: int | None):
-    if tracker_id is None:
-        return None
-    for entry in tracker.parse():
-        if entry.number == tracker_id:
-            return entry
-    console.print(f"[red]Tracker row #{tracker_id} not found.[/red]")
-    raise typer.Exit(1)
 
 
-def _link_artifacts_to_row(pdf: Path | None, entry, url: str | None) -> Path | None:
-    """Stamp the tracker row number into the directory the PDF came from.
-
-    Materials and tracker rows had nothing joining them, so an agent could
-    build a résumé, the user could send it, and no later check could tell the
-    directory had never been recorded. The marker makes that join exact for
-    everything recorded from here on; `job-hunt checkup` reads it.
-    """
-    if pdf is None or entry is None:
-        return None
-    directory = pdf.resolve().parent
-    if Path("output").resolve() not in directory.parents:
-        return None
-    marker = directory / ".tracker-row"
-    marker.write_text(
-        json.dumps(
-            {
-                "tracker_row": entry.number,
-                "company": entry.company,
-                "role": entry.role,
-                "status": entry.status,
-                "url": url,
-                "recorded_at": datetime.now().isoformat(timespec="seconds"),
-            },
-            indent=2,
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    return marker
 
 
-def _record_manual_submission(
-    *,
-    tracker: TrackerRepository,
-    tracker_entry,
-    company: str,
-    role: str,
-    url: str | None,
-    pdf: Path | None,
-):
-    today = datetime.now().date()
-    note = f"submitted manually via apply assist {today}"
-    if tracker_entry:
-        updated = tracker_entry.model_copy(
-            update={
-                "status": "Applied",
-                "pdf": "✅" if pdf else tracker_entry.pdf,
-                "notes": (tracker_entry.notes + f"; {note}").strip("; "),
-            }
-        )
-        tracker.update_entry(updated)
-        return updated
 
-    from job_hunt.services.employer_match import EmployerMatcher, load_aliases
-
-    matcher = EmployerMatcher(tracker.parse(), aliases=load_aliases())
-    match = matcher.best(company=company, role=role, intent="mutate")
-    if match:
-        existing = match.entry
-        updated = existing.model_copy(
-            update={
-                "status": "Applied",
-                "pdf": "✅" if pdf else existing.pdf,
-                "notes": (existing.notes + f"; {note}").strip("; "),
-            }
-        )
-        tracker.update_entry(updated)
-        return updated
-
-    return tracker.add_imported_email_entry(
-        company=company,
-        role=role,
-        status="Applied",
-        email_ref=f"manual:{today}",
-        note=(
-            f"Submitted manually via apply assist; url={url}"
-            if url
-            else "Submitted manually via apply assist; no URL (recorded without one)"
-        ),
-        pdf_attached=bool(pdf),
-    )
