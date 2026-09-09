@@ -212,7 +212,16 @@ async def _merge_or_update_tracker(state: JobHuntState) -> dict:
     # was built on: on 2026-09-08 asking for an Area52 letter repointed row #926
     # — an application already sent — at a run that produced no résumé and no
     # score, and rewrote 3.8 to a 4.1 the operator never submitted against.
-    report_str = existing.report if letter_only(state) else (report_path or existing.report)
+    # The same reasoning covers a failed score: its report says "NEEDS RE-RUN —
+    # scoring failed" and describes no evaluation, so moving the pointer there
+    # strands the row on a stub while `score_str` above keeps the real score.
+    # On 2026-09-08 a codex quota exhaustion did exactly that to row #924 —
+    # score 3.7 from the good run, pointer at the stub from the degraded one.
+    report_str = (
+        existing.report
+        if (letter_only(state) or score_failed)
+        else (report_path or existing.report)
+    )
     updated = TrackerEntry(
         number=existing.number,
         date=existing.date,
