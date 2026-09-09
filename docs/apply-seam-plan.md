@@ -1,6 +1,7 @@
 # Giving `cli/apply.py` a seam
 
-**Status:** accepted. Five reviews: agy (RETHINK on v1), codex
+**Status:** implemented, then reviewed twice more. §10 records what those reviews changed after the fact.
+**Originally:** accepted. Five reviews: agy (RETHINK on v1), codex
 (REVIEW_NEEDED on v2, then on v3), a `codebase-design` vocabulary pass, and
 opencode (RETHINK on v2, then "no blockers, structurally sound" on v3).
 **Date:** 2026-09-09
@@ -389,3 +390,42 @@ regression's phase, and the revert unit is the merge.
   edited."** Dispatch is by URL and page, not by subcommand: `job-hunt apply
   <url>` already routes LinkedIn and Workday through one command. A third ATS
   adds no subcommand.
+
+
+## 10. What the post-implementation reviews changed
+
+The plan was reviewed five times before a line was written and it still shipped
+defects. Both of the code reviews after implementation, run independently, found
+the same one, and a third pass found five more on the submit path. Recorded here
+because the pattern is more useful than the list:
+
+**Every defect was a piece of code claiming more than it knew.**
+
+- `AtsDriver.fill` was written, unit-tested and never called. The session still
+  hand-rolled both fill flows and reached a driver only to submit, so a third
+  ATS would have been submitted without ever being filled. 1,118 tests passed
+  throughout: they proved the protocol existed, which was never in question.
+- LinkedIn's `stuck` outcome was reported as `filled`, and the gate inferred
+  readiness from `required_empty` being empty -- which it always is when the
+  walk stalled before the page that lists required fields.
+- A click was reported `confirmed` when `wait_for_load_state` resolved, which it
+  does instantly on an already-loaded page and always for an ATS that submits
+  over XHR.
+- A click that raised was reported as definitely not sent.
+- The duplicate-submission guard was keyed on a directory name carrying today's
+  date, so it forgot overnight, and the first four words of the role, so two
+  roles shared it.
+- The guard's own record went through a logger that swallows every exception.
+- §6 criterion 2 was reported met after counting two files instead of the
+  package.
+
+**And the first test written to prove a fix was itself a claim of that kind.**
+It scanned the AST for `driver.fill` and passed on `if False: await
+driver.fill(...)`. The rewrite runs the flow against a fake page and asserts
+that each blocking condition leaves zero clicks; mutation-tested by removing
+the checks and watching it go red.
+
+The plan's §5 named the live-run risk and the tenant-variance risk. It did not
+name this one, which turned out to be the real one: **a refactor's own tests
+tend to assert that the new structure exists, and the defect is in whether
+anything uses it.**
