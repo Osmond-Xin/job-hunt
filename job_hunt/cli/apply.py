@@ -77,6 +77,7 @@ from job_hunt.services.workday.steps import (
     _workday_current_step,
     _workday_resume_was_uploaded,
 )
+from job_hunt.services.workday.detect import is_workday_page
 from ._render import _short, console
 from job_hunt.services.profile_loader import _apply_profile_values
 from job_hunt.services.source_type import _resolve_source_type
@@ -933,14 +934,14 @@ async def _open_apply_page(
                     report_context=report_context,
                 )
 
-            if pdf and "myworkdayjobs.com" not in page.url:
+            if pdf and not is_workday_page(page):
                 attached = await _attach_resume(page, pdf)
                 if attached:
                     await page.wait_for_timeout(2000)
                     if not (art_dir / pdf.name).exists():
                         shutil.copy2(pdf, art_dir / pdf.name)
 
-            if cover_letter_pdf and "myworkdayjobs.com" not in page.url:
+            if cover_letter_pdf and not is_workday_page(page):
                 cover_letter_attached = await _attach_cover_letter(page, cover_letter_pdf)
                 if cover_letter_attached:
                     await page.wait_for_timeout(1500)
@@ -973,7 +974,7 @@ async def _open_apply_page(
             actions = [_short(label.strip(), 80) for label in labels if label.strip()]
             required_empty = await _required_empty_fields(page)
             required_empty = _filter_required_empty_fields(required_empty, filled)
-            validation_issues = await _collect_workday_review_issues(page) if "myworkdayjobs.com" in page.url else []
+            validation_issues = await _collect_workday_review_issues(page) if is_workday_page(page) else []
 
         # --- Auto-submit (Phase 4 — gated) ----------------------------------
         # Only fires when ALL of the following are true:
@@ -987,7 +988,7 @@ async def _open_apply_page(
         # LinkedIn Easy Apply runs its own gate above; do not re-enter the
         # Workday-specific branches when the LinkedIn driver handled the page.
         if auto_submit and not linkedin_handled:
-            workday_host = "myworkdayjobs.com" in page.url
+            workday_host = is_workday_page(page)
             if not workday_host:
                 apply_run_log.emit(
                     art_dir, "auto_submit.gated",
@@ -1346,7 +1347,7 @@ async def _handle_refill_current_page(
         page, company=company, role=role, report_context=report_context,
     )
     attached = False
-    if pdf and "myworkdayjobs.com" not in page.url:
+    if pdf and not is_workday_page(page):
         attached = await _attach_resume(page, pdf)
         if attached:
             await page.wait_for_timeout(1500)
@@ -1372,7 +1373,7 @@ async def _handle_refill_current_page(
     required_empty = _filter_required_empty_fields(required_empty, filled)
     refill_validation_issues = (
         await _collect_workday_review_issues(page)
-        if "myworkdayjobs.com" in page.url else []
+        if is_workday_page(page) else []
     )
     labels = await page.locator("button, a[role=button], input[type=submit]").all_inner_texts()
     actions = [_short(label.strip(), 80) for label in labels if label.strip()]
@@ -1438,7 +1439,7 @@ async def _collect_status_payload(
     except Exception:
         title = ""
     step = ""
-    if "myworkdayjobs.com" in page.url:
+    if is_workday_page(page):
         try:
             step = await _workday_current_step(page)
         except Exception:

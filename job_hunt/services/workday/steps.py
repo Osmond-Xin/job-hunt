@@ -51,6 +51,11 @@ from job_hunt.services.workday.required_empty import (
     dedupe_preserve_order as _dedupe_preserve_order,
     filter_required_empty_fields as _filter_required_empty_fields,
 )
+from job_hunt.services.workday.detect import is_workday_page
+from job_hunt.services.workday.step_decisions import (
+    step_from_body_text,
+    step_from_headings,
+)
 from job_hunt.services.workday.review_gate import (
     ReviewIssue,
     detect_review_issues,
@@ -121,7 +126,7 @@ async def _maybe_workday_login(page, *, artifact_dir: Path | None = None, warn) 
 
 
 async def _recover_workday_error_page(page, original_url: str) -> None:
-    if "myworkdayjobs.com" not in page.url:
+    if not is_workday_page(page):
         return
     try:
         text = await page.locator("body").inner_text(timeout=5000)
@@ -179,7 +184,7 @@ async def _try_workday_final_submit(page) -> bool:
     explicitly target the overlay first and fall back to the role-based
     Playwright lookup. Returns True only when a click was actually dispatched.
     """
-    if "myworkdayjobs.com" not in page.url:
+    if not is_workday_page(page):
         return False
     try:
         clicked = await page.evaluate(
@@ -229,7 +234,7 @@ async def _workday_resume_was_uploaded(page, pdf: Path) -> bool:
     Uploaded" notice / My Experience attachment list) is the most stable
     cross-locale signal Workday provides.
     """
-    if "myworkdayjobs.com" not in page.url:
+    if not is_workday_page(page):
         return False
     try:
         text = await page.locator("body").inner_text(timeout=3000)
@@ -256,7 +261,7 @@ async def _fill_workday_current_step(
     the Application Questions step (when this filler happens to be invoked on
     that page). Callers should merge it into the master ``answers`` list.
     """
-    if "myworkdayjobs.com" not in page.url:
+    if not is_workday_page(page):
         return [], [], []
     try:
         # Readability probe, not a value: a body that will not yield its text
@@ -341,24 +346,23 @@ async def _fill_workday_current_step(
 
 
 async def _workday_current_step(page) -> str:
+    """Read the page, and let step_decisions say what it means.
+
+    The body read stays conditional on the heading pass finding nothing --
+    see the note in step_decisions about why that ordering is load-bearing.
+    """
     try:
         headings = await page.locator("h1, h2, h3").all_inner_texts()
     except Exception:
         headings = []
-    known = ["My Information", "My Experience", "Application Questions", "Voluntary Disclosures", "Review", "Create Account"]
-    for heading in headings:
-        normalized = re.sub(r"\s+", " ", heading).strip()
-        for step in known:
-            if normalized == step:
-                return step
+    step = step_from_headings(headings)
+    if step:
+        return step
     try:
         text = await page.locator("body").inner_text(timeout=2000)
     except Exception:
         return ""
-    for step in known:
-        if re.search(rf"(?:^|\n){re.escape(step)}(?:\n|$)", text):
-            return step
-    return ""
+    return step_from_body_text(text)
 
 
 def _workday_required_blocks_my_information_continue(label: str) -> bool:
@@ -706,7 +710,7 @@ async def _workday_advance_all_steps(
     callers should merge this into the master ``answers`` list so saved-answer fuzzy
     match can reuse them on subsequent runs.
     """
-    if "myworkdayjobs.com" not in page.url:
+    if not is_workday_page(page):
         return [], [], []
 
     filled: list[str] = []
