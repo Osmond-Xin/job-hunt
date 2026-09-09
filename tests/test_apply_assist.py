@@ -485,19 +485,17 @@ def test_workday_textarea_uses_saved_answer(monkeypatch) -> None:
     page = _fake_page_with_textareas([area])
     # _field_context is async + uses page.evaluate; stub it to return the question text directly.
     #
-    # Patched on cli.apply, not on services/web/form_fill where it now lives:
-    # the function under test (_fill_workday_textarea_answers) is still in
-    # cli/apply.py and resolves the name in that namespace, so patching the
-    # owner is the one that does nothing. Verified both ways. This repoints in
-    # Phase 3a, when the Workday functions move and the split disappears.
+    # Patched on services/workday/steps, the namespace the function under test
+    # (_fill_workday_textarea_answers) now resolves the name in. It was
+    # cli.apply until Phase 3a moved both.
     # _fill_workday_textarea_answers (cli.apply) calls both as bare names, so
     # the patch has to land on cli.apply's own copy.
     monkeypatch.setattr(
-        "job_hunt.cli.apply._field_context",
+        "job_hunt.services.workday.steps._field_context",
         AsyncMock(return_value="Why are you interested in this role? *"),
     )
     monkeypatch.setattr(
-        "job_hunt.cli.apply._field_contains_text",
+        "job_hunt.services.workday.steps._field_contains_text",
         AsyncMock(return_value=True),
     )
 
@@ -537,8 +535,8 @@ def test_workday_textarea_skips_already_filled_areas(monkeypatch) -> None:
     page = _fake_page_with_textareas([area])
     # _fill_workday_textarea_answers (cli.apply) calls both as bare names, so
     # the patch has to land on cli.apply's own copy.
-    monkeypatch.setattr("job_hunt.cli.apply._field_context", AsyncMock(return_value="Question?"))
-    monkeypatch.setattr("job_hunt.cli.apply._field_contains_text", AsyncMock(return_value=True))
+    monkeypatch.setattr("job_hunt.services.workday.steps._field_context", AsyncMock(return_value="Question?"))
+    monkeypatch.setattr("job_hunt.services.workday.steps._field_contains_text", AsyncMock(return_value=True))
 
     filled, skipped, answers = asyncio.run(
         _fill_workday_textarea_answers(
@@ -622,7 +620,7 @@ def test_workday_textarea_marks_no_answer_questions_as_skipped(monkeypatch) -> N
     area, _ = _fake_workday_textarea(question_html="Some unmatched custom question?")
     page = _fake_page_with_textareas([area])
     monkeypatch.setattr(
-        "job_hunt.cli.apply._field_context",
+        "job_hunt.services.workday.steps._field_context",
         AsyncMock(return_value="Some unmatched custom question?"),
     )
 

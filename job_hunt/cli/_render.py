@@ -2,10 +2,8 @@ from __future__ import annotations
 
 from rich.console import Console
 
+from job_hunt.services.text import _short
+
 console = Console()
 
-
-def _short(value: str, limit: int) -> str:
-    if len(value) <= limit:
-        return value
-    return value[: max(0, limit - 1)].rstrip() + "…"
+__all__ = ["console", "_short"]
