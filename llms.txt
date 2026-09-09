@@ -46,7 +46,8 @@ matters here and does not catch a violation; direction is.
   010 Workday services split, 011 structured review issues, 012 apply-review
   schema and event log, 013 quality-audit loop and reasoning budget, 014 the
   red-team gate on outward artifacts, 015 quota-free discovery tiers, 016
-  deny-by-default data gitignore.
+  deny-by-default data gitignore, 017 one driver contract for every ATS
+  (the `apply.py` seam — read it before touching the apply flow).
 - [docs/full-loop-execution.md](docs/full-loop-execution.md): an executable
   runbook covering the loop end to end. Follow this rather than reconstructing
   the sequence from the code.
