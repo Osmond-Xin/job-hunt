@@ -1,0 +1,107 @@
+# Job Hunt
+
+> A personal job-search operations system: find postings, score them against one
+> candidate's real profile, generate a tailored résumé and cover letter, assist
+> the browser fill, and reconcile what employers write back. Python + LangGraph,
+> ~27k lines. Everything it produces is outward-facing — it goes to real
+> employers under a real person's name — which is why two gates in `CLAUDE.md`
+> are enforced rather than advisory.
+
+## Read these first, in this order
+
+- [CLAUDE.md](CLAUDE.md): the three mandatory gates. Red-team review before any
+  artifact is delivered, a hard 2-page résumé / 1-page letter budget, and
+  "an application not in `data/applications.md` did not happen". Read before
+  writing anything that leaves the machine.
+- [AGENTS.md](AGENTS.md): the operating guide for an agent working here — the
+  human-in-the-loop safety model, `job-hunt checkup` at the end of every
+  session, and the two inbound-mail tracks.
+- [README.md](README.md): what the system is, the main loop, and which
+  directories are public code versus private runtime state.
+- [docs/module-map.md](docs/module-map.md): where things live and what owns
+  them, organised by module path. Includes the layer rule below and an honest
+  account of where the codebase does not yet meet it.
+
+## The layer rule
+
+```
+models/  ←  repositories/  ←  services/  ←  nodes/  ←  graphs/  ←  cli/
+config/     (persistence)     (the work)    (graph     (LangGraph   (commands)
+(types)                                     steps)      wiring)
+```
+
+Arrows point from what is depended on to what depends on it; nothing left of an
+arrow imports anything right of it. New logic almost always belongs in
+`services/`. A `nodes/` function should read `JobHuntState`, call a service, and
+return a partial-state dict — nothing more. Acyclicity is not the property that
+matters here and does not catch a violation; direction is.
+
+## Design and decisions
+
+- [docs/design.md](docs/design.md): the system organised by feature.
+- [docs/design-notes.md](docs/design-notes.md): the long-running design log,
+  lettered by section. Where a decision's reasoning lives before it becomes an
+  ADR.
+- [docs/adr/](docs/adr/): accepted decisions, numbered. 009 Workday config-driven,
+  010 Workday services split, 011 structured review issues, 012 apply-review
+  schema and event log, 013 quality-audit loop and reasoning budget, 014 the
+  red-team gate on outward artifacts, 015 quota-free discovery tiers, 016
+  deny-by-default data gitignore.
+- [docs/full-loop-execution.md](docs/full-loop-execution.md): an executable
+  runbook covering the loop end to end. Follow this rather than reconstructing
+  the sequence from the code.
+- [docs/agent-apply.md](docs/agent-apply.md): the agent-assisted application
+  fill, and where the automation stops.
+
+## Code entry points
+
+- `job_hunt/cli/`: Typer commands, one module per area — `evaluation.py`
+  (`evaluate`, `evaluate-batch`), `discovery.py` (`search`, `shortlist`,
+  `triage`, `scan`), `tracking.py` (tracker, `checkup`), `mail.py` (Gmail
+  ingest and reconcile), `outreach.py`, `apply.py`
+  (browser-assisted fill). `job_hunt/cli/__init__.py` re-exports every command name for
+  backward compatibility — the unused-import warnings there are deliberate.
+- `job_hunt/graphs/`: `evaluate_job.py`, `scan_portals.py`, `email_ingest.py` —
+  the three LangGraph pipelines.
+- `job_hunt/nodes/`: one file per graph step. `evaluate.py` scores,
+  `personalize.py` and `cover_letter.py` write, `pdf.py` renders within the page
+  budget, `redteam.py` runs the gate, `tracker.py` writes the row.
+- `job_hunt/services/`: the actual work. `triage.py` (ranking),
+  `scan.py`/`gov_boards.py`/`adzuna.py`/`jobbank.py` (sources), `redteam.py`,
+  `llm/` (provider tiers), `email/` (parse and classify replies),
+  `workday/` + `linkedin/` (ATS drivers).
+- `job_hunt/repositories/`: markdown and JSONL persistence. No business logic.
+- `job_hunt/models/state.py`: `JobHuntState`, the one graph state TypedDict.
+
+## Running it
+
+```bash
+.venv/bin/job-hunt --help          # every command
+.venv/bin/job-hunt checkup         # run at the end of any session that produced work
+.venv/bin/job-hunt tracker verify
+.venv/bin/python -m pytest -q --ignore=interview-prep
+```
+
+`interview-prep/` holds deliberately unimplemented practice drills. Its ~40
+failures are expected; exclude it or you will read them as regressions.
+
+## Conventions worth knowing before you change anything
+
+- **The red team is a gate, not a review step.** `UNREVIEWED` is not a pass. You
+  adjudicate its false positives, but every claimed factual conflict gets checked
+  against `profile/redteam-facts.md`, never argued away.
+- **Page budgets are enforced in code.** Trimming words rarely removes a rendered
+  line; remove a whole bullet or a whole entry.
+- **Recording an application goes through the CLI**, never by editing
+  `data/applications.md` by hand.
+- **The submit button is never clicked by automation.** A human reviews and
+  submits, always.
+- **`profile/cn/` carries a different contact address on purpose** — for résumés
+  a third party submits. Never start from one of those files without replacing
+  the contact block.
+- **Private runtime state is git-ignored by default** (`output/`, `reports/`,
+  `storage/`, `data/`, browser profiles, OAuth tokens). See ADR 016 before
+  adding a path.
+- **Comments here explain why, usually naming the date and the incident that
+  forced the rule.** Match that when you add one; a comment restating the code
+  is not the local style.
