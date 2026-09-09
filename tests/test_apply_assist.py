@@ -484,6 +484,12 @@ def test_workday_textarea_uses_saved_answer(monkeypatch) -> None:
     )
     page = _fake_page_with_textareas([area])
     # _field_context is async + uses page.evaluate; stub it to return the question text directly.
+    #
+    # Patched on cli.apply, not on services/web/form_fill where it now lives:
+    # the function under test (_fill_workday_textarea_answers) is still in
+    # cli/apply.py and resolves the name in that namespace, so patching the
+    # owner is the one that does nothing. Verified both ways. This repoints in
+    # Phase 3a, when the Workday functions move and the split disappears.
     # _fill_workday_textarea_answers (cli.apply) calls both as bare names, so
     # the patch has to land on cli.apply's own copy.
     monkeypatch.setattr(

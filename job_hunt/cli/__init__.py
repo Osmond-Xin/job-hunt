@@ -160,7 +160,6 @@ from .apply import (
     apply_close_session,
     apply_status,
     apply_do,
-    _SUBMIT_LABEL_RE,
     _looks_like_submit_label,
     ApplyDoRefused,
     _BROWSER_PROFILE,
@@ -172,7 +171,6 @@ from .apply import (
     _collect_status_payload,
     _handle_do_command,
     _resolve_unique_target,
-    _element_looks_like_submit,
     _do_click_by_label,
     _do_fill_by_label,
     _do_select_by_label,
@@ -185,7 +183,6 @@ from .apply import (
     _workday_resume_was_uploaded,
     _wait_for_application_ready,
     _attach_resume,
-    _COVER_LETTER_LABEL_RE,
     _attach_cover_letter,
     _finish_pending_upload_dialog,
     _auto_fill_application,
@@ -234,8 +231,6 @@ from .apply import (
     _fill_by_label_or_placeholder,
     _fill_contenteditable,
     _field_contains_text,
-    _fill_by_visible_label,
-    _looks_like_honeypot_context,
     _fill_location,
     _page_identity_warnings,
     _linkedin_modal,
@@ -253,6 +248,13 @@ from .apply import (
     _field_context,
     _click_radio_near_text,
     _filter_required_empty_fields,
+)
+from job_hunt.services.web.form_fill import (
+    _COVER_LETTER_LABEL_RE,
+    _SUBMIT_LABEL_RE,
+    _element_looks_like_submit,
+    _fill_by_visible_label,
+    _looks_like_honeypot_context,
 )
 from job_hunt.services.apply.agent_prompt import (
     _build_agent_apply_prompt,
