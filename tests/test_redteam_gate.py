@@ -40,6 +40,12 @@ def test_no_artifacts_is_a_no_op():
 def test_missing_mmx_is_unreviewed_and_reported(monkeypatch, tmp_path):
     artifact = tmp_path / "cv.md"
     artifact.write_text("# Yi Xin", encoding="utf-8")
+    # Patching PATH is not enough on its own: JOB_HUNT_REDTEAM_CMD short-circuits
+    # the mmx lookup, and any earlier test that called the real load_settings has
+    # already read .env into os.environ for the whole process. Without this the
+    # assertion below quietly starts passing for the wrong reason -- or worse,
+    # fires a real review against a real reviewer, on the operator's quota.
+    monkeypatch.delenv("JOB_HUNT_REDTEAM_CMD", raising=False)
     monkeypatch.setattr(svc.shutil, "which", lambda name: None)
     result = svc.run_review(artifacts=[artifact], jd_text="jd")
     assert result.verdict == "UNREVIEWED"
@@ -226,6 +232,7 @@ def test_draft_answers_alone_still_go_unreviewed_when_mmx_is_unreachable(monkeyp
     from job_hunt.nodes import redteam as redteam_module
 
     monkeypatch.setattr(artifact_paths_module, "_OUTPUT_DIR", tmp_path)
+    monkeypatch.delenv("JOB_HUNT_REDTEAM_CMD", raising=False)  # see the note above
     monkeypatch.setattr(svc.shutil, "which", lambda name: None)
 
     state = {
