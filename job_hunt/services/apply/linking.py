@@ -101,8 +101,6 @@ def _append_apply_review_event(*, artifact_dir: Path, event: str, screenshot: Pa
         handle.write(line + "\n")
 
 
-
-
 def _link_artifacts_to_row(pdf: Path | None, entry, url: str | None) -> Path | None:
     """Stamp the tracker row number into the directory the PDF came from.
 

@@ -103,10 +103,6 @@ def _tracker_entry_by_id(tracker: TrackerRepository, tracker_id: int | None):
     raise typer.Exit(1)
 
 
-
-
-
-
 def _report_low_score_verdict(verdict) -> None:
     """Say what the ethical-use gate decided, and act on it.
 
@@ -128,9 +124,6 @@ def _report_low_score_verdict(verdict) -> None:
         f"`--low-score-override` if you have a specific reason to apply anyway."
     )
     raise typer.Exit(1)
-
-
-
 
 
 @app.command("apply")
@@ -695,32 +688,6 @@ def apply_do(
         raise typer.Exit(1)
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 _BROWSER_PROFILE = Path("storage/browser-profile")
 _CDP_PORT = 9222
 
@@ -729,149 +696,6 @@ _CDP_PORT = 9222
 # JPEG at this quality is ~5-10x smaller than the old PNG and cheaper for the
 # agent to read, with no loss of legibility for form text.
 _SCREENSHOT_JPEG_QUALITY = 60
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 # ---------------------------------------------------------------------------
@@ -883,74 +707,3 @@ _SCREENSHOT_JPEG_QUALITY = 60
 # unit-tested via the dispatcher's AsyncMock harness rather than a real
 # browser. ADR-013 (LinkedIn Easy Apply) — see docs/design-notes.md.
 # ---------------------------------------------------------------------------
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

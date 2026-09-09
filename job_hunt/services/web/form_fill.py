@@ -22,7 +22,6 @@ class ApplyDoRefused(Exception):
     """A single apply-do operation could not be carried out as asked."""
 
 
-
 def _looks_like_submit_label(label: str) -> bool:
     return bool(_SUBMIT_LABEL_RE.search(label))
 
@@ -98,10 +97,6 @@ async def _do_click_by_label(page, label: str) -> bool:
         return True
     except Exception:
         return False
-
-
-
-
 
 
 async def _do_check_by_label(page, label: str) -> bool:
