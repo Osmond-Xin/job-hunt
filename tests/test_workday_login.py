@@ -12,9 +12,7 @@ import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
-import pytest
 
-from job_hunt.services.workday import login as login_module
 from job_hunt.services.workday.login import (
     _read_and_consume_password,
     maybe_login,

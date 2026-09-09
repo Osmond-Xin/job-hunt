@@ -90,7 +90,7 @@ async def tailor_cv(state: JobHuntState, config: RunnableConfig) -> dict:
     if not audited.content:
         return {"errors": audited.errors}
     warnings = (
-        [f"tailored CV is UNVERIFIED (auditor unavailable)"]
+        ["tailored CV is UNVERIFIED (auditor unavailable)"]
         if audited.status == "unavailable"
         else []
     )

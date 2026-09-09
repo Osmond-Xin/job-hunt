@@ -16,7 +16,6 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
-import pytest
 
 from job_hunt.cli import _enter_application_form
 

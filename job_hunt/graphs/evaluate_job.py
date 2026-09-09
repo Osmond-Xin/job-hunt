@@ -37,7 +37,7 @@ from typing import Literal
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 
-from job_hunt.models.state import JobHuntState, letter_only
+from job_hunt.models.state import JobHuntState
 from job_hunt.nodes.classify import classify_archetype
 from job_hunt.nodes.redteam import redteam_review
 from job_hunt.nodes.context import load_context

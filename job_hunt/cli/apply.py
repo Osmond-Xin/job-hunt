@@ -10,20 +10,18 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 import typer
-import yaml
-from job_hunt.config.models import Settings, load_settings
+from job_hunt.config.models import load_settings
 from job_hunt.graphs.evaluate_job import build_evaluate_job_graph
 from job_hunt.models.events import ApplicationEvent
 from job_hunt.repositories.tracker_repo import TrackerRepository
 from job_hunt.repositories.email_event_repo import EmailEventRepository
-from job_hunt.services.activity import ActivityEvent, ActivityLogger, read_activity
+from job_hunt.services.activity import ActivityEvent, ActivityLogger
 from job_hunt.services.employer_match import EmployerMatcher, MATCH_THRESHOLD
 from job_hunt.services.profile_loader import (
     workday_education_entries as _load_workday_education_entries,
     workday_experience_entries as _load_workday_experience_entries,
 )
 from job_hunt.services.web import apply_ipc, apply_ops, apply_run_log, page_summary
-from job_hunt.services.web_extract import extract_url_text
 from job_hunt.services.workday.employer_config import (
     select_employer_config as _select_workday_employer_config,
 )
@@ -40,7 +38,6 @@ from job_hunt.services.workday.review_gate import (
     detect_review_issues,
     issues_to_payload,
     review_needs_repair as _workday_review_needs_repair_from_module,
-    review_validation_messages as _workday_review_validation_messages,
 )
 
 from ._render import _short, console
@@ -1288,7 +1285,7 @@ async def _open_apply_page(
                 art_dir, "session.started", url=url, company=company, role=role,
                 pdf=str(pdf) if pdf else None,
             )
-            console.print(f"\n[yellow]Browser open — review and submit manually.[/yellow]")
+            console.print("\n[yellow]Browser open — review and submit manually.[/yellow]")
             console.print(f"Sentinel dir: {art_dir}")
             console.print("Commands: apply-replace-pdf <pdf>  |  Tell Claude 'submitted' when done.")
 
@@ -2317,7 +2314,11 @@ async def _fill_workday_current_step(
     if "myworkdayjobs.com" not in page.url:
         return [], [], []
     try:
-        text = await page.locator("body").inner_text(timeout=3000)
+        # Readability probe, not a value: a body that will not yield its text
+        # inside 3s is a page still rendering, and stepping it would act on a
+        # half-built form. The text itself is unused -- `_workday_current_step`
+        # re-reads what it needs.
+        await page.locator("body").inner_text(timeout=3000)
     except Exception:
         return [], [], []
     current_step = await _workday_current_step(page)

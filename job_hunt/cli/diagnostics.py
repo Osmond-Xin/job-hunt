@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import typer
 from rich.table import Table
-from job_hunt.config.models import Settings, load_settings
+from job_hunt.config.models import load_settings
 from job_hunt.services.activity import ActivityEvent, ActivityLogger, read_activity
 from job_hunt.services.llm.base import ChatMessage
 from job_hunt.services.llm.factory import build_cheap_provider
@@ -219,7 +219,6 @@ def proxy_check(
     # 2. Does the guarded host actually come back with content through it?
     if not _is_proxy_only_host(url):
         console.print(f"[dim]{url} is not a proxy-only host; fetching it directly.[/dim]")
-    from job_hunt.services.web_extract import extract_url_text
 
     try:
         result = asyncio.run(extract_url_text(url, min_chars=200))

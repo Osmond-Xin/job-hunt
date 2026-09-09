@@ -7,7 +7,7 @@ shorten it. Losing a posting is the expensive error.
 
 from __future__ import annotations
 
-from job_hunt.services.screen import Screened, build_prompt, parse_response, screen
+from job_hunt.services.screen import build_prompt, parse_response, screen
 
 ROWS = [
     ("Government of Manitoba", "Data Engineer", "Winnipeg MB"),

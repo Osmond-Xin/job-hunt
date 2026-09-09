@@ -46,3 +46,9 @@ job-hunt = "job_hunt.cli:app"
 line-length = 100
 target-version = "py311"
 
+[tool.ruff.lint.per-file-ignores]
+# The command modules are imported for their @app.command() side effects, which
+# cannot happen before `app` exists -- so those imports sit below the Typer app
+# construction on purpose and E402 is structural here, not sloppiness.
+"job_hunt/cli/__init__.py" = ["E402"]
+

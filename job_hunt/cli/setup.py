@@ -241,8 +241,8 @@ def onboarding_init(
         _import_resume_file(resume)
     elif not Path("profile/cv.md").exists():
         Path("profile/cv.md").write_text(
-            f"# Resume\n\nPaste your resume here, or run:\n\n"
-            f"```bash\n.venv/bin/job-hunt import-resume '<resume.pdf-or-md>'\n```\n",
+            "# Resume\n\nPaste your resume here, or run:\n\n"
+            "```bash\n.venv/bin/job-hunt import-resume '<resume.pdf-or-md>'\n```\n",
             encoding="utf-8",
         )
         console.print("[green]Created[/green] profile/cv.md placeholder")
@@ -398,7 +398,7 @@ def config_set_mode(
     profile_path = Path("profile/profile.yml")
     if not profile_path.exists():
         console.print(
-            f"[red]profile/profile.yml not found.[/red] Run `job-hunt init` or "
+            "[red]profile/profile.yml not found.[/red] Run `job-hunt init` or "
             "copy config/profile.example.yml first."
         )
         raise typer.Exit(2)

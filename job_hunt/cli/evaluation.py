@@ -8,12 +8,16 @@ import uuid
 from pathlib import Path
 import typer
 from rich.table import Table
-from job_hunt.config.models import Settings, load_settings
+from job_hunt.config.models import load_settings
 from job_hunt.graphs.evaluate_job import build_evaluate_job_graph
-from job_hunt.services.llm.call import LLM_FAILURE_MARKER
+# These five are unused here and load-bearing anyway: `cli/__init__.py` imports
+# them off this module to re-export them, so deleting them as "unused" breaks
+# `from job_hunt.cli import LLM_FAILURE_MARKER` and the four ledger helpers.
+# `ruff --fix` did exactly that on 2026-09-09; the noqa is what stops it.
+from job_hunt.services.llm.call import LLM_FAILURE_MARKER  # noqa: F401
 from job_hunt.services.batch import run_batch
 from job_hunt.services.llm.local_command import wants_json as provider_wants_json
-from job_hunt.services.usage_ledger import (
+from job_hunt.services.usage_ledger import (  # noqa: F401
     _ledger_cost_since,
     _ledger_line_count,
     _ledger_path,

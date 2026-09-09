@@ -7,7 +7,7 @@ from pathlib import Path
 import yaml
 
 from job_hunt.services import scan as scan_module
-from job_hunt.services.scan import ScannedJob, scan_portals, scan_via_websearch
+from job_hunt.services.scan import scan_portals, scan_via_websearch
 from job_hunt.services.web_search import SearchHit
 
 

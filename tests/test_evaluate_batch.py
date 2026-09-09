@@ -212,7 +212,7 @@ def test_batch_rejects_a_budget_it_cannot_measure(tmp_path, monkeypatch) -> None
 
     monkeypatch.setattr(cli.evaluation, "load_settings", lambda: _Settings())
     monkeypatch.setenv("JOB_HUNT_SKIP_CV_SYNC_CHECK", "1")
-    monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/bin/claude")
+    monkeypatch.setattr(cli.evaluation.shutil, "which", lambda name: "/usr/bin/claude")
     targets = _write_targets(tmp_path, "https://example.com/1\n")
     result = runner.invoke(app, ["evaluate-batch", str(targets), "--max-cost", "5"])
     assert result.exit_code == 1
@@ -267,7 +267,7 @@ def test_budget_preflight_uses_the_providers_own_json_detection(monkeypatch) -> 
     supported `--output-format=json` spelling contains no bare "json" token.
     """
     monkeypatch.setenv("JOB_HUNT_SKIP_CV_SYNC_CHECK", "1")
-    monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/bin/claude")
+    monkeypatch.setattr(cli.evaluation.shutil, "which", lambda name: "/usr/bin/claude")
 
     monkeypatch.setattr(
         cli.evaluation, "load_settings", lambda: _stub_settings(command=["claude", "-p", "json"])
@@ -285,7 +285,7 @@ def test_budget_preflight_uses_the_providers_own_json_detection(monkeypatch) -> 
 
 def test_budget_preflight_requires_the_ledger(monkeypatch) -> None:
     monkeypatch.setenv("JOB_HUNT_SKIP_CV_SYNC_CHECK", "1")
-    monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/bin/claude")
+    monkeypatch.setattr(cli.evaluation.shutil, "which", lambda name: "/usr/bin/claude")
     monkeypatch.setattr(cli.evaluation, "load_settings", lambda: _stub_settings(ledger_enabled=False))
     with pytest.raises(typer.Exit):
         _REAL_PREFLIGHT(budget_enforced=True)

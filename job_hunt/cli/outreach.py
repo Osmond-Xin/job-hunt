@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import re
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 import typer
 from rich.table import Table
-from job_hunt.config.models import Settings, load_settings
+from job_hunt.config.models import load_settings
 from job_hunt.services.llm.base import ChatMessage
 from job_hunt.services.llm.factory import build_cheap_provider
 from job_hunt.services.llm.traced import traced_chat

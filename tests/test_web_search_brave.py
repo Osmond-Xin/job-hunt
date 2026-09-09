@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 
 import httpx
 import pytest
@@ -10,7 +9,6 @@ import pytest
 from job_hunt.config.models import Settings, WebSearchConfig
 from job_hunt.services.web_search import (
     BraveProvider,
-    SearchHit,
     _parse_brave_response,
     build_web_search_provider,
 )

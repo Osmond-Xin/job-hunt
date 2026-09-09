@@ -12,9 +12,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-import pytest
 
-from job_hunt.services.scan import ScannedJob, scan_discovery_channels
+from job_hunt.services.scan import scan_discovery_channels
 from job_hunt.services.web_search import SearchHit
 
 

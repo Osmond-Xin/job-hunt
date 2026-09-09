@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import typer
 from rich.table import Table
-from job_hunt.config.models import Settings, load_settings
+from job_hunt.config.models import load_settings
 from job_hunt.repositories.tracker_repo import TrackerRepository
 from job_hunt.services.scan import scan_portals
 

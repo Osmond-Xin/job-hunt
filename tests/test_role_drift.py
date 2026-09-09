@@ -6,7 +6,6 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 from job_hunt.services.role_drift import (
-    RoleDriftFinding,
     detect_role_drift,
     extract_page_role,
 )

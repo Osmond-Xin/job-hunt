@@ -1,16 +1,14 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
 import filelock
 
-from job_hunt.models.review import ReviewItem
-from job_hunt.repositories.email_decision_repo import EmailDecisionRepository, EmailEventDecision
+from job_hunt.repositories.email_decision_repo import EmailDecisionRepository
 from job_hunt.repositories.jsonl_log import JsonlLog
 from job_hunt.repositories.review_repo import ReviewRepository
-from job_hunt.services.activity import ActivityEvent, activity_malformed, read_activity
+from job_hunt.services.activity import activity_malformed, read_activity
 from job_hunt.services.outreach import Contact, OutreachEvent, add_contact, add_event, list_contacts, list_events, malformed_contacts, malformed_events, update_event
 
 

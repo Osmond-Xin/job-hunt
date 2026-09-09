@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 
 from job_hunt.repositories.tracker_repo import TRACKER_HEADER, TrackerEntry
 from job_hunt.services import tracker_ops

@@ -3,10 +3,10 @@ from __future__ import annotations
 import asyncio
 import typer
 from rich.table import Table
-from job_hunt.config.models import Settings, load_settings
+from job_hunt.config.models import load_settings
 from job_hunt.repositories.email_event_repo import EmailEventRepository
 from job_hunt.repositories.review_repo import ReviewRepository
-from job_hunt.services.activity import ActivityEvent, ActivityLogger, read_activity
+from job_hunt.services.activity import ActivityEvent, ActivityLogger
 from job_hunt.services.email.message_parser import ParsedEmail, classify_email_event
 from job_hunt.services.email.poller import poll_gmail
 from job_hunt.services.email.reconcile import reconcile_email_events
@@ -97,7 +97,7 @@ def email_summarize(
     console.print(f"Summarized now: {result.summarized}")
     console.print(f"Errors: {result.errors}")
     if result.error_ids:
-        console.print(f"[yellow]Retry errors by re-running the same command (resumable).[/yellow]")
+        console.print("[yellow]Retry errors by re-running the same command (resumable).[/yellow]")
 
 
 def _warn_malformed_events(repo: EmailEventRepository) -> None:
