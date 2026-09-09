@@ -32,7 +32,12 @@ from job_hunt.services.apply.reporting import _report_fit_warnings
 from job_hunt.services.profile_loader import _apply_profile_values
 from job_hunt.services.text import _short
 from job_hunt.services.web import apply_ipc, apply_ops, apply_run_log, page_summary, submit_gate
-from job_hunt.services.web.ats_contract import ApplyContext, Blocker
+from job_hunt.services.web.ats_contract import (
+    OUTCOME_BLOCKED,
+    OUTCOME_LOGIN_REQUIRED,
+    ApplyContext,
+    AtsResult,
+)
 from job_hunt.services.web import ats_registry
 from job_hunt.services.web.form_fill import (
     ApplyDoRefused,
@@ -54,26 +59,20 @@ from job_hunt.services.web.form_fill import (
     _wait_for_application_ready,
 )
 from job_hunt.services.web.reporter import NullReporter, Reporter
-from job_hunt.services.linkedin.page_helpers import _maybe_linkedin_easy_apply
 from job_hunt.services.workday.detect import is_workday_page
 from job_hunt.services.workday.required_empty import (
-    filter_non_blocking_workday_skips as _filter_non_blocking_workday_skips,
     filter_required_empty_fields as _filter_required_empty_fields,
 )
 from job_hunt.services.workday.steps import (
-    _collect_workday_review_issues,
     _fill_workday_current_step,
     _workday_current_step,
     _do_fill_by_label,
     _do_select_by_label,
     _maybe_workday_login,
     _recover_workday_error_page,
-    _workday_advance_all_steps,
-    _workday_resume_was_uploaded,
 )
 
 _BROWSER_PROFILE = Path("storage/browser-profile")
-_CDP_PORT = 9222
 
 # Session screenshots are agent/user evidence, not print material: full-page
 # JPEG at this quality is ~5-10x smaller than the old PNG and cheaper for the
@@ -356,38 +355,37 @@ async def _handle_refill_current_page(
     sentinel-driven and command-driven entry points share one implementation.
     Returns the latest screenshot path so the caller can update its cursor.
     """
-    filled, skipped, answers = await _auto_fill_application(
-        page, company=company, role=role, report_context=report_context,
+    # Through the same driver the first fill went through. This used to be a
+    # second hand-written copy of that flow -- its own comment said "Same
+    # Workday upload-detection logic as `_open_apply_page`" -- which is two
+    # implementations of one thing, and the one nobody was watching would drift.
+    ctx = _apply_ctx(
+        company=company, role=role, pdf=pdf, cover_letter_pdf=None,
+        artifact_dir=art_dir, report_context=report_context,
     )
-    attached = False
-    if pdf and not is_workday_page(page):
-        attached = await _attach_resume(page, pdf)
-        if attached:
-            await page.wait_for_timeout(1500)
+    driver = await ats_registry.driver_for(page)
+    if driver is not None:
+        result = await driver.fill(page, ctx)
+        filled, skipped, answers = list(result.filled), list(result.skipped), list(result.answers)
+        required_empty = list(result.required_empty)
+        refill_validation_issues = list(result.blockers)
+        attached = bool(result.uploads)
+        if attached and pdf and not (art_dir / pdf.name).exists():
             shutil.copy2(pdf, art_dir / pdf.name)
-    adv_filled, adv_skipped, adv_answers = await _workday_advance_all_steps(
-        page, _apply_profile_values(), pdf=pdf,
-        company=company, role=role, report_context=report_context,
-        artifact_dir=art_dir,
-    )
-    filled.extend(adv_filled)
-    skipped.extend(adv_skipped)
-    answers.extend(adv_answers)
-    skipped = _filter_non_blocking_workday_skips(skipped)
-
-    # Same Workday upload-detection logic as `_open_apply_page`: surface
-    # `attached=True` when the PDF filename is visible on the page so the
-    # refilled apply-review.json shows the resume rather than null.
-    if pdf and not attached and await _workday_resume_was_uploaded(page, pdf):
-        attached = True
-        if not (art_dir / pdf.name).exists():
-            shutil.copy2(pdf, art_dir / pdf.name)
-    required_empty = await _required_empty_fields(page)
-    required_empty = _filter_required_empty_fields(required_empty, filled)
-    refill_validation_issues = (
-        await _collect_workday_review_issues(page)
-        if is_workday_page(page) else []
-    )
+    else:
+        filled, skipped, answers = await _auto_fill_application(
+            page, company=company, role=role, report_context=report_context,
+        )
+        attached = False
+        if pdf:
+            attached = await _attach_resume(page, pdf)
+            if attached:
+                await page.wait_for_timeout(1500)
+                shutil.copy2(pdf, art_dir / pdf.name)
+        required_empty = _filter_required_empty_fields(
+            await _required_empty_fields(page), filled
+        )
+        refill_validation_issues = []
     labels = await page.locator("button, a[role=button], input[type=submit]").all_inner_texts()
     actions = [_short(label.strip(), 80) for label in labels if label.strip()]
     last_screenshot = await _save_session_screenshot(page, art_dir, "apply-review")
@@ -444,6 +442,12 @@ async def _open_apply_page(
     *,
     reporter: Reporter,
     confirm_submitted=lambda prompt: False,
+    # The three keys, already weighed by the caller. Defaulting to a
+    # refusal rather than an approval: a caller that forgets to pass it
+    # should get no auto-submit, not an unauthorised one.
+    authorisation=submit_gate.GateDecision(
+        allowed=False, reason=submit_gate.REASON_NOT_REQUESTED
+    ),
     pdf: Path | None,
     headless: bool,
     auto_fill: bool,
@@ -464,13 +468,10 @@ async def _open_apply_page(
     for lock in ("SingletonLock", "SingletonCookie", "SingletonSocket"):
         (_BROWSER_PROFILE / lock).unlink(missing_ok=True)
 
-    cdp_args: list[str] = []
-
     async with async_playwright() as pw:
         context = await pw.chromium.launch_persistent_context(
             user_data_dir=str(_BROWSER_PROFILE),
             headless=headless,
-            args=cdp_args,
         )
         page = context.pages[0] if context.pages else await context.new_page()
         await page.goto(url, wait_until="domcontentloaded", timeout=45000)
@@ -508,86 +509,44 @@ async def _open_apply_page(
         validation_issues = []
         actions: list[str] = []
         auto_submit_clicked = False
-        linkedin_handled = False
 
-        from job_hunt.services.linkedin.easy_apply import (
-            OUTCOME_LOGIN_REQUIRED,
-            OUTCOME_MODAL_NOT_OPENED,
-            OUTCOME_NOT_EASY_APPLY,
-            OUTCOME_SUBMITTED,
-        )
-
-        linkedin_result = await _maybe_linkedin_easy_apply(
-            page,
-            pdf=pdf,
-            company=company,
-            role=role,
+        # --- Fill, through whichever driver owns this page ------------------
+        # This is the sequence the contract exists for. It used to be two
+        # hand-rolled flows -- an inline LinkedIn branch and an inline Workday
+        # one -- with the driver reached only to submit. A third ATS would then
+        # have been submitted without ever being filled.
+        ctx = _apply_ctx(
+            company=company, role=role, pdf=pdf,
+            cover_letter_pdf=cover_letter_pdf, artifact_dir=art_dir,
             report_context=report_context,
-            auto_submit=auto_submit,
-            artifact_dir=art_dir,
         )
-        if linkedin_result is not None and linkedin_result.outcome not in (
-            OUTCOME_NOT_EASY_APPLY,
-            OUTCOME_MODAL_NOT_OPENED,
-        ):
-            linkedin_handled = True
-            filled.extend(linkedin_result.filled)
-            skipped.extend(linkedin_result.skipped)
-            answers.extend(linkedin_result.answers)
-            required_empty = list(linkedin_result.required_empty)
-            attached = pdf is not None and any(
-                "LinkedIn Resume:" in item for item in linkedin_result.filled
-            )
+        driver = await ats_registry.driver_for(page)
+        result: AtsResult | None = None
+        if driver is not None:
+            result = await driver.fill(page, ctx)
+            if result.outcome == OUTCOME_BLOCKED:
+                # The driver recognised the host but not this page -- a LinkedIn
+                # posting that redirects to an employer form, say. Fall through
+                # to the generic path rather than treating it as a failure.
+                driver, result = None, None
+
+        if result is not None:
+            filled = list(result.filled)
+            skipped = list(result.skipped)
+            answers = list(result.answers)
+            required_empty = list(result.required_empty)
+            validation_issues = list(result.blockers)
+            attached = bool(result.uploads)
             if attached and pdf and not (art_dir / pdf.name).exists():
                 shutil.copy2(pdf, art_dir / pdf.name)
-            auto_submit_clicked = linkedin_result.submitted
-            if linkedin_result.outcome == OUTCOME_LOGIN_REQUIRED:
-                reporter.info(
-                    "[red]LinkedIn session is not signed in.[/red] "
+            if result.outcome == OUTCOME_LOGIN_REQUIRED:
+                reporter.error(
+                    f"{driver.name} session is not signed in. "
                     "Open the persistent browser profile, sign in, then re-run."
                 )
-            elif auto_submit_clicked:
-                apply_run_log.emit(
-                    art_dir, "auto_submit.fired",
-                    url=page.url, platform="linkedin",
-                )
-                reporter.info(
-                    "[green]Auto-submit clicked.[/green] Waiting for confirmation page…"
-                )
-                try:
-                    await page.wait_for_load_state("domcontentloaded", timeout=30000)
-                except Exception:
-                    pass
-                await page.wait_for_timeout(3000)
-                apply_run_log.emit(
-                    art_dir, "auto_submit.confirmed",
-                    url=page.url, platform="linkedin",
-                )
-            elif auto_submit:
-                # LinkedIn driver applied the gates itself; surface the reason
-                # so the user can see what blocked the click.
-                if required_empty:
-                    apply_run_log.emit(
-                        art_dir, "auto_submit.gated",
-                        reason="required_empty_fields",
-                        platform="linkedin",
-                        fields=required_empty[:10],
-                    )
-                    reporter.info(
-                        f"[yellow]Auto-submit skipped: {len(required_empty)} required field(s) "
-                        f"still empty on LinkedIn Review.[/yellow]"
-                    )
-                elif linkedin_result.outcome != OUTCOME_SUBMITTED:
-                    apply_run_log.emit(
-                        art_dir, "auto_submit.gated",
-                        reason="linkedin_review_not_reached",
-                        outcome=linkedin_result.outcome,
-                        platform="linkedin",
-                    )
-
-        if not linkedin_handled:
-            # Auto-fill text fields first so React components finish mounting,
-            # then attach the PDF so file upload state is set on a stable form.
+        else:
+            # No driver owns this page. Fill what can be filled generically and
+            # let the operator take it from there; nothing here can submit.
             if auto_fill:
                 filled, skipped, answers = await _auto_fill_application(
                     page,
@@ -597,75 +556,38 @@ async def _open_apply_page(
                     reporter=reporter,
                 )
 
-            if pdf and not is_workday_page(page):
+            if pdf:
                 attached = await _attach_resume(page, pdf)
                 if attached:
                     await page.wait_for_timeout(2000)
                     if not (art_dir / pdf.name).exists():
                         shutil.copy2(pdf, art_dir / pdf.name)
 
-            if cover_letter_pdf and not is_workday_page(page):
+            if cover_letter_pdf:
                 cover_letter_attached = await _attach_cover_letter(page, cover_letter_pdf)
                 if cover_letter_attached:
                     await page.wait_for_timeout(1500)
                     if not (art_dir / cover_letter_pdf.name).exists():
                         shutil.copy2(cover_letter_pdf, art_dir / cover_letter_pdf.name)
 
-            # Advance through all remaining Workday steps (My Experience → Application Questions
-            # → Voluntary Disclosures) stopping at Review so the user submits manually.
-            adv_filled, adv_skipped, adv_answers = await _workday_advance_all_steps(
-                page, _apply_profile_values(), pdf=pdf,
-                company=company, role=role, report_context=report_context,
-                artifact_dir=art_dir,
+            required_empty = _filter_required_empty_fields(
+                await _required_empty_fields(page), filled
             )
-            filled.extend(adv_filled)
-            skipped.extend(adv_skipped)
-            answers.extend(adv_answers)
-            skipped = _filter_non_blocking_workday_skips(skipped)
 
-            # Workday uploads the resume inside the My Experience step (not via the
-            # earlier `_attach_resume` call), so the original ``attached`` flag is
-            # always False for Workday flows. Verify the PDF actually landed on the
-            # page before claiming success, then mirror it into the artifact dir so
-            # `apply-review.json["pdf"]` is accurate.
-            if pdf and not attached and await _workday_resume_was_uploaded(page, pdf):
-                attached = True
-                if not (art_dir / pdf.name).exists():
-                    shutil.copy2(pdf, art_dir / pdf.name)
+        labels = await page.locator("button, a[role=button], input[type=submit]").all_inner_texts()
+        actions = [_short(label.strip(), 80) for label in labels if label.strip()]
 
-            labels = await page.locator("button, a[role=button], input[type=submit]").all_inner_texts()
-            actions = [_short(label.strip(), 80) for label in labels if label.strip()]
-            required_empty = await _required_empty_fields(page)
-            required_empty = _filter_required_empty_fields(required_empty, filled)
-            validation_issues = await _collect_workday_review_issues(page) if is_workday_page(page) else []
-
-        # --- Auto-submit (Phase 4 — gated) ----------------------------------
-        # Only fires when ALL of the following are true:
-        #  - caller passed auto_submit=True (CLI flag + profile.yml gate already
-        #    AND-ed by apply_assist before we got here)
-        #  - URL is a Workday host (the only ATS where we have a structured
-        #    Review gate; other sites stay manual until they have one too)
-        #  - validation_issues is empty (Review-gate clean)
-        #  - required_empty is empty (no required field still missing)
-        # When any gate fails we leave the page exactly as-is for manual review.
-        # LinkedIn Easy Apply runs its own gate above; do not re-enter the
-        # Workday-specific branches when the LinkedIn driver handled the page.
-        if auto_submit and not linkedin_handled:
-            # One gate, in services/web/submit_gate.py. This used to be an
-            # if-chain here for Workday and a second one inside the LinkedIn
-            # flow; the two could disagree, and only one of them was tested.
-            # `authorised` is already true to be in this branch at all -- the
-            # three keys were weighed in apply_assist -- so what is left is
-            # whether the form itself is ready.
-            driver = await ats_registry.driver_for(page)
+        # --- Auto-submit, through the one gate ------------------------------
+        # Whether the operator authorised this at all was settled before the
+        # browser opened -- three keys, in submit_gate.authorised -- and arrives
+        # as `authorisation`. What is decided here is only whether the form is
+        # ready, and the driver that filled it is the one asked to submit it.
+        if auto_submit:
             decision = submit_gate.may_submit(
-                authorisation=submit_gate.GateDecision(allowed=True),
+                authorisation=authorisation,
                 driver_name=driver.name if driver else None,
                 required_empty=list(required_empty),
-                blockers=[
-                    Blocker(code=i.code, message=i.message, details=dict(i.details))
-                    for i in validation_issues
-                ],
+                blockers=list(validation_issues),
                 unresolved_attempt=apply_run_log.unresolved_submit_attempt(art_dir),
             )
             if not decision.allowed:
@@ -673,8 +595,8 @@ async def _open_apply_page(
                     art_dir, decision.event, reason=decision.reason,
                     **(decision.detail or {}),
                 )
-                reporter.info(
-                    f"[yellow]Auto-submit skipped:[/yellow] "
+                reporter.warn(
+                    f"Auto-submit skipped: "
                     f"{_gate_reason_text(decision, required_empty, validation_issues)}"
                 )
             else:
@@ -683,11 +605,7 @@ async def _open_apply_page(
                 # happened, or the next run has no way to know not to repeat it.
                 apply_run_log.emit(art_dir, "submit.attempted", url=page.url,
                                    driver=driver.name)
-                outcome = await driver.submit(page, _apply_ctx(
-                    company=company, role=role, pdf=pdf,
-                    cover_letter_pdf=cover_letter_pdf, artifact_dir=art_dir,
-                    report_context=report_context,
-                ))
+                outcome = await driver.submit(page, ctx)
                 apply_run_log.emit(
                     art_dir, "submit.resolved", state=outcome.state,
                     evidence=_short(outcome.evidence, 200), driver=driver.name,
@@ -702,21 +620,21 @@ async def _open_apply_page(
                     # do not offer to retry: a duplicate application to a real
                     # employer is worse than a missing tracker row, and only a
                     # person can tell which happened.
-                    reporter.info(
-                        "[red]Submit clicked but not confirmed.[/red] "
+                    reporter.error(
+                    "Submit clicked but not confirmed. "
                         f"{outcome.evidence}\n"
                         f"Check the page yourself before re-running — this run is "
                         f"recorded as unresolved in {art_dir}, and the next "
                         f"auto-submit for it will refuse until you clear it."
-                    )
+                )
                 else:
                     apply_run_log.emit(
                         art_dir, "auto_submit.gated", reason="submit_rejected",
                         detail=_short(outcome.evidence, 200),
                     )
-                    reporter.info(
-                        f"[yellow]Auto-submit skipped:[/yellow] {outcome.evidence}"
-                    )
+                    reporter.warn(
+                    f"Auto-submit skipped: {outcome.evidence}"
+                )
 
         screenshot = await _save_session_screenshot(page, art_dir, "apply-review")
         if required_empty or validation_issues:
@@ -822,10 +740,10 @@ async def _open_apply_page(
                 if now - last_activity_at > apply_ipc.IDLE_TIMEOUT_SECONDS:
                     apply_run_log.emit(art_dir, "session.idle_exit",
                                        idle_seconds=int(now - last_activity_at))
-                    reporter.info(
-                        f"[yellow]Idle timeout reached after "
-                        f"{apply_ipc.IDLE_TIMEOUT_SECONDS // 60} min — closing fill-only loop.[/yellow]"
-                    )
+                    reporter.warn(
+                    f"Idle timeout reached after "
+                        f"{apply_ipc.IDLE_TIMEOUT_SECONDS // 60} min — closing fill-only loop."
+                )
                     break
                 # Heartbeat refresh.
                 if now - last_heartbeat_at >= apply_ipc.HEARTBEAT_REFRESH_SECONDS:
@@ -848,9 +766,9 @@ async def _open_apply_page(
                             art_dir, "command.rejected",
                             kind=cmd.kind, reason="bad_session_token",
                         )
-                        reporter.info(
-                            f"[red]Rejected command '{cmd.kind}': session token mismatch.[/red]"
-                        )
+                        reporter.error(
+                    f"Rejected command '{cmd.kind}': session token mismatch."
+                )
                         try:
                             apply_ipc.write_response(
                                 art_dir, cmd.id,
@@ -962,10 +880,10 @@ async def _open_apply_page(
                                     + ("ok" if do_result.get("ok") else f"failed ({do_result.get('detail') or 'no match'})")
                                 ),
                             )
-                            reporter.info(
-                                f"[green]apply-do handled:[/green] {do_result.get('op')} '{do_result.get('label')}'"
-                                if do_result.get("ok")
-                                else f"[red]apply-do failed:[/red] {do_result.get('op')} '{do_result.get('label')}'"
+                            say = reporter.good if do_result.get("ok") else reporter.error
+                            say(
+                                f"apply-do {'handled' if do_result.get('ok') else 'failed'}: "
+                                f"{do_result.get('op')} '{do_result.get('label')}'"
                             )
                         except Exception as exc:
                             apply_run_log.emit(

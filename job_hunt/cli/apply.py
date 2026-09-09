@@ -249,6 +249,7 @@ def apply_assist(
                 url,
                 reporter=RichReporter(),
                 confirm_submitted=lambda prompt: typer.confirm(prompt, default=False),
+                authorisation=authorisation,
                 pdf=pdf,
                 cover_letter_pdf=cover_letter_pdf,
                 headless=headless,
@@ -689,7 +690,6 @@ def apply_do(
 
 
 _BROWSER_PROFILE = Path("storage/browser-profile")
-_CDP_PORT = 9222
 
 
 # Session screenshots are agent/user evidence, not print material: full-page

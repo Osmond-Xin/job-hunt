@@ -17,6 +17,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from job_hunt.services.workday.detect import is_workday_page
+
 
 class ApplyDoRefused(Exception):
     """A single apply-do operation could not be carried out as asked."""
@@ -576,7 +578,11 @@ async def _wait_for_application_ready(page) -> None:
 async def _attach_resume(page, pdf: Path) -> bool:
     try:
         text = await page.locator("body").inner_text(timeout=3000)
-        if pdf.name in text or ("myworkdayjobs.com" in page.url and "Successfully Uploaded" in text and "Resume/CV" in text):
+        if pdf.name in text or (
+            is_workday_page(page)
+            and "Successfully Uploaded" in text
+            and "Resume/CV" in text
+        ):
             return True
     except Exception:
         pass
