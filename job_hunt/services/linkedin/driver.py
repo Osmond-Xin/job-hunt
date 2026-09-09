@@ -19,14 +19,17 @@ from job_hunt.services.linkedin.easy_apply import (
     OUTCOME_LOGIN_REQUIRED as _EA_LOGIN_REQUIRED,
     OUTCOME_MODAL_NOT_OPENED as _EA_MODAL_NOT_OPENED,
     OUTCOME_NOT_EASY_APPLY as _EA_NOT_EASY_APPLY,
+    OUTCOME_REACHED_REVIEW as _EA_REACHED_REVIEW,
 )
 from job_hunt.services.linkedin.page_helpers import (
     _linkedin_click_by_name,
     _maybe_linkedin_easy_apply,
 )
+from job_hunt.services.web.submit_confirm import confirm_submission
 from job_hunt.services.web.ats_contract import (
     OUTCOME_BLOCKED,
     OUTCOME_FILLED,
+    OUTCOME_INCOMPLETE,
     OUTCOME_LOGIN_REQUIRED,
     ApplyContext,
     AtsResult,
@@ -66,11 +69,16 @@ class LinkedInDriver:
             # Not ours, or the modal never opened -- in both cases the generic
             # flow should get the page, so this is not a failure to report.
             return AtsResult(outcome=OUTCOME_BLOCKED)
-        outcome = (
-            OUTCOME_LOGIN_REQUIRED
-            if raw.outcome == _EA_LOGIN_REQUIRED
-            else OUTCOME_FILLED
-        )
+        # Only "reached review" is FILLED. `stuck` used to land here as FILLED
+        # too, which told the gate a flow that never got to Review was finished
+        # -- and a stalled flow reports no required fields, because it never
+        # saw the page that lists them. Found by review on 2026-09-09.
+        if raw.outcome == _EA_LOGIN_REQUIRED:
+            outcome = OUTCOME_LOGIN_REQUIRED
+        elif raw.outcome == _EA_REACHED_REVIEW:
+            outcome = OUTCOME_FILLED
+        else:
+            outcome = OUTCOME_INCOMPLETE
         return AtsResult(
             outcome=outcome,
             filled=list(raw.filled),
@@ -90,17 +98,12 @@ class LinkedInDriver:
         try:
             clicked = await _linkedin_click_by_name(page, "Submit application")
         except Exception as exc:
-            return SubmitOutcome(state="rejected", evidence=f"click raised: {exc}")
+            # See the note in the Workday driver: a raise is not proof the
+            # click did not land, so it is unknown rather than rejected.
+            return SubmitOutcome(state="unknown", evidence=f"click raised: {exc}")
         if not clicked:
             return SubmitOutcome(
                 state="rejected",
                 evidence="Submit application button not found on the Review step",
             )
-        try:
-            await page.wait_for_load_state("domcontentloaded", timeout=30000)
-        except Exception:
-            return SubmitOutcome(
-                state="unknown",
-                evidence="clicked Submit; no confirmation load within 30s",
-            )
-        return SubmitOutcome(state="confirmed", evidence=getattr(page, "url", "") or "")
+        return await confirm_submission(page)

@@ -21,6 +21,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from job_hunt.services.web.ats_contract import OUTCOME_FILLED, READY_OUTCOMES
+
 # Not authorised -- the operator did not ask for this, or this machine/mode is
 # not set up for it. Emitted as `auto_submit.bypassed`.
 REASON_NOT_REQUESTED = "not_requested"
@@ -29,6 +31,7 @@ REASON_STUDENT_MODE = "student_mode"
 
 # Authorised, but the application is not ready. Emitted as `auto_submit.gated`.
 REASON_NO_DRIVER = "no_driver"
+REASON_NOT_AT_REVIEW = "not_at_review"
 REASON_REVIEW_ISSUES = "review_validation_issues"
 REASON_REQUIRED_EMPTY = "required_empty_fields"
 REASON_UNRESOLVED_ATTEMPT = "unresolved_previous_attempt"
@@ -75,6 +78,7 @@ def may_submit(
     driver_name: str | None,
     required_empty: list[str],
     blockers: list,
+    outcome: str = OUTCOME_FILLED,
     unresolved_attempt: str | None = None,
 ) -> GateDecision:
     """The whole gate: authorisation first, then the state of the form.
@@ -93,6 +97,10 @@ def may_submit(
         )
     if driver_name is None:
         return GateDecision(False, REASON_NO_DRIVER)
+    if outcome not in READY_OUTCOMES:
+        # The form never reached Review. `required_empty` is empty here because
+        # nothing looked, not because nothing is missing.
+        return GateDecision(False, REASON_NOT_AT_REVIEW, {"outcome": outcome})
     if blockers:
         return GateDecision(
             False, REASON_REVIEW_ISSUES, {"codes": [b.code for b in blockers][:10]}

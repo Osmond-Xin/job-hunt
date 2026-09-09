@@ -37,13 +37,23 @@ class ApplyContext:
     profile_values: dict = field(default_factory=dict)
 
 
-OUTCOME_FILLED = "filled"                  # stopped at Review; a human submits
+OUTCOME_FILLED = "filled"                  # reached Review; nothing left to fill
+OUTCOME_INCOMPLETE = "incomplete"          # filled what it could; not at Review
 OUTCOME_LOGIN_REQUIRED = "login_required"  # the session is not signed in
 OUTCOME_BLOCKED = "blocked"                # the driver could not proceed
 
 # There is deliberately no OUTCOME_SUBMITTED. Submitting is `submit()`, and its
 # result is a SubmitOutcome -- a fill result that could say "submitted" is how
 # the gate ends up inside the driver.
+
+# Only OUTCOME_FILLED means "the form is finished and the Review step is on
+# screen". Everything else must keep the gate shut, and the gate checks the
+# outcome rather than inferring readiness from `required_empty` being empty:
+# a flow that stalled before Review has nothing to report as required, so an
+# empty list there means "we never got far enough to look", not "nothing is
+# missing". A 2026-09-09 review found exactly that reading a LinkedIn
+# `stuck` result as ready to submit.
+READY_OUTCOMES = frozenset({OUTCOME_FILLED})
 
 
 class Blocker(BaseModel):
@@ -73,12 +83,21 @@ class AtsResult(BaseModel):
 
     @property
     def ready_to_submit(self) -> bool:
-        """Nothing the driver found stands in the way of sending this.
+        """The form is finished, at Review, with nothing outstanding.
 
-        Not the same as "may be sent" -- that is the session's call, and it
+        The outcome check is not redundant with the two emptiness checks. A
+        flow that stalled before Review reports no required fields because it
+        never reached the page that lists them -- so emptiness alone reads a
+        stall as readiness.
+
+        Not the same as "may be sent": that is the session's call, and it
         weighs the operator's three authorisation keys on top of this.
         """
-        return not self.required_empty and not self.blockers
+        return (
+            self.outcome in READY_OUTCOMES
+            and not self.required_empty
+            and not self.blockers
+        )
 
 
 class SubmitOutcome(BaseModel):

@@ -21,6 +21,7 @@ Failures here are silent — a flaky filesystem must not abort the apply flow.
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -49,31 +50,78 @@ def emit(art_dir: Path, event: str, **fields: Any) -> None:
         pass
 
 
-def unresolved_submit_attempt(art_dir: Path) -> str | None:
-    """The artifact dir of a submit that was clicked and never resolved.
+ATTEMPT_LOG = Path("data/submit-attempts.jsonl")
 
-    A ``SubmitOutcome`` of ``unknown`` -- clicked, no confirmation -- cannot
-    stop the *next* run on its own: the process exits and the next
-    ``job-hunt apply`` starts knowing nothing. So the attempt is written down
-    before the click (``submit.attempted``) and again after (``submit.resolved``),
-    and an attempt with no resolution beside it blocks another click.
 
-    Returns the directory name to point a human at, or None when the last
-    attempt resolved -- including when it resolved as rejected, which is a
-    definite "not sent" and safe to try again.
+def record_submit_attempt(application: str, art_dir: Path, url: str) -> None:
+    """Write down that a Submit is about to be clicked. Raises if it cannot.
+
+    Unlike ``emit``, this one is not allowed to fail quietly. It is a safety
+    record, and a safety record nobody managed to write is the case it exists
+    for: without it, a click that lands and loses its confirmation leaves no
+    trace, and the next run repeats it against a real employer. The caller must
+    let the exception stop the click.
     """
-    if not art_dir:
+    ATTEMPT_LOG.parent.mkdir(parents=True, exist_ok=True)
+    with ATTEMPT_LOG.open("a", encoding="utf-8") as handle:
+        handle.write(
+            json.dumps(
+                {"ts": _now_iso(), "event": "submit.attempted",
+                 "application": application, "artifact_dir": str(art_dir), "url": url},
+                ensure_ascii=False,
+            ) + "\n"
+        )
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
+def record_submit_resolution(application: str, state: str, evidence: str = "") -> None:
+    """Write down how a Submit turned out. Also not allowed to fail quietly."""
+    ATTEMPT_LOG.parent.mkdir(parents=True, exist_ok=True)
+    with ATTEMPT_LOG.open("a", encoding="utf-8") as handle:
+        handle.write(
+            json.dumps(
+                {"ts": _now_iso(), "event": "submit.resolved",
+                 "application": application, "state": state, "evidence": evidence},
+                ensure_ascii=False,
+            ) + "\n"
+        )
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
+def unresolved_submit_attempt(application: str) -> str | None:
+    """Whether this application has a Submit that was clicked and never settled.
+
+    A ``SubmitOutcome`` of ``unknown`` -- clicked, no confirmation -- cannot stop
+    the *next* run by itself: the process exits and the next ``job-hunt apply``
+    starts knowing nothing. So the attempt is written before the click and the
+    resolution after it, and an attempt with no resolution blocks another click.
+
+    Keyed on the application, not on the artifact directory. The directory name
+    carries the date and a truncated role, so a retry the next day would look in
+    a different place and find nothing, and two roles sharing their first four
+    words would share a guard. Both found by review on 2026-09-09.
+
+    Returns the artifact directory to point a person at, or None when the last
+    attempt resolved -- including as ``rejected``, which is a definite "not
+    sent" and safe to try again.
+    """
+    if not ATTEMPT_LOG.exists():
         return None
-    state = None
-    for event in read_events(art_dir):
-        name = event.get("event")
-        if name == "submit.attempted":
-            state = "attempted"
-        elif name == "submit.resolved":
-            # `unknown` is not a resolution for this purpose: it is the exact
-            # case this guard exists for.
-            state = None if event.get("state") != "unknown" else "unresolved"
-    return str(art_dir) if state in {"attempted", "unresolved"} else None
+    state, where = None, None
+    for line in ATTEMPT_LOG.read_text(encoding="utf-8").splitlines():
+        try:
+            event = json.loads(line)
+        except Exception:
+            continue
+        if event.get("application") != application:
+            continue
+        if event.get("event") == "submit.attempted":
+            state, where = "attempted", event.get("artifact_dir")
+        elif event.get("event") == "submit.resolved":
+            state = "unresolved" if event.get("state") == "unknown" else None
+    return where if state in {"attempted", "unresolved"} else None
 
 
 def read_events(art_dir: Path) -> list[dict[str, Any]]:

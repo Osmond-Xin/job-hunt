@@ -17,6 +17,13 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from job_hunt.services.apply.answers import (
+    _answer_for_application_question,
+    _radio_choice_for_question,
+)
+from job_hunt.services.profile_loader import _apply_profile_values
+from job_hunt.services.text import _short
+
 from job_hunt.services.workday.detect import is_workday_page
 
 
@@ -714,3 +721,118 @@ async def _finish_pending_upload_dialog(page) -> None:
 
 
 _COVER_LETTER_LABEL_RE = re.compile(r"cover\s*letter", re.IGNORECASE)
+
+
+async def generic_fill(
+    page,
+    *,
+    company: str | None,
+    role: str | None,
+    report_context: dict | None = None,
+    step_filler=None,
+) -> tuple[list[str], list[str], list[dict[str, str]]]:
+    values = _apply_profile_values()
+    filled: list[str] = []
+    skipped: list[str] = []
+    answers: list[dict[str, str]] = []
+
+    for label, value in [
+        ("First Name", values["first_name"]),
+        ("Last Name", values["last_name"]),
+        ("Name", values["name"]),
+        ("Email", values["email"]),
+        ("LinkedIn", values["linkedin"]),
+        ("GitHub", values["github"]),
+        ("Portfolio", values["portfolio"]),
+        ("Other links", values["portfolio"]),
+    ]:
+        if await _fill_by_label_or_placeholder(page, label, value):
+            filled.append(label)
+    for label in ["Phone Number", "Phone"]:
+        if await _fill_by_label_or_placeholder(page, label, values["phone"]):
+            filled.append(label)
+            break
+    if await _fill_location(page, values["location"]):
+        filled.append("Location")
+
+    if step_filler is not None:
+        # An ATS-specific pass, injected rather than imported. This used to be a
+        # direct call to Workday's step filler from inside the "generic" filler,
+        # which is both a lie about the name and, once the Workday driver
+        # imported this module, a cycle. The driver passes its own; the generic
+        # path passes nothing.
+        extra_filled, extra_skipped, extra_answers = await step_filler(
+            page, values, company=company, role=role, report_context=report_context
+        )
+        filled.extend(extra_filled)
+        skipped.extend(extra_skipped)
+        answers.extend(extra_answers)
+
+    await _scroll_application_form(page)
+
+    for label, value in [
+        (
+            "If you were to start at Anthropic full-time after the Fellows program, when is the earliest you could start?",
+            values["full_time_start"],
+        ),
+        ("What is your current country of residence?", values["country"]),
+        ("Country of residence", values["country"]),
+    ]:
+        if await _fill_by_label_or_placeholder(page, label, value):
+            filled.append(_short(label, 80))
+
+    textareas = page.locator("textarea")
+    for index in range(await textareas.count()):
+        area = textareas.nth(index)
+        question = await _field_context(area)
+        answer = _answer_for_application_question(
+            question,
+            company=company,
+            role=role,
+            report_context=report_context,
+        )
+        if answer:
+            await area.fill(answer)
+            if await _field_contains_text(area, answer):
+                filled.append(_short(question or f"textarea {index + 1}", 80))
+                answers.append({"question": question or f"textarea {index + 1}", "answer": answer})
+            else:
+                skipped.append(_short(f"{question or f'textarea {index + 1}'} (fill did not persist)", 120))
+        elif question:
+            skipped.append(_short(question, 120))
+
+    rich_textboxes = page.locator('[role="textbox"][contenteditable="plaintext-only"]')
+    for index in range(await rich_textboxes.count()):
+        box = rich_textboxes.nth(index)
+        question = await _field_context(box)
+        answer = _answer_for_application_question(
+            question,
+            company=company,
+            role=role,
+            report_context=report_context,
+        )
+        if answer:
+            if await _fill_contenteditable(box, answer):
+                filled.append(_short(question or f"rich text {index + 1}", 80))
+                answers.append({"question": question or f"rich text {index + 1}", "answer": answer})
+            else:
+                skipped.append(_short(f"{question or f'rich text {index + 1}'} (fill did not persist)", 120))
+        elif question:
+            skipped.append(_short(question, 120))
+
+    radios = page.locator('input[type="radio"]')
+    seen_radio_names: set[str] = set()
+    for index in range(await radios.count()):
+        radio = radios.nth(index)
+        name = await radio.get_attribute("name") or f"radio-{index}"
+        if name in seen_radio_names:
+            continue
+        seen_radio_names.add(name)
+        context = await _field_context(radio)
+        choice = _radio_choice_for_question(context)
+        if choice and await _click_radio_near_text(page, name, choice):
+            filled.append(_short(f"{context}: {choice}", 100))
+        elif context:
+            skipped.append(_short(context, 120))
+
+    return filled, skipped, answers
