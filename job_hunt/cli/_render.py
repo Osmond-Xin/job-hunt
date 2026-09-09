@@ -33,5 +33,5 @@ class RichReporter:
         if not items:
             return
         console.print(title)
-        for item in items[:limit] if limit else items:
+        for item in (items[:limit] if limit else items):
             console.print(f"- {item}")

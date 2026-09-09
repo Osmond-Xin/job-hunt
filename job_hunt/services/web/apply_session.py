@@ -330,7 +330,6 @@ async def _run_apply_flow(
     pdf: Path | None,
     cover_letter_pdf: Path | None,
     auto_fill: bool,
-    auto_submit: bool,
     authorisation,
     report_context: dict | None,
     reporter: Reporter,
@@ -422,9 +421,12 @@ async def _run_apply_flow(
     # --- Auto-submit, through the one gate ------------------------------
     # Whether the operator authorised this at all was settled before the
     # browser opened -- three keys, in submit_gate.authorised -- and arrives
-    # as `authorisation`. What is decided here is only whether the form is
-    # ready, and the driver that filled it is the one asked to submit it.
-    if auto_submit:
+    # as `authorisation` -- and it is the only source of that answer here. The
+    # session used to take a separate `auto_submit` flag as well, kept in step
+    # with it by the CLI; two names for one decision is one that can drift.
+    # What is decided below is only whether the form is ready, and the driver
+    # that filled it is the one asked to submit it.
+    if authorisation.allowed:
         decision = submit_gate.may_submit(
             authorisation=authorisation,
             driver_name=driver.name if driver else None,
@@ -537,7 +539,6 @@ async def _open_apply_page(
     fill_only: bool = False,
     artifact_dir: Path | None = None,
     report_context: dict | None = None,
-    auto_submit: bool = False,
     cover_letter_pdf: Path | None = None,
 ) -> dict:
     from playwright.async_api import async_playwright
@@ -593,7 +594,7 @@ async def _open_apply_page(
         flow = await _run_apply_flow(
             page, art_dir=art_dir, url=url, company=company, role=role, pdf=pdf,
             cover_letter_pdf=cover_letter_pdf, auto_fill=auto_fill,
-            auto_submit=auto_submit, authorisation=authorisation,
+            authorisation=authorisation,
             report_context=report_context, reporter=reporter,
         )
         filled = flow["filled"]
@@ -893,6 +894,9 @@ def _apply_ctx(*, company, role, pdf, cover_letter_pdf, artifact_dir, report_con
 def _gate_reason_text(decision, required_empty, validation_issues) -> str:
     """Say why in the operator's terms, not the gate's constant names."""
     return {
+        submit_gate.REASON_NOT_AT_REVIEW:
+            "the form did not reach Review, so there is nothing to submit yet "
+            f"(stopped at: {(decision.detail or {}).get('outcome', 'unknown')}).",
         submit_gate.REASON_NO_DRIVER:
             "no driver recognises this form, so there is no Submit it knows how to click.",
         submit_gate.REASON_REVIEW_ISSUES:

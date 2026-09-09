@@ -214,7 +214,6 @@ def apply_assist(
         ),
         mode=operator_mode,
     )
-    auto_submit_active = authorisation.allowed
     if authorisation.reason == submit_gate.REASON_STUDENT_MODE:
         console.print(
             "[yellow]--auto-submit ignored:[/yellow] mode=student in profile.yml. "
@@ -259,7 +258,6 @@ def apply_assist(
                 fill_only=fill_only,
                 artifact_dir=artifact_dir,
                 report_context=report_context,
-                auto_submit=auto_submit_active,
             )
         )
         if browser_result.get("deferred"):
@@ -689,17 +687,11 @@ def apply_do(
         raise typer.Exit(1)
 
 
-_BROWSER_PROFILE = Path("storage/browser-profile")
 
 
-# Session screenshots are agent/user evidence, not print material: full-page
-# JPEG at this quality is ~5-10x smaller than the old PNG and cheaper for the
-# agent to read, with no loss of legibility for form text.
-_SCREENSHOT_JPEG_QUALITY = 60
 
 
 # ---------------------------------------------------------------------------
-# LinkedIn Easy Apply — Playwright helpers + dispatcher wrapper.
 #
 # The pure dispatcher (`run_easy_apply`) and field strategy helpers live in
 # `job_hunt.services.linkedin.*`. The functions below are the live Playwright

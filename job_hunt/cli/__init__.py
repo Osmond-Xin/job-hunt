@@ -161,11 +161,11 @@ from .apply import (
     apply_status,
     apply_do,
     _looks_like_submit_label,
-    _BROWSER_PROFILE,
-    _SCREENSHOT_JPEG_QUALITY,
     _open_apply_page,
 )
 from job_hunt.services.web.apply_session import (
+    _BROWSER_PROFILE,
+    _SCREENSHOT_JPEG_QUALITY,
     ApplyDoRefused,
     _advance_application_start,
     _attach_cover_letter,

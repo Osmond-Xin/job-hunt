@@ -2,9 +2,10 @@
 
 Written before the apply.py seam refactor moves any of this, and deliberately
 pinning *behaviour* rather than structure: what these assert is that
-``_open_apply_page`` is reached with ``auto_submit=False`` unless all three keys
-are on. Where that AND is computed, and which module computes it after the
-refactor, is exactly what is allowed to change.
+``_open_apply_page`` is reached with a refused authorisation unless all three
+keys are on. Where that AND is computed, which module computes it, and what the
+answer is called on the way in are all exactly what is allowed to change --
+and all three have, twice, while these assertions have not.
 
 The gate is three keys because the thing on the other side is irreversible: a
 real application, under a real name, to a real employer. `--auto-submit` alone
@@ -80,7 +81,12 @@ def captured_auto_submit(monkeypatch, tmp_path):
         monkeypatch.setattr("job_hunt.services.profile_loader.current_mode", lambda: mode)
 
         async def _fake_open(*args, **kwargs):
-            raise _Captured(bool(kwargs.get("auto_submit")))
+            # The decision reaches the session as `authorisation` now -- it used
+            # to arrive twice, as that and a separate `auto_submit` flag kept in
+            # step by the CLI. What is asserted is unchanged: whether this run
+            # is allowed to click.
+            authorisation = kwargs.get("authorisation")
+            raise _Captured(bool(authorisation and authorisation.allowed))
 
         monkeypatch.setattr("job_hunt.cli.apply._open_apply_page", _fake_open)
         monkeypatch.setattr(

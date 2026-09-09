@@ -49,7 +49,7 @@ class RecordingReporter:
 
     def bullets(self, title: str, items: list[str], limit: int | None = None) -> None:
         self.lines.append(("bullets", title))
-        for item in items[:limit] if limit else items:
+        for item in (items[:limit] if limit else items):
             self.lines.append(("bullet", item))
 
     # -- helpers for assertions -------------------------------------------

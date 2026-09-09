@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 
 import httpx
 from pydantic import BaseModel
+from job_hunt.services.workday.detect import is_workday_url
 
 
 class WebExtractResult(BaseModel):
@@ -359,12 +360,16 @@ def _client(*, proxy: str = "") -> httpx.AsyncClient:
 
 
 def _is_workday_url(url: str) -> bool:
-    return "myworkdayjobs.com" in urlparse(url).netloc
+    # One probe, in services/workday/detect.py. This was its own substring test
+    # on the netloc, which is a fourth spelling of the same question and a
+    # slightly different answer -- `endswith` on a hostname is not `in` on a
+    # netloc, and only one of them refuses `notmyworkdayjobs.com`.
+    return is_workday_url(url)
 
 
 def _workday_company_from_url(url: str) -> str:
     parsed = urlparse(url)
-    if "myworkdayjobs.com" not in parsed.netloc:
+    if not is_workday_url(url):
         return ""
     parts = [part for part in parsed.path.split("/") if part]
     if len(parts) >= 2 and re.fullmatch(r"[a-z]{2}-[A-Z]{2}", parts[0]):

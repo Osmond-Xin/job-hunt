@@ -14,9 +14,10 @@ from __future__ import annotations
 
 import pytest
 
-from job_hunt.services.web.ats_contract import Blocker
+from job_hunt.services.web.ats_contract import OUTCOME_INCOMPLETE, Blocker
 from job_hunt.services.web.submit_gate import (
     REASON_NO_DRIVER,
+    REASON_NOT_AT_REVIEW,
     REASON_NOT_REQUESTED,
     REASON_PROFILE_DISABLED,
     REASON_REQUIRED_EMPTY,
@@ -139,6 +140,16 @@ def test_an_unresolved_attempt_outranks_a_clean_form() -> None:
     assert decision.reason == REASON_UNRESOLVED_ATTEMPT
 
 
+def test_a_form_that_never_reached_review_blocks() -> None:
+    """The reason emptiness is not readiness: a walk that stalled reports no
+    required fields because it never saw the page that lists them. Checked at
+    the gate as well as end to end, so removing the check fails here too."""
+    decision = may_submit(**{**_clear(), "outcome": OUTCOME_INCOMPLETE})
+    assert decision.allowed is False
+    assert decision.reason == REASON_NOT_AT_REVIEW
+    assert decision.detail["outcome"] == OUTCOME_INCOMPLETE
+
+
 @pytest.mark.parametrize(
     "kwargs",
     [
@@ -146,6 +157,7 @@ def test_an_unresolved_attempt_outranks_a_clean_form() -> None:
         {"blockers": [Blocker(code="c", message="m")]},
         {"driver_name": None},
         {"unresolved_attempt": "artifacts/apply/acme"},
+        {"outcome": OUTCOME_INCOMPLETE},
     ],
 )
 def test_no_blocking_condition_ever_allows(kwargs) -> None:

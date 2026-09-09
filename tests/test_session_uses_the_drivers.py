@@ -83,7 +83,7 @@ class SpyDriver:
         return SubmitOutcome(state="confirmed", evidence="thanks page")
 
 
-def _run(driver, tmp_path, *, auto_submit: bool, authorisation=None):
+def _run(driver, tmp_path, *, auto_submit: bool = True, authorisation=None):
     """Drive the real session against a fake browser, and return the spy."""
     monkey = pytest.MonkeyPatch()
     try:
@@ -104,8 +104,14 @@ def _run(driver, tmp_path, *, auto_submit: bool, authorisation=None):
                 pdf=None,
                 cover_letter_pdf=None,
                 auto_fill=True,
-                auto_submit=auto_submit,
-                authorisation=authorisation or GateDecision(allowed=True),
+                # One decision, one name: the session takes only the
+                # authorisation now. `auto_submit=False` here means the
+                # operator did not ask, which is a refused authorisation.
+                authorisation=authorisation
+                or GateDecision(
+                    allowed=auto_submit,
+                    reason="" if auto_submit else "not_requested",
+                ),
                 report_context={},
                 reporter=reporter,
             )
@@ -186,6 +192,16 @@ def test_the_session_says_nothing_in_colour() -> None:
 def test_the_session_names_no_ats() -> None:
     assert "myworkdayjobs" not in SOURCE
     assert "linkedin.com" not in SOURCE
+
+
+def test_the_submitted_question_defaults_to_no() -> None:
+    """A caller that forgets the callback gets "not submitted", which leaves the
+    tracker row untouched. The other default would record an application nobody
+    sent."""
+    default = inspect.signature(
+        apply_session._open_apply_page
+    ).parameters["confirm_submitted"].default
+    assert default("Have you manually submitted this application?") is False
 
 
 def test_authorisation_defaults_to_refusing() -> None:

@@ -22,6 +22,8 @@ Design:
 
 from __future__ import annotations
 
+from job_hunt.services.workday.detect import is_workday_page
+
 import re
 from pathlib import Path
 from typing import Awaitable, Callable
@@ -145,7 +147,7 @@ async def maybe_login(
     submit, and navigate back to the form URL if Workday redirected to
     Candidate Home. Dumps screenshot + HTML when the modal stays stuck.
     """
-    if "myworkdayjobs.com" not in page.url:
+    if not is_workday_page(page):
         return
     password = _read_and_consume_password()
     if not password:
