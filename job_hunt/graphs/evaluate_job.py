@@ -37,7 +37,7 @@ from typing import Literal
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 
-from job_hunt.models.state import JobHuntState
+from job_hunt.models.state import JobHuntState, letter_only
 from job_hunt.nodes.classify import classify_archetype
 from job_hunt.nodes.redteam import redteam_review
 from job_hunt.nodes.context import load_context
@@ -74,6 +74,19 @@ def _route_eligibility(state: JobHuntState) -> Literal["classify_archetype", "ma
 
 
 def _route_pdf(state: JobHuntState) -> Literal["tailor_cv", "skip_pdf"]:
+    """Take the CV branch unless the scorer said no, or only a letter is wanted.
+
+    `cover_letter_only` exists because wanting a cover letter used to mean
+    re-running the whole CV branch for nothing. `generate_cover_letter` reads
+    the master `cv` and never `cv_tailored`, so the letter does not depend on
+    this branch at all — and taking it anyway costs `tailor_cv`, the slowest
+    node in the graph, plus its audit, and overwrites the résumé already in the
+    run directory. On 2026-09-07 that happened twice while asking for letters,
+    and both times the replacement CV came back degraded and had to be thrown
+    away by hand to recover the reviewed one.
+    """
+    if state.get("cover_letter_only"):
+        return "skip_pdf"
     scores = state.get("scores")
     return "tailor_cv" if (scores and scores.generate_pdf) else "skip_pdf"
 

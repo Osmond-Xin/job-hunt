@@ -5,7 +5,7 @@ from __future__ import annotations
 from langchain_core.runnables import RunnableConfig
 
 from job_hunt.models.evaluation import DimensionScore, EvaluationScores, PdfContent
-from job_hunt.models.state import JobHuntState
+from job_hunt.models.state import JobHuntState, letter_only
 from job_hunt.services.llm.call import call_node_llm_or_fallback
 from job_hunt.services.prompts import render
 from job_hunt.services.immigration import immigration_context
@@ -37,6 +37,8 @@ async def cv_match(state: JobHuntState, config: RunnableConfig) -> dict:
 
 
 async def role_summary(state: JobHuntState, config: RunnableConfig) -> dict:
+    if letter_only(state):
+        return {"errors": []}
     prompt = render(
         "evaluate/role_summary.md",
         jd_meta=state.get("jd_meta"),
@@ -58,6 +60,8 @@ async def role_summary(state: JobHuntState, config: RunnableConfig) -> dict:
 
 
 async def level_strategy(state: JobHuntState, config: RunnableConfig) -> dict:
+    if letter_only(state):
+        return {"errors": []}
     prompt = render(
         "evaluate/level_strategy.md",
         jd_meta=state.get("jd_meta"),
@@ -80,6 +84,8 @@ async def level_strategy(state: JobHuntState, config: RunnableConfig) -> dict:
 
 
 async def score_and_recommend(state: JobHuntState, config: RunnableConfig) -> dict:
+    if letter_only(state):
+        return {"errors": []}
     blocks = state.get("evaluation_blocks", {})
     mode = state.get("mode", "full")
     jd_meta = state.get("jd_meta")
@@ -96,6 +102,7 @@ async def score_and_recommend(state: JobHuntState, config: RunnableConfig) -> di
         # paragraphs no artifact will render.
         generate_cover_letter=bool(state.get("generate_cover_letter")),
     )
+    wants_letter = bool(state.get("generate_cover_letter"))
     result, errors = await call_node_llm_or_fallback(
         state,
         node_name="score_and_recommend",
@@ -107,7 +114,16 @@ async def score_and_recommend(state: JobHuntState, config: RunnableConfig) -> di
             '"generate_pdf": false, "dimensions": [], "strengths": [], "gaps": [], "pdf_content": {}}'
         ),
         temperature=0.1,
-        max_tokens=3200,
+        # This one call emits the whole scoring JSON *and*, when asked, the
+        # cover-letter body — three to four paragraphs on top of the
+        # dimensions, rationales, strengths, gaps, summary angle, bullets and
+        # keywords. A flat 3200 was enough for the scoring alone and not for
+        # both: on 2026-09-06 an Xplore run with `--cover-letter` came back
+        # "MiniMax-M3 output truncated at max_tokens=22400 even after a
+        # doubled-budget retry" — 22400 being 2 x (3200 + the reasoning
+        # model's 8000-token headroom) — and the whole evaluation degraded to
+        # a 0.00 skip. Budget for the letter when a letter was requested.
+        max_tokens=6000 if wants_letter else 3200,
     )
 
     scores = _parse_scores(result.content)

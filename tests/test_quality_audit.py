@@ -195,6 +195,7 @@ def test_premium_generation_forwards_tier_and_audits_on_cheap(monkeypatch) -> No
 def test_premium_empty_generation_retries_on_cheap(monkeypatch) -> None:
     llm = _ScriptedLLM(["", "cheap draft", _PASS])
     monkeypatch.setattr(quality_module, "call_node_llm_or_fallback", llm)
+    monkeypatch.setattr(quality_module, "_tiers_differ", lambda _state: True)
     audited = asyncio.run(
         generate_with_audit(
             dict(_STATE),
@@ -322,3 +323,32 @@ def test_json_fenced_pass_is_still_an_approval(monkeypatch) -> None:
     llm = _ScriptedLLM(["draft", '```json\n{"verdict":"pass","issues":[]}\n```'])
     monkeypatch.setattr(quality_module, "call_node_llm_or_fallback", llm)
     assert _run(llm).status == "passed"
+
+
+def test_premium_retry_is_skipped_when_both_tiers_are_the_same_model(monkeypatch) -> None:
+    """Re-sending the same prompt to the same model is not a fallback.
+
+    On 2026-09-07 both tiers were pointed at MiniMax because the local CLIs
+    were rate-limited. Every `tailor_cv` failure was a max_tokens truncation,
+    and this retry re-sent the identical request to the identical model, failed
+    the identical way, and doubled the wall-clock cost of each failure — on the
+    tier where a single call already ran past 100 seconds.
+    """
+    llm = _ScriptedLLM(["", "should never be reached"])
+    monkeypatch.setattr(quality_module, "call_node_llm_or_fallback", llm)
+    monkeypatch.setattr(quality_module, "_tiers_differ", lambda _state: False)
+    audited = asyncio.run(
+        generate_with_audit(
+            dict(_STATE),
+            node_name="tailor_cv",
+            prompt="BASE PROMPT",
+            prompt_version="x:v1",
+            artifact_type="tailored CV",
+            temperature=0.2,
+            max_tokens=100,
+            tier="premium",
+        )
+    )
+    assert audited.status == "skipped"
+    assert len(llm.calls) == 1
+    assert not any("retrying on cheap tier" in err for err in audited.errors)

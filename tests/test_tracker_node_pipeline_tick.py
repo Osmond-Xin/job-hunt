@@ -252,6 +252,27 @@ def test_merge_or_update_tracker_keeps_the_existing_score_when_scoring_failed(re
     assert result["tracker_entry"].score == "3.5/5"
 
 
+def test_merge_or_update_tracker_keeps_the_existing_report_when_scoring_failed(repo: Path) -> None:
+    """The score guard above is worthless on its own: a degraded run's report
+    says "NEEDS RE-RUN — scoring failed" and describes no evaluation, so moving
+    the pointer there leaves the row showing a real score next to a stub."""
+    TrackerRepository(repo / "data" / "applications.md").append_entry(
+        _existing_entry(1, "Acme", "Engineer")
+    )
+    state = {
+        "url": "https://example.invalid/acme-retry",
+        "jd_meta": JobMeta(company="Acme", title="Engineer"),
+        "scores": _fallback_scores(),
+        "recommendation": "skip",
+        "report_path": "reports/degraded-stub.md",
+        "errors": [_score_failure_error("score_and_recommend")],
+    }
+
+    result = asyncio.run(merge_or_update_tracker(state, None))
+
+    assert result["tracker_entry"].report == "run-original"
+
+
 def test_unrecoverable_identity_falls_back_to_the_url(repo: Path) -> None:
     """extract_jd already ran every identity-recovery trick it has
     (_strip_board_suffix, _identity_from_pipeline) before jd_meta got here —

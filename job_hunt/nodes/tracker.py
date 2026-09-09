@@ -8,7 +8,7 @@ from pathlib import Path
 
 from langchain_core.runnables import RunnableConfig
 
-from job_hunt.models.state import JobHuntState
+from job_hunt.models.state import JobHuntState, letter_only
 from job_hunt.repositories.tracker_repo import TrackerEntry, TrackerRepository
 from job_hunt.services.employer_match import EmployerMatcher, is_reliable_match, load_aliases
 from job_hunt.services.llm.call import LLM_FAILURE_MARKER
@@ -207,6 +207,21 @@ async def _merge_or_update_tracker(state: JobHuntState) -> dict:
     score_str = existing.score if score_failed else (
         f"{scores.weighted_total:.1f}/5" if scores else existing.score
     )
+    # A cover-letter-only run scores nothing, so its report describes no
+    # evaluation. Moving the row's pointer to it loses the evaluation the row
+    # was built on: on 2026-09-08 asking for an Area52 letter repointed row #926
+    # — an application already sent — at a run that produced no résumé and no
+    # score, and rewrote 3.8 to a 4.1 the operator never submitted against.
+    # The same reasoning covers a failed score: its report says "NEEDS RE-RUN —
+    # scoring failed" and describes no evaluation, so moving the pointer there
+    # strands the row on a stub while `score_str` above keeps the real score.
+    # On 2026-09-08 a codex quota exhaustion did exactly that to row #924 —
+    # score 3.7 from the good run, pointer at the stub from the degraded one.
+    report_str = (
+        existing.report
+        if (letter_only(state) or score_failed)
+        else (report_path or existing.report)
+    )
     updated = TrackerEntry(
         number=existing.number,
         date=existing.date,
@@ -215,7 +230,7 @@ async def _merge_or_update_tracker(state: JobHuntState) -> dict:
         score=score_str,
         status=existing.status if existing.status != "Applied" else "Applied",
         pdf="✅" if pdf_path else existing.pdf,
-        report=report_path or existing.report,
+        report=report_str,
         notes=existing.notes,
     )
     repo.update_entry(updated)

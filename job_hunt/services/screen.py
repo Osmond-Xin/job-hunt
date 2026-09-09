@@ -57,7 +57,9 @@ WHAT HE IS LOOKING FOR, in priority order
 4. Roles whose real content is one person owning the whole thing: first technical hire,
    digital-transformation and systems-analyst posts at small organisations, generalist
    engineering where the job is to make AI land inside a business.
-5. Junior, intermediate and senior are all acceptable. Down-levelling is fine.
+5. Junior and intermediate are acceptable; down-levelling is fine. Senior, Lead, Staff,
+   Principal and Manager titles are NOT (operator's ruling 2026-09-05: he applies only
+   as an intermediate engineer) — those are a DROP.
 
 VOLUME MANDATE (2026-08-16). Roughly forty applications have produced zero interviews.
 The operator has decided the funnel is too narrow and has lowered his own bar: he wants
@@ -69,7 +71,9 @@ industry or an unremarkable city.
 
 DROP these outright
 - Staffing agencies and outsourcing intermediaries recruiting on behalf of an unnamed client.
-- Roles above the reachable level: director, VP, head of, principal, staff, chief.
+- Roles above the reachable level: senior, lead, manager, director, VP, head of,
+  principal, staff, chief. ("Intermediate/Senior" or "Senior Associate" — a title that
+  also names the intermediate rung — is a KEEP.)
 - Pure sales, pure marketing, pure recruiting, pure finance/accounting, procurement.
 - Deeply specialised roles his background does not touch: embedded firmware, game
   engines, mechanical/civil/electrical engineering, clinical or nursing roles, trades.

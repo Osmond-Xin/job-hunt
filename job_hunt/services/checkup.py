@@ -151,6 +151,83 @@ def unrecorded_artifacts(
     )
 
 
+
+def superseded_run_dirs(*, output_dir: Path = Path("output")) -> Check:
+    """Two directories describing the same job — a re-run that left its old copy.
+
+    ``artifact_paths.run_stem`` names a run ``<today>-<company>-<role>-<run id>``,
+    so *every* re-evaluation of the same posting gets a fresh directory and
+    nothing in the pipeline notices the previous one. The operating rule is one
+    directory per job — a superseded set of materials is a trap, because the
+    filenames do not say which PDF is the current one and the tracker links only
+    the newest report. Enforcing that by memory failed on 2026-09-06: a cover
+    letter re-run for Xplore left ``2026-09-05-…-4f5cfadf`` beside
+    ``2026-09-06-…-b79d0e08`` and only a manual look caught it.
+
+    Identity comes from the stem itself — strip the date prefix and the run-id
+    suffix and what remains is ``<company>-<role>`` — so this needs no fuzzy
+    matching. Directories that do not follow the convention are skipped: their
+    identity cannot be read, and guessing would delete the wrong thing.
+
+    Read-only, like every check here. It names the older directories; the
+    operator removes them.
+    """
+    if not output_dir.exists():
+        return Check(
+            name="one output directory per job",
+            ok=False,
+            detail=f"output/ directory not found at {output_dir.resolve()}",
+            items=[],
+            fix="Run this from the repo root, where output/ lives.",
+        )
+
+    groups: dict[str, list[tuple[date, float, str]]] = {}
+    for child in sorted(output_dir.iterdir()):
+        if not child.is_dir() or (child / "SUPERSEDED.md").exists():
+            continue
+        match = re.match(r"^(\d{4}-\d{2}-\d{2})-(.+)-[0-9a-f]{8}$", child.name)
+        when = _dir_date(child.name)
+        if not match or when is None:
+            continue
+        identity = match.group(2)
+        # An identity with no letters means both the company and the role slug
+        # came out empty; those runs cannot be told apart and grouping them
+        # would pair unrelated jobs.
+        if not re.search(r"[a-z]", identity):
+            continue
+        # The date in the name decides which run is newer; mtime only breaks
+        # ties between two runs made on the same day.
+        try:
+            modified = child.stat().st_mtime
+        except OSError:
+            modified = 0.0
+        groups.setdefault(identity, []).append((when, modified, child.name))
+
+    items: list[str] = []
+    for identity, runs in sorted(groups.items()):
+        if len(runs) < 2:
+            continue
+        runs.sort()
+        newest = runs[-1][2]
+        older = ", ".join(name for *_, name in runs[:-1])
+        items.append(f"{identity}: keep {newest}, superseded {older}")
+
+    return Check(
+        name="one output directory per job",
+        ok=not items,
+        detail=(
+            "no job has more than one output directory"
+            if not items
+            else f"{len(items)} job(s) have more than one directory"
+        ),
+        items=items,
+        fix=(
+            "Delete the superseded directories, or mark one SUPERSEDED.md if you "
+            "need to keep it. Check the tracker row points at the report you kept."
+        ),
+    )
+
+
 def event_log_readable() -> Check:
     repo = EmailEventRepository()
     bad = repo.malformed()
@@ -227,6 +304,7 @@ def run_checkup(*, days: int = 30, today: date | None = None) -> list[Check]:
     return [
         safe_run_check("event log readable", event_log_readable),
         safe_run_check("artifacts without a tracker row", lambda: unrecorded_artifacts(since=since_date)),
+        safe_run_check("one output directory per job", superseded_run_dirs),
         safe_run_check("mailbox agrees with the tracker", lambda: mailbox_gaps(since=since_date.isoformat())),
         safe_run_check("outreach follow-ups", outreach_followups),
     ]

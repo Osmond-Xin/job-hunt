@@ -29,7 +29,7 @@ PIPELINE = """# Pipeline
 ## Pending
 
 - [ ] https://example.invalid/1 | Government of Manitoba | Data Engineer | Winnipeg MB | posted 2026-08-11 | source: mb_gov
-- [ ] https://example.invalid/2 | BigCo | Senior AI Engineer | Toronto, Ontario | posted 2026-08-11 | source: adzuna
+- [ ] https://example.invalid/2 | BigCo | AI Engineer | Toronto, Ontario | posted 2026-08-11 | source: adzuna
 - [ ] https://example.invalid/3 | Randstad | AI Engineer | Halifax, NS | posted 2026-08-11 | source: adzuna
 - [ ] https://example.invalid/4 | RealCo | Director of Engineering | Halifax, NS | posted 2026-08-11 | source: adzuna
 - [x] https://example.invalid/5 | Done | AI Engineer | Halifax, NS | posted 2026-08-01 | source: adzuna
@@ -149,6 +149,87 @@ def test_the_categories_that_converted_at_zero_are_dropped():
     rows = parse_pipeline(PIPELINE)
     assert excluded(next(r for r in rows if r.company == "Randstad")) == "staffing agency"
     assert excluded(next(r for r in rows if r.role.startswith("Director"))) == "above reachable level"
+
+
+def test_senior_titles_are_above_the_reachable_level():
+    """2026-09-05: the operator applies as an intermediate engineer and no longer
+    applies to senior titles at all, so they are excluded, not merely down-ranked."""
+    def row(role: str) -> PipelineRow:
+        return PipelineRow(
+            url="https://example.invalid/x", company="RealCo", role=role,
+            location="Halifax, NS", posted="2026-09-01", source="adzuna",
+        )
+    for role in (
+        "Senior Machine Learning Engineer",
+        "Sr. Software Engineer, AI",
+        "Staff Forward Deployed Engineer",
+        "Tech Lead - Forward Deployed Engineering",
+        "Engineering Manager, AI",
+    ):
+        assert excluded(row(role)) == "above reachable level", role
+    for role in (
+        "Intermediate AI Engineer",
+        "Forward Deployed Engineer",
+        "Junior AI Developer",
+        "Software Engineer II (AI Integration)",
+        # The intermediate rung is named next to the senior one: still open.
+        "Intermediate/Senior Software Engineer",
+        "Data Engineer (Intermediate - Senior)",
+        "AI Developer, Senior Associate",
+        "Sr Associate Software Engineer - Applied AI",
+        # 2026-09-07: "mid" says the same thing "intermediate" does. This exact
+        # title reached him by referral (tracker #912) while triage was hiding it.
+        "Forward Deployed Engineer (FDE) (Mid/Senior Level)",
+        "Mid-Senior AI Engineer",
+        "Software Engineer, Mid-Level",
+    ):
+        assert excluded(row(role)) == "", role
+    # "mid" rescues only as a whole word — it must not fire inside another one,
+    # or every midstream/mid-market senior posting would be let back in.
+    for role in (
+        "Senior Data Engineer, Midstream Analytics",
+        "Senior Software Engineer - Mid-Market Platform",
+        "Senior AI Engineer, Midwest Region",
+    ):
+        assert excluded(row(role)) == "above reachable level", role
+    # "Associate" does not rescue a hard title, and "II" rescues nothing.
+    for role in (
+        "Associate Director, AI",
+        "AI Lead Engineer II Canada II Remote",
+        "Software Engineering Manager II",
+        "Senior Software Engineer II (Full Stack)",
+    ):
+        assert excluded(row(role)) == "above reachable level", role
+
+
+def test_remote_loses_half_a_point_and_a_named_city_gains_it():
+    """2026-09-05: a Canada-wide remote posting competes with the whole country;
+    one pinned to a city competes only with people willing to be there."""
+    def row(location: str) -> PipelineRow:
+        return PipelineRow(
+            url="https://example.invalid/x", company="RealCo", role="AI Engineer",
+            location=location, posted="2026-09-01", source="adzuna",
+        )
+    today = date(2026, 9, 5)
+    remote, remote_reasons = score(row("Remote (Canada)"), today=today)
+    national, national_reasons = score(row("Canada"), today=today)
+    calgary, calgary_reasons = score(row("Calgary, Alberta"), today=today)
+    hybrid, hybrid_reasons = score(row("Toronto, ON (Hybrid)"), today=today)
+    assert "remote (crowded)" in remote_reasons and remote == national - 0.5
+    assert "on-site" in calgary_reasons and calgary == national + 0.5
+    assert "on-site" in hybrid_reasons and hybrid == calgary
+    assert "remote (crowded)" not in national_reasons and "on-site" not in national_reasons
+    # Garbage in the location field is not a place (Codex review 2026-09-05).
+    for garbage in ("Upto $85/hr", "Chef(fe), Développement des données", "source: websearch"):
+        assert score(row(garbage), today=today)[0] == national, garbage
+    assert "on-site" in score(row("Regent Park, City of Toronto"), today=today)[1]
+    # A remote title overrides the office city a board tagged it with.
+    remote_title = PipelineRow(
+        url="https://example.invalid/x", company="RealCo",
+        role="AI/ML Engineer - Remote / Telecommute", location="Toronto, Ontario",
+        posted="2026-09-01", source="adzuna",
+    )
+    assert "remote (crowded)" in score(remote_title, today=today)[1]
 
 
 def test_stale_postings_lose_a_point():
@@ -364,17 +445,17 @@ def test_the_public_sector_point_does_not_rescue_an_off_target_role():
 def test_a_linkedin_page_title_is_unpacked_into_company_and_role():
     """A websearch row copies the search result's whole title line.
 
-    "Symend (Calgary) | Symend hiring Senior Machine Learning Engineer in
+    "Symend (Calgary) | Symend hiring Machine Learning Engineer in
     Calgary, Alberta, Canada" is one posting, not a listing page, and reading
     it as a role hid a Calgary target the operator had been looking for.
     """
     row = parse_pipeline(
         "- [ ] https://ca.linkedin.com/jobs/view/1 | Symend (Calgary) | "
-        "Symend hiring Senior Machine Learning Engineer in Calgary, Alberta, Canada | "
+        "Symend hiring Machine Learning Engineer in Calgary, Alberta, Canada | "
         "source: websearch\n"
     )[0]
     assert row.company == "Symend"
-    assert row.role == "Senior Machine Learning Engineer"
+    assert row.role == "Machine Learning Engineer"
     assert excluded(row) == ""
 
 
@@ -399,7 +480,7 @@ def test_the_direct_employer_bonus_reads_the_url_not_the_source_label():
         "- [ ] https://ca.linkedin.com/jobs/view/ml-engineer-at-kinaxis-1 | Kinaxis | "
         "Applied Scientist AI | Halifax | source: websearch\n"
         "- [ ] https://job-boards.greenhouse.io/warp/jobs/1 | Warp | "
-        "Forward Deployed Engineer | Remote | source: websearch\n"
+        "Forward Deployed Engineer | Halifax | source: websearch\n"
     )
     assert score(rows[1])[0] > score(rows[0])[0]
 

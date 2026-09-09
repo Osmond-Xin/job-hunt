@@ -128,7 +128,7 @@ def test_run_checkup_returns_failed_check_instead_of_raising(monkeypatch):
     def raise_error():
         raise RuntimeError("Outreach service unavailable")
 
-    # Mock all checks: first 3 pass, last one raises
+    # Mock every check: all but the last pass, the last raises
     monkeypatch.setattr(
         "job_hunt.services.checkup.event_log_readable",
         lambda: Check("event log readable", ok=True, detail="OK", items=[])
@@ -136,6 +136,10 @@ def test_run_checkup_returns_failed_check_instead_of_raising(monkeypatch):
     monkeypatch.setattr(
         "job_hunt.services.checkup.unrecorded_artifacts",
         lambda **_: Check("artifacts without a tracker row", ok=True, detail="OK", items=[])
+    )
+    monkeypatch.setattr(
+        "job_hunt.services.checkup.superseded_run_dirs",
+        lambda **_: Check("one output directory per job", ok=True, detail="OK", items=[])
     )
     monkeypatch.setattr(
         "job_hunt.services.checkup.mailbox_gaps",
@@ -148,21 +152,20 @@ def test_run_checkup_returns_failed_check_instead_of_raising(monkeypatch):
 
     checks = run_checkup(today=SINCE)
 
-    # Should return 4 Check objects
-    assert len(checks) == 4
+    # Should return one Check per registered check, none of them raising
+    assert len(checks) == 5
     assert all(isinstance(c, Check) for c in checks)
 
-    # First 3 should be ok
-    assert checks[0].ok is True
-    assert checks[1].ok is True
-    assert checks[2].ok is True
+    # Every check but the raising one is ok
+    assert [c.ok for c in checks[:-1]] == [True] * (len(checks) - 1)
 
-    # Last should be failed with details
-    assert checks[3].ok is False
-    assert checks[3].name == "outreach follow-ups"
-    assert "RuntimeError" in checks[3].detail
-    assert "Outreach" in checks[3].detail
-    assert checks[3].fix != ""
+    # The raising one is reported as a failed check, not propagated
+    last = checks[-1]
+    assert last.ok is False
+    assert last.name == "outreach follow-ups"
+    assert "RuntimeError" in last.detail
+    assert "Outreach" in last.detail
+    assert last.fix != ""
 
 
 def test_missing_output_directory_is_reported_as_failure(tmp_path):

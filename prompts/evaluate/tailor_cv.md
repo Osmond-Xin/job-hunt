@@ -79,11 +79,17 @@ word**. What you write has about one and a quarter pages left, not two.
 This budget is not advisory. When the body overflows, a deterministic trimmer drops whole
 blocks to force the fit, and it drops them by position, not by value — on 2026-08-15 it
 threw away the AWS case study, the Iqidao architecture-ownership bullet and the freelance
-delivery bullet, which were the strongest employment evidence in the document. **Anything
-you write past the budget is not "extra"; it evicts something better.**
+delivery bullet, which were the strongest employment evidence in the document. On
+2026-09-06 it dropped **nine** blocks from a Salesforce FDE resume, including "Delivered
+end-to-end data solutions and RESTful APIs as a solo contractor" — the one line that
+evidenced the posting's single non-negotiable requirement, customer-facing technical
+delivery. **Anything you write past the budget is not "extra"; it evicts something better.**
 
-- **Total body: 600–750 words.** Count them before you answer and cut to fit. Over 800
-  words the trimmer starts deleting employment evidence.
+- **Total body: 500–600 words.** Count them before you answer and cut to fit. Over 650
+  words the trimmer starts deleting employment evidence. These numbers are measured, not
+  guessed: the 2026-09-06 resume fit two pages only once the trimmer had cut the body to
+  **583 words**, under a 304-word header. The earlier 600–750 figure was above what
+  actually fits and is why that run lost nine blocks.
 - **Projects: exactly 2**, at most **3 bullets** each, at most ~30 words per bullet.
   Long build-log bullets from the master CV must be compressed to their result, not copied.
 - **Experience: every dated role stays**, but bullets are capped — at most **3** for the
@@ -101,10 +107,18 @@ Before you output, check your own draft against this list:
 
 1. Exactly 2 projects, none with more than 3 bullets?
 2. No role with more than 3 bullets, and only the top two roles at 3?
-3. Body word count between 600 and 750?
+3. Body word count between 500 and 600?
 4. At most 4 skills groups?
+5. Does every claim that is qualified in the master CV still carry its qualifier —
+   the retired AWS page, the synthetic corpus, the simulated deployment, the
+   four-person team, the expired credential?
+6. Does every bullet still sit under the employer, project or period it came from?
+7. Is there any word in the draft that presents the candidate above the intermediate
+   rung — "senior", "seasoned", "veteran", "lead", "principal", "at scale",
+   "enterprise-scale", "production scale", "scalable systems", "senior judgment"?
 
-If any answer is no, cut before answering — not after.
+If any answer is no, fix it before answering — not after. Questions 5 to 7 are answered
+by re-reading the draft against the master CV, not from memory of what you intended.
 
 ### Hard rules
 
@@ -133,6 +147,15 @@ If any answer is no, cut before answering — not after.
   credential — you may compress the wording but you may not drop the qualifier while
   keeping the claim. Dropping it turns a true statement into a false one. If a bullet is
   too long with its caveat, cut the whole bullet instead.
+- **Never write the candidate above the intermediate rung.** He applies as a recent
+  master's graduate (June 2026) with some prior hands-on work experience. Banned as
+  self-description: "senior", "seasoned", "veteran", "lead", "principal", "senior
+  judgment", and every scale word the master CV does not itself use — "at scale",
+  "enterprise-scale", "production scale", "large-scale", "scalable systems",
+  "high-traffic". The scope on offer is small-team and solo delivery, and a résumé that
+  reaches past it is rejected on the seniority mismatch before any of the evidence is
+  read. Compressing a bullet must not inflate it: "ships production systems end to end"
+  is a bigger claim than the dated, employer-scoped line it came from.
 - No corporate-speak ("synergies", "passionate about", "leverage", "incentivize").
 
 ### Emphasis

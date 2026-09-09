@@ -35,6 +35,37 @@ from job_hunt.services.llm.content import extract_json_object, normalize_llm_con
 
 _MAX_ATTEMPTS = 3
 
+
+def _tiers_differ(_state: JobHuntState) -> bool:
+    """Is the cheap tier a different model from the premium one?
+
+    The premium-to-cheap retry below exists so a provider outage on the tier
+    that writes artifacts does not cost the artifact. It only buys that when
+    the two tiers are actually different. Measured 2026-09-07, with both tiers
+    pointed at MiniMax because the local CLIs were rate-limited: every
+    `tailor_cv` failure was a max_tokens truncation, and the retry re-sent the
+    same prompt at the same budget to the same model, truncated the same way,
+    and doubled the wall-clock cost of every failure. `tailor_cv` runs about
+    25s on a local CLI and over 100s on MiniMax-M3, which emits two to three
+    times the tokens for the same task, so the wasted pass is expensive exactly
+    when things are already slow.
+
+    Compared on provider and model rather than tier name: a tier is "different"
+    only if something about it could produce a different outcome.
+    """
+    try:
+        from job_hunt.config.models import load_settings
+
+        settings = load_settings()
+    except Exception:  # noqa: BLE001 — a config read must never break generation
+        return True
+    cheap, premium = settings.llm.cheap, settings.llm.premium
+    return (cheap.provider, cheap.model, tuple(getattr(cheap, "command", ()) or ())) != (
+        premium.provider,
+        premium.model,
+        tuple(getattr(premium, "command", ()) or ()),
+    )
+
 # Quantified tenure self-labels ("20+ years of experience", "two decades") trigger
 # age/over-qualified screens. Role-scoped facts ("7-year tenure") are allowed.
 TENURE_SELF_LABEL_RE = re.compile(
@@ -130,7 +161,7 @@ async def generate_with_audit(
         )
         errors += gen_errors
         candidate = _CODE_FENCE_RE.sub("", result.content.strip()).strip()
-        if not candidate and attempt_tier == "premium":
+        if not candidate and attempt_tier == "premium" and _tiers_differ(state):
             errors.append(
                 f"{node_name}: premium generation unavailable; retrying on cheap tier"
             )

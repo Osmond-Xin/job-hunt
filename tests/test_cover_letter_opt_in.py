@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 import pytest
@@ -71,3 +72,35 @@ def test_cv_pdf_never_embeds_a_cover_letter() -> None:
         / "pdf.py"
     ).read_text(encoding="utf-8")
     assert 'embedded_cover_letter = ""' in source
+
+
+def test_cover_letter_run_gets_a_bigger_token_budget(monkeypatch) -> None:
+    """The letter is emitted by the SAME call as the scoring JSON.
+
+    2026-09-06: an Xplore run with `--cover-letter` failed with "MiniMax-M3
+    output truncated at max_tokens=22400 even after a doubled-budget retry"
+    (22400 = 2 x (3200 + the reasoning model's 8000-token headroom)) and the
+    whole evaluation degraded to a 0.00 skip. A flat budget sized for the
+    scoring JSON alone cannot also carry three to four paragraphs of letter.
+    """
+    from job_hunt.nodes import evaluate as evaluate_node
+
+    seen: list[int] = []
+
+    class _Result:
+        content = '{"weighted_total": 4.0, "recommendation": "apply", "dimensions": []}'
+
+    async def _fake_call(state, **kwargs):
+        seen.append(kwargs["max_tokens"])
+        return _Result(), []
+
+    monkeypatch.setattr(evaluate_node, "call_node_llm_or_fallback", _fake_call)
+
+    base = {"evaluation_blocks": BLOCKS, "mode": "full", "cv": "", "jd_text": ""}
+    asyncio.run(evaluate_node.score_and_recommend({**base, "generate_cover_letter": False}, {}))
+    asyncio.run(evaluate_node.score_and_recommend({**base, "generate_cover_letter": True}, {}))
+
+    without, with_letter = seen
+    assert with_letter > without, (
+        f"a cover-letter run must budget for the letter (got {with_letter} vs {without})"
+    )

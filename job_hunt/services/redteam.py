@@ -13,6 +13,8 @@ module so the rubric cannot drift between them.
 from __future__ import annotations
 
 import json
+import os
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -55,7 +57,21 @@ Compare the artifact against the JOB DESCRIPTION. Answer concretely:
 - Which passages are generic filler that would read identically for a different posting?
 - Is the strongest available evidence for this specific JD buried late, or missing?
 - Does the artifact claim any skill the JD asks for that the ground truth does not support?
-Each finding: quote the JD requirement and the artifact text (or note its absence).
+Each finding: quote the JD requirement and the artifact text (or note its absence), and
+rate it BLOCK or WARN on this scale:
+
+- **BLOCK** only when the artifact says something untrue or unsupported to reach the JD —
+  a claimed skill the ground truth does not support, an inflated scope, a caveat dropped
+  to make a claim fit. A defect the artifact contains.
+- **WARN** when the artifact simply lacks something the JD asks for. A missing must-have
+  is a WARN however central it is to the posting. The operator decides which gaps are
+  worth applying into; his standing rule is that a technical gap (a language, a
+  framework, a cloud vendor, a named tool) is closable and does not disqualify him,
+  while domain knowledge and professional background do. You do not make that call for
+  him — you tell him precisely what is missing, and he weighs it.
+
+Do not recommend adding coverage the ground truth cannot support. "Absent" is the finding;
+inventing the evidence is never the fix.
 
 ## 3. HR READ
 Now read it cold, as a recruiter screening for this role with roughly 40 seconds and no
@@ -67,11 +83,23 @@ on the page.
   under-qualification?
 - If you rejected this in 40 seconds, what would the reason be?
 
+Rate each finding BLOCK or WARN on the same scale as the TARGETING pass: BLOCK for
+something on the page that is untrue, inflated, or self-contradictory; WARN for anything
+that is merely weak, thin, or missing. "A recruiter would pass on this" is a WARN — the
+decision to apply is the operator's.
+
 ## VERDICT
 One line, exactly one of:
-VERDICT: BLOCK — <reason>      (a factual error or a defect that must be fixed before sending)
-VERDICT: REVISE — <reason>     (send only after addressing the WARN findings)
-VERDICT: SEND — <reason>       (no defect worth holding the artifact for)"""
+VERDICT: BLOCK — <reason>      (at least one BLOCK finding: something the artifact ASSERTS
+                                is false, unsupported, or inflated. Reserved for defects in
+                                what is written, never for what is absent.)
+VERDICT: REVISE — <reason>     (WARN findings only — including missing must-haves, thin
+                                evidence and targeting gaps. The operator may still send it
+                                as-is; say what he is choosing to live with.)
+VERDICT: SEND — <reason>       (no defect worth holding the artifact for)
+
+The three passes share one verdict, so take the most severe finding across all three. A
+document with no BLOCK finding in any pass may not be given VERDICT: BLOCK."""
 
 
 @dataclass
@@ -183,7 +211,8 @@ def run_review(
 ) -> RedTeamResult:
     if not artifacts:
         return RedTeamResult("UNREVIEWED", "", ["red team skipped: no artifacts"])
-    if not shutil.which("mmx"):
+    reviewer = os.environ.get("JOB_HUNT_REDTEAM_CMD", "").strip()
+    if not reviewer and not shutil.which("mmx"):
         return RedTeamResult("UNREVIEWED", "", ["red team unavailable: mmx not on PATH"])
 
     try:
@@ -193,25 +222,42 @@ def run_review(
     except Exception as exc:  # unreadable artifact
         return RedTeamResult("UNREVIEWED", "", [f"red team could not read artifact: {exc}"])
 
-    payload = json.dumps([{"role": "user", "content": prompt}], ensure_ascii=False)
-    # mmx reads `--messages-file -` non-blockingly and dies with EAGAIN against a
-    # subprocess pipe, so it gets a real file.
-    with tempfile.NamedTemporaryFile(
-        "w", suffix=".json", delete=False, encoding="utf-8"
-    ) as fh:
-        fh.write(payload)
-        messages_path = fh.name
+    # `JOB_HUNT_REDTEAM_CMD` names a command that reads the whole prompt on
+    # stdin and prints the review on stdout — `scripts/codex_llm.sh`, or any
+    # other local CLI. It exists because the reviewer must keep running when the
+    # MiniMax plan is out of quota: an UNREVIEWED artifact is not a pass, so a
+    # provider outage otherwise stops every application in the pipeline.
+    #
+    # Prefer a model here that did NOT write the artifact. The review earns its
+    # keep by disagreeing with the generator, and one model marking its own
+    # homework finds less.
+    messages_path = ""
+    if reviewer:
+        command = shlex.split(reviewer)
+        stdin_text: str | None = f"{SYSTEM}\n\n{prompt}"
+    else:
+        payload = json.dumps([{"role": "user", "content": prompt}], ensure_ascii=False)
+        # mmx reads `--messages-file -` non-blockingly and dies with EAGAIN against a
+        # subprocess pipe, so it gets a real file.
+        with tempfile.NamedTemporaryFile(
+            "w", suffix=".json", delete=False, encoding="utf-8"
+        ) as fh:
+            fh.write(payload)
+            messages_path = fh.name
+        command = [
+            "mmx", "text", "chat",
+            "--messages-file", messages_path,
+            "--model", model,
+            "--system", SYSTEM,
+            "--max-tokens", str(max_tokens),
+            "--temperature", "0.3",
+            "--quiet",
+        ]
+        stdin_text = None
     try:
         proc = subprocess.run(
-            [
-                "mmx", "text", "chat",
-                "--messages-file", messages_path,
-                "--model", model,
-                "--system", SYSTEM,
-                "--max-tokens", str(max_tokens),
-                "--temperature", "0.3",
-                "--quiet",
-            ],
+            command,
+            input=stdin_text,
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -219,7 +265,8 @@ def run_review(
     except subprocess.TimeoutExpired:
         return RedTeamResult("UNREVIEWED", "", [f"red team timed out after {timeout}s"])
     finally:
-        Path(messages_path).unlink(missing_ok=True)
+        if messages_path:
+            Path(messages_path).unlink(missing_ok=True)
 
     if proc.returncode != 0:
         detail = (proc.stderr or proc.stdout or "").strip()[:300]

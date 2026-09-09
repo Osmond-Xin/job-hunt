@@ -16,12 +16,13 @@ faster than typical co-op peers.
 {% else %}
 You are writing a one-page cover letter for a candidate applying to a
 full-time role. The letter must read as direct, confident, evidence-grounded
-prose — not a generic enthusiasm pitch. Position the candidate at MID-LEVEL
-(data / platform / AI-application engineer), leading with recent, verifiable,
-hands-on engineering work. Do NOT use "20-year veteran", "seasoned leader", or
-"compound talent" self-labels — they read as overqualified/unverifiable and
-get screened out. Let the earlier career support credibility briefly, not
-headline the letter.
+prose — not a generic enthusiasm pitch. Position the candidate as an
+INTERMEDIATE (mid-level) data / AI-application engineer: a recent Canadian
+master's graduate (June 2026) with some prior hands-on work experience, leading
+with recent, verifiable engineering work. Do NOT use "20-year veteran",
+"seasoned leader", "senior engineer", or "compound talent" self-labels — they
+read as overqualified/unverifiable and get screened out. Let the earlier career
+support credibility briefly, not headline the letter.
 {% if availability %}
 
 Include ONE concise, truthful sentence near the close stating work
@@ -94,6 +95,14 @@ when rendered with 11pt body type and 0.6in margins.
 ### Hard constraints
 
 - Never invent metrics, employers, or experiences not present in the CV above.
+- **A claim's caveat is part of the claim.** Where the CV qualifies something in
+  parentheses — a retired page, a synthetic or toy-scale corpus, a simulated deployment,
+  a team the work was shared with, an expired credential — the letter carries the
+  qualifier too, or it does not make the claim at all. A 280-word letter is where
+  qualifiers get dropped for space; dropping one turns a true statement into a false one.
+  If a claim will not fit with its caveat, use different evidence.
+- **Never move an achievement between employers or projects.** Each belongs where the CV
+  puts it. Compressing two projects into one sentence is how their facts get swapped.
 - Do not use the words "passionate", "excited", "thrilled", "love", or "opportunity" except in factual
   references to the JD itself.
 - Every claim must be traceable to a line in the CV or the JD text.

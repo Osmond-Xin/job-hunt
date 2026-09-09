@@ -133,7 +133,11 @@ Output a JSON object with this exact schema — no prose outside the JSON:
 ### pdf_content quality rules (both modes)
 
 - `summary_angle`: 2–3 sentences positioning the candidate for THIS role, mirroring the JD's
-  own vocabulary where the CV honestly supports it. **Never present an expired credential as
+  own vocabulary where the CV honestly supports it. **At most 80 words**, and count them —
+  "2–3 sentences" alone does not bound this, and on 2026-09-06 a four-clause 130-word
+  summary helped push the header to 304 words, which cost the resume body nine blocks to
+  the two-page trimmer. The summary shares one page with the employment evidence; every
+  word here is a word the strongest bullet does not get. **Never present an expired credential as
   currently held.** The AWS Solutions Architect certifications lapsed in 2024 and the PMP in
   2020; the CV shows those ranges. Writing "holds PMP and AWS Solutions Architect –
   Professional" contradicts the Certifications section of the same page and is a factual
@@ -150,6 +154,26 @@ Output a JSON object with this exact schema — no prose outside the JSON:
   the page** ("valid work permit, no sponsorship required, available immediately");
   **motive is not.** This has been generated twice — a CGI draft and an Acadia draft both
   put the AIP pathway in the banner (2026-08-15).
+  **The summary carries every caveat the CV carries.** Six of six banners generated on
+  2026-09-04/05 were BLOCKED by the red team for the same four moves — do not make them:
+  1. LearnArken is a **synthetic, toy-scale corpus with deployment simulated on one
+     machine**. Never call it "production", "production-shape", "production-grade", "a
+     production envelope", "enterprise", or "at scale". If the summary cites it, the
+     caveat sits in the same sentence.
+  2. The AWS case study's **original page is retired**; the surviving citation is AWS's
+     China WeChat channel. Cite it with that caveat or leave it out of the summary.
+  3. The H.E.A.D. competition win was a **four-person team; he built the implementation**.
+     Never phrase it as solo work.
+  4. **No unhedged domain claim.** Never write that he is "applying the same design to
+     <employer>'s regulated / clinical / legal / financial environment" or that his work is
+     "grounded in the same constraints <employer> operates under" when the CV shows no work
+     in that vertical. Say what was built; if the vertical matters, name the gap once and
+     move on.
+  Also: the candidate positions as an **intermediate engineer — a recent master's graduate
+  with some prior work experience** — so the summary never claims a senior scope, and
+  "OpenAI API" is not listed as a present-tense skill beside "Claude API" (the freelance
+  bullet may name both providers as what those assistants ran on; a skills-style claim of
+  both is the banned phrasing).
 - `top_bullets`: select the 3 strongest bullets **from the CV text above** (not from the
   summaries) and rewrite their surface language to the JD's vocabulary. Keep every number,
   metric, employer, and scope exactly as the CV states it — never merge metrics across
@@ -163,7 +187,10 @@ Output a JSON object with this exact schema — no prose outside the JSON:
   the claim bare contradicts the caveated bullet further down the same page — the exact
   BLOCK the red team returned on 2026-08-17.
 - `keywords`: 8–12 terms that appear in the JD **and** are honestly claimable from the CV.
-  No aspirational keywords — an interviewer will probe each one.
+  No aspirational keywords — an interviewer will probe each one. They are rendered as a
+  "Core Competencies" row on the résumé, so a JD phrase with no CV evidence behind it
+  ("latency and token consumption", "microservices architecture expertise") becomes a
+  claimed competency and gets BLOCKED — leave those out.
 {% if generate_cover_letter %}
 - `cover_letter_body`: grounded in CV evidence; same tenure rule as `summary_angle`; never
   use "passionate", "excited", "thrilled", "love", or "I would welcome the opportunity".
@@ -222,14 +249,29 @@ fallback. Apply this as follows:
 (1) get hired, (2) advance permanent residency, (3) do AI-engineering work.
 Score accordingly:
 
-- **Level fit — do not penalise down-levelling.** `profile.yml::target_roles.level_acceptance`
-  is authoritative: junior, intermediate, and senior roles are all acceptable, and a
-  junior offer that leads to PR outranks a senior title that does not. Never score
-  Level fit down because the JD asks for fewer years than the candidate has, and never
-  cite "overqualified", "flight risk", or "comp-band mismatch" as a scoring reason —
-  those are cover-letter framing problems, and the letter already handles them. Reserve
-  low Level fit for real mismatches: required credentials, clearances, or a management
-  scope the candidate does not have.
+- **Level fit — intermediate is the target; do not penalise down-levelling.**
+  `profile.yml::target_roles.level_acceptance` is authoritative: the candidate applies
+  as an intermediate engineer — a recent master's graduate with some prior work
+  experience — and junior / new-grad roles are acceptable too. A junior offer that
+  leads to PR outranks a senior title that does not. Never score Level fit down because
+  the JD asks for fewer years than the candidate has, and never cite "overqualified",
+  "flight risk", or "comp-band mismatch" as a scoring reason — those are cover-letter
+  framing problems, and the letter already handles them. Score Level fit **low** for
+  Senior, Lead, Staff, Principal, Manager and Director titles (2026-09-05: he no longer
+  applies to these), and for real mismatches: required credentials, clearances, or a
+  management scope the candidate does not have.
+  **A title that spans two bands is scored against the lower band, not the higher word
+  in it.** "Mid/Senior Level", "Intermediate/Senior", "Engineer II–III" and the like are
+  one requisition covering two rungs, and the candidate is applying to the lower one.
+  Read the body for the band it actually attaches to the lower rung and score against
+  that: if the posting says "3+ years (6–10 years for Senior levels)", the bar is 3+
+  years and he clears it. Do not score Level fit down merely because the word "Senior"
+  appears in a dual-band title, and do not reason that he must meet the senior half —
+  he is not applying to it. On 2026-09-06 this rule was missing and a Salesforce FDE
+  requisition scored Level fit 2.0/5 on the title alone, dragging the weighted total to
+  3.2 and the recommendation to `maybe`, on a posting whose stated Mid bar he exceeded;
+  the same run re-scored 4.0/`apply`. Only when the posting gives a *single* band and
+  that band is senior does the low score apply.
 - **Location — see the shared Location Policy.** A Canadian on-site role is never a
   blocker. The candidate relocates anywhere in Canada.
 - **Target role.** AI Engineer and its neighbours (LLM / AI orchestration / agentic
