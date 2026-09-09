@@ -29,9 +29,23 @@ llm:
   # spend a lot without anyone deciding to. Point it at a paid endpoint only
   # when you mean to, and know what a full batch costs before you do.
   #
-  # scripts/codex_llm.sh (codex) and scripts/agy_llm.sh (agy/Gemini) both read
-  # the prompt on stdin and print the answer on stdout, which is the whole
-  # contract LocalCommandProvider needs. Any CLI meeting it will work.
+  # scripts/codex_llm.sh (codex), scripts/agy_llm.sh (agy/Gemini) and
+  # scripts/opencode_llm.sh (opencode) all read the prompt on stdin and print
+  # the answer on stdout, which is the whole contract LocalCommandProvider
+  # needs. Any CLI meeting it will work.
+  #
+  # Keep all three usable and know how each meters, because a batch outlives a
+  # quota: codex resets daily, agy rolls over about every three hours, and
+  # opencode's free models have their own limits. When one empties mid-batch
+  # the remaining jobs degrade to 0.0 stubs, so the fix is to swap the command
+  # here and re-run, not to wait:
+  #   model: codex-cli / command: [./scripts/codex_llm.sh]
+  #   model: agy       / command: [./scripts/agy_llm.sh]
+  #   model: opencode  / command: [./scripts/opencode_llm.sh]
+  # Whichever writes the artifacts must not be the model that reviews them —
+  # see JOB_HUNT_REDTEAM_CMD in .env.example. That binds the premium tier
+  # only; the cheap tier scores and analyses, and may share a model with the
+  # reviewer without anyone marking their own homework.
   premium:
     provider: local_command
     model: codex-cli
