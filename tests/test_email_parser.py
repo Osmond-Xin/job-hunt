@@ -57,6 +57,26 @@ def test_faire_rejection_does_not_extract_this_time_as_company() -> None:
     assert event.needs_review is False
 
 
+def test_d2l_are_not_proceeding_is_a_rejection() -> None:
+    """The present tense reads as an aside rather than a verdict, and on
+    2026-09-08 it fell through every branch and was typed `recruiter_reply` --
+    which maps to Responded, so a close-out showed up as an advance."""
+    event = classify_email_event(
+        parsed(
+            subject="Your application to D2L",
+            sender="D2L Talent <no-reply@d2l.com>",
+            body=(
+                "Hi Yi,\n\n"
+                "Thank you for your interest in the Software Developer role at D2L. "
+                "While we are not proceeding with your application at this time, we "
+                "encourage you to keep an eye on our careers page."
+            ),
+        )
+    )
+
+    assert event.event_type == "rejection"
+
+
 def test_cohere_application_received_is_not_rejection() -> None:
     event = classify_email_event(
         parsed(

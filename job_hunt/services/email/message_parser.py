@@ -176,7 +176,11 @@ def classify_email_event(parsed: ParsedEmail) -> ApplicationEvent:
             r"|won’t (?:be )?(?:proceeding|moving forward|move forward)"
             r"|will not (?:be )?(?:proceeding|moving forward|move forward)"
             r")"
-            r"|(?:we|our team|hiring team).{0,100}(?:won't|won’t|will not|are unable to|cannot).{0,100}(?:move forward|moving forward|proceed)"
+            # "are not proceeding" belongs here too: D2L's 2026-09-08 close-out
+            # ("While we are not proceeding with your application") fell through
+            # every branch and was typed `recruiter_reply`, which maps to
+            # Responded -- a rejection would have read as an advance.
+            r"|(?:we|our team|hiring team).{0,100}(?:won't|won’t|will not|are not|are unable to|cannot).{0,100}(?:move forward|moving forward|proceed)"
             r"|decided not to proceed|no longer under consideration|unable to move forward|were not selected|have not been selected",
             0.85,
             True,
