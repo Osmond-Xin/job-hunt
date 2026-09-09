@@ -18,6 +18,7 @@ standalone files. ADR-009 is the first written record.
 - [ADR-014: Red-team review gate on every outward-facing artifact](014-redteam-gate-on-outward-artifacts.md)
 - [ADR-015: Quota-free direct board adapters (discovery tiers 4-7)](015-quota-free-discovery-tiers.md)
 - [ADR-016: Deny-by-default `data/` in `.gitignore`](016-deny-by-default-data-gitignore.md)
+- [ADR-017: One driver contract for every ATS](017-ats-driver-seam.md)
 
 ## Format
 

@@ -5,8 +5,9 @@ feature; this document is organised by module path. Written for someone who
 knows the domain (job applications, ATS, tracker rows) but has never opened
 this repo.
 
-`job_hunt/` is ~25,600 lines. `cli/` alone is 8,032 of them, split across ten
-files — the largest, `apply.py`, is still 5,171 lines on its own (why, below).
+`job_hunt/` is ~28,500 lines. `cli/` is 3,940 of them across ten files, and the
+largest, `apply.py`, is 709 — ten Typer commands, three helpers that print and
+exit, and imports. It was 5,197 until ADR-017 gave it a seam.
 The package holds zero layering inversions, checked by numbering the layers
 and walking every import (below), not asserted.
 
@@ -36,9 +37,9 @@ acyclicity" below for what enforces that.
   calls into `services/`, and returns a partial-state dict.
 - **`graphs/`** — wires nodes into a `StateGraph` and compiles it.
 - **`cli/`** — Typer commands. Orchestrates graphs and services; owns no
-  business logic of its own, though `apply.py` still carries a large amount
-  of Workday/LinkedIn browser-driving code that hasn't been given a seam to
-  move behind yet (below).
+  business logic of its own. `apply.py` was the exception until ADR-017; the
+  Workday and LinkedIn browser-driving code now sits behind the `AtsDriver`
+  contract in `services/web/ats_contract.py`.
 
 ### Direction, not acyclicity
 
@@ -112,11 +113,11 @@ callers before the signature changes, not after.
 
 ```
 job_hunt/
-├── cli/                     8,032 lines across 10 files — every `job-hunt <command>`
+├── cli/                     3,940 lines across 10 files — every `job-hunt <command>`
 │   ├── __init__.py           292   Typer app + 10 sub-apps + pipeline_app; re-exports
 │   │                               every command/helper so `job_hunt.cli.<name>` still
 │   │                               resolves the way it did as one file
-│   ├── apply.py             5,171   apply/apply-do/apply-answers + all Workday and
+│   ├── apply.py               709   apply/apply-do/apply-answers command bodies; the
 │   │                               LinkedIn browser-driving helpers (why it's still
 │   │                               one file: below)
 │   ├── setup.py               461   init, config validate/doctor/set-mode, resume import
@@ -233,18 +234,26 @@ URL-inbox commands — all still wired in `cli/__init__.py`. Top-level commands
 `checkup`, ...) hang directly off the root app, spread across the nine
 command files.
 
-`apply.py` is still 5,171 lines and was deliberately left out of this split.
-Everything else in `cli/` is a Typer command body calling into `services/`;
-`apply.py` is mostly Playwright — a live browser page being driven through
-Workday's and LinkedIn's multi-step forms, one function per form section
-(`_fill_workday_my_experience`, `_workday_advance_all_steps`,
-`_maybe_linkedin_easy_apply`, and around a hundred more). That code needs a
-page-driving seam — something a test can stand in for the live DOM — before
-it can be pulled apart the way the Workday *config* logic already was
-(`services/workday/`, ADR-010). No such seam exists yet, and building one
-that's actually trustworthy means verifying it against a live ATS session,
-not just a mock. So it stayed in `cli/apply.py`, as one file, rather than
-being split against an untested boundary.
+`apply.py` was left out of the earlier split and grew to 5,197 lines. It has
+one now (ADR-017) and is 709. What this document used to say was that the
+Playwright code needed "a page-driving seam — something a test can stand in for
+the live DOM" before it could be pulled apart. That was half right. The seam
+that mattered was not per-page but per-ATS: `AtsDriver`, with `fill` and
+`submit` as separate calls so the auto-submit gate could stop existing twice.
+
+Where that code went:
+
+- `services/workday/steps.py` — the step machine, moved verbatim
+- `services/workday/detect.py` — the `"myworkdayjobs.com"` check that used to be
+  written out thirteen separate times
+- `services/workday/step_decisions.py` — the decisions the step machine makes,
+  as pure functions over what a page yielded, so they can be tested without one
+- `services/linkedin/page_helpers.py` — the helpers `easy_apply` always injected
+- `services/{workday,linkedin}/driver.py` — each ATS behind the one contract
+- `services/web/form_fill.py` — the parts that do not know whose form it is
+- `services/web/apply_session.py` — launch, dispatch, fill, gate, maybe submit
+- `services/web/submit_gate.py` — the one gate
+- `services/apply/` — the parts that never open a browser at all
 
 ## The one real graph: `evaluate_job.py`
 
