@@ -14,7 +14,7 @@ from job_hunt.models.events import ApplicationEvent
 from job_hunt.repositories.tracker_repo import TrackerRepository
 from job_hunt.repositories.email_event_repo import EmailEventRepository
 from job_hunt.services.activity import ActivityEvent, ActivityLogger
-from job_hunt.services.web import apply_ipc, apply_ops, apply_run_log, page_summary
+from job_hunt.services.web import apply_ipc, apply_ops, apply_run_log, page_summary, submit_gate
 from job_hunt.services.workday.required_empty import (
     filter_non_blocking_workday_skips as _filter_non_blocking_workday_skips,
     filter_required_empty_fields as _filter_required_empty_fields,
@@ -72,12 +72,13 @@ from job_hunt.services.workday.steps import (
     _fill_workday_current_step,
     _maybe_workday_login,
     _recover_workday_error_page,
-    _try_workday_final_submit,
     _workday_advance_all_steps,
     _workday_current_step,
     _workday_resume_was_uploaded,
 )
 from job_hunt.services.workday.detect import is_workday_page
+from job_hunt.services.web import ats_registry
+from job_hunt.services.web.ats_contract import ApplyContext, Blocker
 from job_hunt.services.linkedin.page_helpers import (
     _maybe_linkedin_easy_apply,
 )
@@ -141,6 +142,30 @@ def _tracker_entry_by_id(tracker: TrackerRepository, tracker_id: int | None):
             return entry
     console.print(f"[red]Tracker row #{tracker_id} not found.[/red]")
     raise typer.Exit(1)
+
+
+def _apply_ctx(*, company, role, pdf, cover_letter_pdf, artifact_dir, report_context):
+    """Bundle what a driver needs about this application."""
+    return ApplyContext(
+        company=company, role=role, pdf=pdf, cover_letter_pdf=cover_letter_pdf,
+        artifact_dir=artifact_dir, report_context=report_context or {},
+        profile_values=_apply_profile_values(),
+    )
+
+
+def _gate_reason_text(decision, required_empty, validation_issues) -> str:
+    """Say why in the operator's terms, not the gate's constant names."""
+    return {
+        submit_gate.REASON_NO_DRIVER:
+            "no driver recognises this form, so there is no Submit it knows how to click.",
+        submit_gate.REASON_REVIEW_ISSUES:
+            f"{len(validation_issues)} Review-gate issue(s).",
+        submit_gate.REASON_REQUIRED_EMPTY:
+            f"{len(required_empty)} required field(s) still empty.",
+        submit_gate.REASON_UNRESOLVED_ATTEMPT:
+            "a previous submit was clicked and never confirmed. Check whether it "
+            "went through before trying again.",
+    }.get(decision.reason, decision.reason)
 
 
 def _report_low_score_verdict(verdict) -> None:
@@ -243,27 +268,27 @@ def apply_assist(
         console.print(f"[red]Cover letter PDF not found:[/red] {cover_letter_pdf}")
         raise typer.Exit(1)
 
-    # Profile gate: --auto-submit only matters when the user has also turned
-    # auto_submit_enabled on in profile.yml. This is two-key safety so a stray
-    # flag in shell history can't surprise-submit an application.
-    auto_submit_profile_enabled = _apply_profile_values().get(
-        "apply_auto_submit_enabled", False
-    )
-    # Mode gate: auto-submit is force-disabled in student mode regardless of
-    # both other flags. Co-op / intern forms have higher per-employer variance
-    # (custom questions, portal-specific consent) and the upside of one-click
-    # submission is small there. See docs/design-notes.md §N.3.
+    # The three keys. One implementation, in services/web/submit_gate.py, for
+    # every ATS -- there used to be one here for Workday and another inside the
+    # LinkedIn flow. The reasoning for three lives with the rule; what stays
+    # here is the wording, because the operator reads it.
     from job_hunt.services.profile_loader import current_mode as _read_mode
+
     operator_mode = _read_mode()
-    auto_submit_active = bool(
-        auto_submit and auto_submit_profile_enabled and operator_mode == "full"
+    authorisation = submit_gate.authorised(
+        requested=auto_submit,
+        profile_enabled=bool(
+            _apply_profile_values().get("apply_auto_submit_enabled", False)
+        ),
+        mode=operator_mode,
     )
-    if auto_submit and operator_mode == "student":
+    auto_submit_active = authorisation.allowed
+    if authorisation.reason == submit_gate.REASON_STUDENT_MODE:
         console.print(
             "[yellow]--auto-submit ignored:[/yellow] mode=student in profile.yml. "
             "Auto-submit is restricted to full mode. Falling back to manual submit."
         )
-    elif auto_submit and not auto_submit_profile_enabled:
+    elif authorisation.reason == submit_gate.REASON_PROFILE_DISABLED:
         console.print(
             "[yellow]--auto-submit ignored:[/yellow] profile.yml is missing "
             "`apply.auto_submit_enabled: true`. Falling back to manual submit."
@@ -991,58 +1016,71 @@ async def _open_apply_page(
         # LinkedIn Easy Apply runs its own gate above; do not re-enter the
         # Workday-specific branches when the LinkedIn driver handled the page.
         if auto_submit and not linkedin_handled:
-            workday_host = is_workday_page(page)
-            if not workday_host:
+            # One gate, in services/web/submit_gate.py. This used to be an
+            # if-chain here for Workday and a second one inside the LinkedIn
+            # flow; the two could disagree, and only one of them was tested.
+            # `authorised` is already true to be in this branch at all -- the
+            # three keys were weighed in apply_assist -- so what is left is
+            # whether the form itself is ready.
+            driver = await ats_registry.driver_for(page)
+            decision = submit_gate.may_submit(
+                authorisation=submit_gate.GateDecision(allowed=True),
+                driver_name=driver.name if driver else None,
+                required_empty=list(required_empty),
+                blockers=[
+                    Blocker(code=i.code, message=i.message, details=dict(i.details))
+                    for i in validation_issues
+                ],
+                unresolved_attempt=apply_run_log.unresolved_submit_attempt(art_dir),
+            )
+            if not decision.allowed:
                 apply_run_log.emit(
-                    art_dir, "auto_submit.gated",
-                    reason="non_workday_host", url=page.url,
-                )
-                console.print("[yellow]Auto-submit skipped: only Workday URLs supported.[/yellow]")
-            elif validation_issues:
-                apply_run_log.emit(
-                    art_dir, "auto_submit.gated",
-                    reason="review_validation_issues",
-                    issue_codes=[i.code for i in validation_issues],
+                    art_dir, decision.event, reason=decision.reason,
+                    **(decision.detail or {}),
                 )
                 console.print(
-                    f"[yellow]Auto-submit skipped: {len(validation_issues)} Review-gate "
-                    f"issue(s).[/yellow]"
-                )
-            elif required_empty:
-                apply_run_log.emit(
-                    art_dir, "auto_submit.gated",
-                    reason="required_empty_fields",
-                    fields=required_empty[:10],
-                )
-                console.print(
-                    f"[yellow]Auto-submit skipped: {len(required_empty)} required field(s) "
-                    f"still empty.[/yellow]"
+                    f"[yellow]Auto-submit skipped:[/yellow] "
+                    f"{_gate_reason_text(decision, required_empty, validation_issues)}"
                 )
             else:
-                clicked = await _try_workday_final_submit(page)
-                if clicked:
+                # Recorded before the click, not after: a click that lands and
+                # then loses its confirmation must leave evidence that it
+                # happened, or the next run has no way to know not to repeat it.
+                apply_run_log.emit(art_dir, "submit.attempted", url=page.url,
+                                   driver=driver.name)
+                outcome = await driver.submit(page, _apply_ctx(
+                    company=company, role=role, pdf=pdf,
+                    cover_letter_pdf=cover_letter_pdf, artifact_dir=art_dir,
+                    report_context=report_context,
+                ))
+                apply_run_log.emit(
+                    art_dir, "submit.resolved", state=outcome.state,
+                    evidence=_short(outcome.evidence, 200), driver=driver.name,
+                )
+                if outcome.state == "confirmed":
                     auto_submit_clicked = True
-                    apply_run_log.emit(
-                        art_dir, "auto_submit.fired",
-                        url=page.url,
-                    )
-                    console.print("[green]Auto-submit clicked.[/green] Waiting for confirmation page…")
-                    try:
-                        await page.wait_for_load_state("domcontentloaded", timeout=30000)
-                    except Exception:
-                        pass
-                    await page.wait_for_timeout(3000)
-                    apply_run_log.emit(
-                        art_dir, "auto_submit.confirmed",
-                        url=page.url,
+                    apply_run_log.emit(art_dir, "auto_submit.fired", url=page.url)
+                    apply_run_log.emit(art_dir, "auto_submit.confirmed", url=page.url)
+                    console.print("[green]Auto-submit confirmed.[/green]")
+                elif outcome.state == "unknown":
+                    # Neither sent nor not-sent. Do not record it as applied and
+                    # do not offer to retry: a duplicate application to a real
+                    # employer is worse than a missing tracker row, and only a
+                    # person can tell which happened.
+                    console.print(
+                        "[red]Submit clicked but not confirmed.[/red] "
+                        f"{outcome.evidence}\n"
+                        f"Check the page yourself before re-running — this run is "
+                        f"recorded as unresolved in {art_dir}, and the next "
+                        f"auto-submit for it will refuse until you clear it."
                     )
                 else:
                     apply_run_log.emit(
-                        art_dir, "auto_submit.gated",
-                        reason="submit_button_not_found",
+                        art_dir, "auto_submit.gated", reason="submit_rejected",
+                        detail=_short(outcome.evidence, 200),
                     )
                     console.print(
-                        "[yellow]Auto-submit skipped: Submit button not located on Review page.[/yellow]"
+                        f"[yellow]Auto-submit skipped:[/yellow] {outcome.evidence}"
                     )
 
         screenshot = await _save_session_screenshot(page, art_dir, "apply-review")

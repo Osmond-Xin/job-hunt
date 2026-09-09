@@ -178,7 +178,6 @@ from .apply import (
     _advance_application_start,
     _maybe_workday_login,
     _recover_workday_error_page,
-    _try_workday_final_submit,
     _workday_resume_was_uploaded,
     _wait_for_application_ready,
     _attach_resume,
@@ -199,6 +198,9 @@ from .apply import (
     _field_context,
     _click_radio_near_text,
     _filter_required_empty_fields,
+)
+from job_hunt.services.workday.steps import (
+    _try_workday_final_submit,
 )
 from job_hunt.services.linkedin.page_helpers import (
     _linkedin_attach_resume,

@@ -49,6 +49,33 @@ def emit(art_dir: Path, event: str, **fields: Any) -> None:
         pass
 
 
+def unresolved_submit_attempt(art_dir: Path) -> str | None:
+    """The artifact dir of a submit that was clicked and never resolved.
+
+    A ``SubmitOutcome`` of ``unknown`` -- clicked, no confirmation -- cannot
+    stop the *next* run on its own: the process exits and the next
+    ``job-hunt apply`` starts knowing nothing. So the attempt is written down
+    before the click (``submit.attempted``) and again after (``submit.resolved``),
+    and an attempt with no resolution beside it blocks another click.
+
+    Returns the directory name to point a human at, or None when the last
+    attempt resolved -- including when it resolved as rejected, which is a
+    definite "not sent" and safe to try again.
+    """
+    if not art_dir:
+        return None
+    state = None
+    for event in read_events(art_dir):
+        name = event.get("event")
+        if name == "submit.attempted":
+            state = "attempted"
+        elif name == "submit.resolved":
+            # `unknown` is not a resolution for this purpose: it is the exact
+            # case this guard exists for.
+            state = None if event.get("state") != "unknown" else "unresolved"
+    return str(art_dir) if state in {"attempted", "unresolved"} else None
+
+
 def read_events(art_dir: Path) -> list[dict[str, Any]]:
     """Read parsed events from disk. Drops malformed lines silently."""
     path = art_dir / RUN_LOG_FILENAME
