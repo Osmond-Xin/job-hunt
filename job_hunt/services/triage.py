@@ -50,9 +50,15 @@ AGENCY_RE = re.compile(
     r"insight global|aston carter|maarut|s\.?\s?i\.?\s?systems|procom|lorven|diverse lynx|"
     r"softpath|talentburst|apex systems|compunnel|nlb services|dexian|akkodis|experis|hays|"
     r"adecco|lancesoft|astra north|actalent|cynet systems|staffing|recruiting|recruitment|"
-    r"consulting services)\b",
+    r"consulting services|micro1)\b",
     re.I,
 )
+# micro1 is here for a different reason than the rest, stated by the candidate
+# 2026-09-10: it sells AI interviewing as its product, and the "interviews" it
+# invites candidates to are exercising that product rather than filling a role —
+# people are interviewed and not advanced. Its 2026-04 invitation was auto-
+# imported as an `Interview` tracker row (#669) and read as real progress for
+# four months. Treat an invitation from it as a product demo, not a signal.
 # Above the level the operator can currently reach. Widened 2026-09-05 on his
 # instruction: he applies as an intermediate engineer — a recent master's
 # graduate with some prior work experience — and no longer applies to senior
