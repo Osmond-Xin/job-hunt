@@ -93,13 +93,24 @@ class WorkdayDriver:
         required_empty = filter_required_empty_fields(
             await _required_empty(page), filled
         )
-        issues = await _collect_workday_review_issues(page)
         # FILLED means the Review step is on screen with nothing outstanding.
         # Reporting it unconditionally told the gate a walk that stalled on
         # Application Questions was finished -- and a stalled walk reports no
         # required fields, because it never reached the page that lists them.
         step = await _workday_current_step(page)
         outcome = OUTCOME_FILLED if step == "Review" else OUTCOME_INCOMPLETE
+        # The Review gate compares the page's text against the profile, so off
+        # Review every comparison fails for the same uninteresting reason: the
+        # summary is not on screen yet. A live run against a University of
+        # Waterloo tenant on 2026-09-09 reported "work experience title is not
+        # Data Analyst Intern" three times -- from the sign-in modal, from
+        # Application Questions, and from Voluntary Disclosures -- while the
+        # walk had simply not got there. ``steps.py`` already guards its own
+        # call this way; this path did not, and it is the one the session now
+        # takes. Blockers stay empty off Review: OUTCOME_INCOMPLETE is what
+        # says the walk is unfinished, and it says it without inventing three
+        # findings about a page nobody has seen.
+        issues = await _collect_workday_review_issues(page) if step == "Review" else []
         return AtsResult(
             outcome=outcome,
             filled=list(filled),
