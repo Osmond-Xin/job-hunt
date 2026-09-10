@@ -962,7 +962,11 @@ async def _fill_workday_my_experience(page, values: dict) -> tuple[list[str], li
     if await _ensure_workday_section_item(page, "Work Experience") and await _fill_workday_structured_experience(page, exp):
         filled.append("Workday structured work experience")
     else:
-        skipped.append("Workday structured work experience: section not found or not editable.")
+        skipped.append(
+            "Workday structured work experience: section not found, or the card did "
+            f"not read back both '{exp['title']}' and '{exp['company']}' — check the "
+            "Job Title and Company fields before submitting."
+        )
     edu = _workday_education_entries(values)[0]
     if await _ensure_workday_section_item(page, "Education") and await _fill_workday_structured_education(page, edu):
         filled.append("Workday structured education")
@@ -1042,7 +1046,21 @@ async def _fill_workday_structured_experience(page, entry: dict[str, str]) -> bo
     fields_ok = await _fill_workday_scoped_field(page, "Work Experience 1", "Role Description", entry["description"]) or fields_ok
     fields_ok = await _fill_workday_experience_card_by_order(page, entry) or fields_ok
     dates_ok = await _fill_workday_experience_dates_by_title(page, entry)
-    return fields_ok and dates_ok and await _workday_any_input_has_value(page, entry["title"])
+    if not (fields_ok and dates_ok):
+        return False
+    # Read back every value written, not just the title. Four overlapping
+    # writers run above and the last is positional, so "the title is in some
+    # input" is satisfied just as well by the title landing in the *Company*
+    # box -- which is what a University of Waterloo tenant did on 2026-09-09.
+    # Its Review page showed Job Title "Data Analyst Intern", Company "Data
+    # Analyst Intern", and the employer's name nowhere, while this returned
+    # True and the run reported the experience filled. Checking each value is
+    # the difference between "something was typed" and "what I meant to write
+    # is on the page".
+    for field in ("title", "company"):
+        if entry[field] and not await _workday_any_input_has_value(page, entry[field]):
+            return False
+    return True
 
 
 async def _fill_workday_experience_card_by_order(page, entry: dict[str, str]) -> bool:
