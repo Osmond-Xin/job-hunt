@@ -52,8 +52,19 @@ def step_from_body_text(text: str) -> str:
     The fallback for tenants that style their step titles as something other
     than a heading element. Anchored to line boundaries so prose mentioning
     "Review" mid-sentence does not count.
+
+    One whole-line match is a step title. Several are the progress bar, which
+    renders every step name on its own line on every page of the application --
+    so a page carrying several tells us which steps exist, not which one the
+    applicant is on. Answering anyway meant returning whichever name came first
+    in ``KNOWN_STEPS``: on a Waterloo tenant's sign-in modal on 2026-09-09 that
+    was "My Information", and the run log recorded entering a step the browser
+    was nowhere near. "" is the honest answer, and every caller already treats
+    it as "stop" rather than "carry on with a guess".
     """
-    for step in KNOWN_STEPS:
-        if re.search(rf"(?:^|\n){re.escape(step)}(?:\n|$)", text):
-            return step
-    return ""
+    matches = [
+        step
+        for step in KNOWN_STEPS
+        if re.search(rf"(?:^|\n){re.escape(step)}(?:\n|$)", text)
+    ]
+    return matches[0] if len(matches) == 1 else ""

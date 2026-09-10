@@ -75,12 +75,41 @@ def test_empty_body() -> None:
     assert step_from_body_text("") == ""
 
 
-def test_the_body_pass_returns_the_first_known_step_present() -> None:
-    """Order here follows KNOWN_STEPS, not document order -- the same as the
-    behaviour this replaced. Pinned so a later change to make it document-order
-    is a deliberate one, not a silent one."""
-    body = "Review\nMy Information\n"
-    assert step_from_body_text(body) == "My Information"
+def test_several_step_names_in_the_body_answer_nothing() -> None:
+    """This used to return "My Information" -- first in KNOWN_STEPS -- and the
+    deliberate change is to stop.
+
+    Two whole-line step names cannot both be the current step, so the body
+    cannot say which one is. The old answer was an ordering artefact, not a
+    reading of the page."""
+    assert step_from_body_text("Review\nMy Information\n") == ""
+
+
+def test_the_progress_bar_alone_does_not_name_the_current_step() -> None:
+    """Workday renders the whole step list on every page of the application.
+    Read as step titles, it says the applicant is on all of them at once.
+
+    The concrete failure: on 2026-09-09 a University of Waterloo tenant's
+    sign-in modal carried this progress bar, the heading pass found only
+    "Sign In", and the body pass answered "My Information" -- so the run log
+    recorded entering My Information while the browser sat on a login form
+    showing "wrong email address or password"."""
+    breadcrumb = (
+        "Create Account/Sign In\n"
+        "My Information\n"
+        "My Experience\n"
+        "Application Questions\n"
+        "Voluntary Disclosures\n"
+        "Review\n"
+    )
+    assert step_from_body_text(f"Sign In\n{breadcrumb}Email Address\nPassword") == ""
+
+
+def test_one_whole_line_step_name_is_still_read() -> None:
+    """The narrowing is to ambiguity only: a tenant that styles its step title
+    as plain text, with no progress bar, still gets an answer."""
+    body = "Acme Corporation\nMy Experience\nWork Experience\nJob Title"
+    assert step_from_body_text(body) == "My Experience"
 
 
 def test_a_real_my_information_page() -> None:
@@ -91,9 +120,20 @@ def test_a_real_my_information_page() -> None:
 
 
 def test_a_real_review_page_where_the_heading_is_decorated() -> None:
-    """Heading pass misses, body pass catches it -- which is the whole reason
-    the second read exists, and why it stays conditional on the first."""
+    """The case the body fallback was written for, with the progress bar a real
+    page also carries -- and it defeats the fallback.
+
+    The heading pass misses because the heading is decorated; the body pass
+    declines because the progress bar names six steps. "" reaches the driver as
+    "not Review", which costs an OUTCOME_FILLED it could have claimed and buys
+    the guarantee it never claims one from a page it misread. Wrong in the
+    direction that does not submit."""
     headings = ["Review your application before submitting"]
-    body = "Acme Corporation\nReview\nMy Information\nFirst Name\nYi"
+    body = (
+        "Acme Corporation\n"
+        "My Information\nMy Experience\nApplication Questions\n"
+        "Voluntary Disclosures\nReview\n"
+        "First Name\nYi"
+    )
     assert step_from_headings(headings) == ""
-    assert step_from_body_text(body) == "My Information"
+    assert step_from_body_text(body) == ""
