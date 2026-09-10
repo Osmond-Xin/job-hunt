@@ -197,6 +197,45 @@ def email_gaps(since: str = typer.Option("2026-08-01", help="Only look at mail o
         console.print(table)
 
 
+@email_app.command("humans")
+def email_humans(
+    since: str = typer.Option("7d", help="Gmail relative window, e.g. 7d or 48h."),
+    max_results: int = typer.Option(120, help="Cap on messages fetched (headers only)."),
+) -> None:
+    """Mail a person actually typed — filtered down from the alert flood.
+
+    Classifies by sender, not by wording: bulk headers plus no-reply local
+    parts remove Indeed, Jobright, Adzuna, LinkedIn and the ATS robots, and
+    what is left is reported only when it comes from an employer already in
+    the tracker or the subject is arranging something.
+
+    This exists because a CGS recruiter's interview invitation was lost under
+    forty automated alerts on 2026-09-09 and the slot passed unanswered.
+    """
+    from job_hunt.services.email.human_mail import scan
+
+    messages = scan(since=since, max_results=max_results)
+    if not messages:
+        console.print(f"No human mail needing a look in the last {since}.")
+        return
+
+    console.print(f"\n[bold]{len(messages)} message(s) from a person in the last {since}:[/bold]")
+    table = Table("Date", "Row", "From", "Subject", "Why")
+    for message in messages:
+        table.add_row(
+            message.date.strftime("%m-%d %H:%M") if message.date else "?",
+            f"#{message.tracker_row}" if message.tracker_row else "—",
+            _short(message.sender, 30),
+            _short(message.subject, 42),
+            _short(message.reason, 34),
+        )
+    console.print(table)
+    console.print(
+        "A row number means an employer you have applied to is writing to you. "
+        "Open those first."
+    )
+
+
 @email_app.command("events")
 def email_events(limit: int = 20, needs_review: bool = False) -> None:
     repo = EmailEventRepository()

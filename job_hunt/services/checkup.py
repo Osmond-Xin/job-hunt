@@ -263,6 +263,68 @@ def mailbox_gaps(*, since: str) -> Check:
     )
 
 
+def human_mail(*, since: str = "7d") -> Check:
+    """Mail from a person that the alert flood could be hiding.
+
+    Added after 2026-09-09, when a recruiter's interview invitation for the
+    next morning sat unread under forty automated job alerts and the slot
+    lapsed. Every other inbound check reads what the mail *says*; a job alert
+    says "interview" too. This one reads who sent it.
+
+    This is the only check that touches the network. It skips itself rather
+    than reaching for Gmail when there is no OAuth token to use, which keeps
+    `checkup` usable offline and keeps the test suite off the wire — a live
+    call buried inside a routine command is how the red-team reviewer quietly
+    burned quota on every test run before 2026-09-09.
+    """
+    import os
+
+    from job_hunt.services.email.human_mail import scan
+
+    # Only an explicit opt-out is silent. Note what is deliberately NOT done
+    # here: an availability pre-check on the OAuth token file. The first
+    # version did exactly that, and because this mailbox authenticates through
+    # `gcloud_adc` the file never exists — the check reported a cheerful "OK
+    # skipped" and would have run precisely never. A guard that mistakes its
+    # own misconfiguration for good news is the 19-day dead-inbound bug again.
+    if os.environ.get("JOB_HUNT_OFFLINE"):
+        return Check(
+            name="human mail not buried",
+            ok=True,
+            detail="skipped: JOB_HUNT_OFFLINE is set",
+            fix="job-hunt email humans --since 7d",
+        )
+
+    try:
+        messages = scan(since=since)
+    except Exception as exc:
+        # Loud, not silent: an unreachable mailbox is the failure this check
+        # exists to prevent, so it must never read as a pass.
+        return Check(
+            name="human mail not buried",
+            ok=False,
+            detail=f"could not read the mailbox: {type(exc).__name__}: {exc}",
+            fix="job-hunt email humans --since 7d   (check gcloud ADC / the Gmail token)",
+        )
+    from_employers = [m for m in messages if m.tracker_row]
+    return Check(
+        name="human mail not buried",
+        ok=not messages,
+        detail=(
+            f"no human mail in the last {since}"
+            if not messages
+            else f"{len(messages)} from a person, {len(from_employers)} from an employer you applied to"
+        ),
+        items=[
+            f"{m.date.strftime('%Y-%m-%d %H:%M') if m.date else '?'} "
+            f"{'#' + str(m.tracker_row) + ' ' if m.tracker_row else ''}"
+            f"{m.sender} — {m.subject}"
+            for m in messages
+        ],
+        fix="job-hunt email humans --since 7d",
+    )
+
+
 def outreach_followups() -> Check:
     from job_hunt.services.outreach import due_events
 
@@ -306,5 +368,6 @@ def run_checkup(*, days: int = 30, today: date | None = None) -> list[Check]:
         safe_run_check("artifacts without a tracker row", lambda: unrecorded_artifacts(since=since_date)),
         safe_run_check("one output directory per job", superseded_run_dirs),
         safe_run_check("mailbox agrees with the tracker", lambda: mailbox_gaps(since=since_date.isoformat())),
+        safe_run_check("human mail not buried", human_mail),
         safe_run_check("outreach follow-ups", outreach_followups),
     ]

@@ -146,6 +146,10 @@ def test_run_checkup_returns_failed_check_instead_of_raising(monkeypatch):
         lambda **_: Check("mailbox agrees with the tracker", ok=True, detail="OK", items=[])
     )
     monkeypatch.setattr(
+        "job_hunt.services.checkup.human_mail",
+        lambda **_: Check("human mail not buried", ok=True, detail="OK", items=[])
+    )
+    monkeypatch.setattr(
         "job_hunt.services.checkup.outreach_followups",
         raise_error
     )
@@ -153,7 +157,7 @@ def test_run_checkup_returns_failed_check_instead_of_raising(monkeypatch):
     checks = run_checkup(today=SINCE)
 
     # Should return one Check per registered check, none of them raising
-    assert len(checks) == 5
+    assert len(checks) == 6
     assert all(isinstance(c, Check) for c in checks)
 
     # Every check but the raising one is ok
