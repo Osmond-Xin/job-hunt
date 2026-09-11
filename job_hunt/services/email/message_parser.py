@@ -166,7 +166,26 @@ def classify_email_event(parsed: ParsedEmail) -> ApplicationEvent:
 
     patterns: list[tuple[str, str, float, bool]] = [
         ("offer", r"offer letter|employment offer|compensation package", 0.9, True),
-        ("interview", r"complete your interview|schedule (?:an? )?(?:interview|call)|calendar invite|calendly|moving forward.*interview", 0.85, False),
+        # `schedule an interview` is in the interview pattern below because a real
+        # invitation says it -- but so does almost every acknowledgement, in the
+        # conditional. See `_interview_is_hypothetical`.
+        # Broadened 2026-09-10. The old pattern missed the one invitation that
+        # mattered: CGS wrote "I would like to schedule a e-Interview meeting",
+        # and `schedule (?:an? )?interview` does not match "a e-Interview". It
+        # scored `recruiter_reply` at 0.70 while two acknowledgements scored
+        # `interview` at 0.85 — exactly backwards. The arranging signals below
+        # (a meeting platform, a booking link) are what a real invitation
+        # carries and an acknowledgement does not.
+        (
+            "interview",
+            r"complete your interview|schedule (?:an? )?(?:e-?)?(?:interview|call|meeting)"
+            r"|calendar invite|calendly|moving forward.*interview"
+            r"|e-?interview|interview (?:is )?(?:scheduled|confirmed)"
+            r"|teams meeting|zoom meeting|google meet"
+            r"|book a time|choose a time|select a time|pick a time",
+            0.85,
+            True,
+        ),
         (
             "rejection",
             r"unfortunately.{0,220}(?:"
@@ -195,6 +214,11 @@ def classify_email_event(parsed: ParsedEmail) -> ApplicationEvent:
             continue
         match = re.search(pattern, text)
         if match:
+            if candidate == "interview" and _interview_is_hypothetical(text, match):
+                # An acknowledgement promising an interview *if* the application
+                # aligns is not an interview. Keep looking -- the same mail almost
+                # always matches `application_received` a line or two later.
+                continue
             event_type = candidate
             confidence = candidate_confidence
             evidence.append(match.group(0))
@@ -218,6 +242,34 @@ def classify_email_event(parsed: ParsedEmail) -> ApplicationEvent:
         confidence=confidence,
         needs_review=needs_review,
     )
+
+
+# An acknowledgement that promises an interview only *if* the application is
+# liked. Read the 160 characters before the interview phrase: a real invitation
+# does not hedge, an acknowledgement always does.
+#
+# This exists because two tracker rows sat at `Interview` for four months on the
+# strength of exactly this sentence, and were believed. Lumerate (2026-04-28):
+# "We will contact you via email **if** your qualifications and experience align
+# with the requirements of the role and we wish to schedule an interview."
+# Jobber (2026-09-11): "**If** it aligns with what we're looking for, we'll reach
+# out to schedule an interview." Neither was an interview. Both read as one.
+_HYPOTHETICAL_LEAD = re.compile(
+    r"\b(if|should|when|once|in the event)\b[^.!?]{0,160}$", re.I)
+# Phrases that only appear when a time is actually being arranged. These win
+# over the hedge test — a mail can acknowledge receipt *and* book a slot.
+_INTERVIEW_IS_REAL = re.compile(
+    r"complete your interview|calendly|calendar invite|book a time|"
+    r"choose a time|select a time|pick a time|your interview is|"
+    r"interview (?:is )?(?:scheduled|confirmed)|zoom|google meet|teams meeting",
+    re.I)
+
+
+def _interview_is_hypothetical(text: str, match: re.Match) -> bool:
+    """True when the interview is promised conditionally rather than arranged."""
+    if _INTERVIEW_IS_REAL.search(text):
+        return False
+    return bool(_HYPOTHETICAL_LEAD.search(text[: match.start()]))
 
 
 def extract_company_role(parsed: ParsedEmail) -> tuple[str | None, str | None]:
