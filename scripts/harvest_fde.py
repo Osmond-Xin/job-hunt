@@ -40,7 +40,7 @@ for line in Path(".env").read_text().splitlines():
     if "=" in line and not line.strip().startswith("#"):
         k, v = line.split("=", 1)
         os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
-from job_hunt.services.triage import excluded, PipelineRow, submitted_employers  # noqa: E402
+from job_hunt.services.triage import excluded, PipelineRow, submitted_employers, applied_employer  # noqa: E402
 
 APP_ID = os.environ["ADZUNA_APP_ID"]; APP_KEY = os.environ["ADZUNA_APP_KEY"]
 ENDPOINT = "https://api.adzuna.com/v1/api/jobs/ca/search/{page}"
@@ -196,7 +196,7 @@ def main():
             r["drop"] = "not customer-facing"
         elif FRENCH.search(blob):
             r["drop"] = "French required"
-        elif r["company"].strip().lower() in applied:
+        elif applied_employer(row, applied):
             r["drop"] = "employer already applied to"
         else:
             r["drop"] = ""
