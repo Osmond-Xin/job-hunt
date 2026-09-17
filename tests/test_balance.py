@@ -81,6 +81,13 @@ def _pick(items, limit, inbox=None):
         ("Halifax, Nova Scotia, CA, B3K 4N1", "other_province"),  # real inbox rows
         ("Boston, Massachusetts, United States; Ottawa, Ontario, Canada", "ontario"),
         ("New Brunswick, NJ 08901", "unknown"),
+        # agy review 2026-09-16.
+        ("Halifax, Nova Scotia, CA", "other_province"),
+        ("Toronto, Ontario, CA", "gta"),
+        ("King, Hamilton, ON", "ontario"),
+        ("Brock, St. Catharines, ON", "ontario"),
+        ("Georgetown, DC", "unknown"),
+        ("Georgetown, Washington, DC", "unknown"),
     ],
 )
 def test_region_names_a_place_only_on_positive_evidence(location, expected):
@@ -102,6 +109,7 @@ def test_sector_follows_the_triage_government_vocabulary():
     assert sector("Royal  Bank of Canada") == "private"
     assert sector("National Bank of Canada") == "private"
     assert sector("Bank of Canada") == "public"
+    assert sector("Bank of Canada / Banque du Canada") == "public"
     assert sector("Hydro One") == "public"
     assert sector("Magical") == "private"
 

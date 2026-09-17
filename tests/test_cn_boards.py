@@ -95,6 +95,9 @@ def _scan(boards: dict, routes: dict[str, str], hits: list[str] | None = None):
         "会计软件开发工程师",
         "前端开发工程师",
         "数据库管理员",
+        # agy review 2026-09-16.
+        "会计软件测试员",
+        "招聘Full Stack开发",
     ],
 )
 def test_technical_titles_pass_the_screen(title):

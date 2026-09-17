@@ -26,8 +26,16 @@ today="$(date +%F)"
 lock="data/locks/daily-scan.lock"
 if ! mkdir "$lock" 2>/dev/null; then
     holder="$(cat "$lock/pid" 2>/dev/null || true)"
-    if [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null; then
+    # The holder is live only if that PID is still *this script* — a PID the OS
+    # recycled to an unrelated process must not block every later run.
+    if [ -n "$holder" ] && ps -p "$holder" -o command= 2>/dev/null | grep -q "daily_scan.sh"; then
         echo "=== $(date '+%F %T') daily scan pid $holder still running — skipped" >> "$log"
+        exit 75
+    fi
+    # No PID yet means another run created the lock a moment ago and has not
+    # written it; only a PID-less lock older than ten minutes is abandoned.
+    if [ -z "$holder" ] && [ -z "$(find "$lock" -maxdepth 0 -mmin +10 2>/dev/null)" ]; then
+        echo "=== $(date '+%F %T') lock just taken by another run — skipped" >> "$log"
         exit 75
     fi
     echo "=== $(date '+%F %T') stale lock (pid ${holder:-unknown} gone) — taking it over" >> "$log"

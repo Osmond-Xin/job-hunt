@@ -198,7 +198,7 @@ GOVERNMENT_RE = re.compile(
     r"sasktel|canada post|cmhc)\b"
     # The central bank only as the whole employer name — as a substring it
     # matched Royal Bank and National Bank of Canada.
-    r"|^\s*(?:the\s+)?bank of canada\s*$",
+    r"|^\s*(?:the\s+)?bank of canada(?:\s*[/|–-]\s*banque du canada)?\s*$",
     re.I,
 )
 AI_ROLE_RE = re.compile(
@@ -275,7 +275,7 @@ CN_TECH_ROLE_RE = re.compile(
     r"数据工程|數據工程|网管|網管|网络管理|網絡管理|网络工程|網絡工程|系统管理|系統管理|"
     r"系统工程师|系統工程師|运维|運維|技术支持|技術支持|人工智能|网站开发|網站開發|算法工程|"
     r"(?<![A-Za-z0-9])(?-i:IT|I\.T\.|AI|LLM|ERP|BI|SQL)(?![A-Za-z0-9])|"
-    r"(?<![A-Za-z])(?:power ?bi|python|java|devops|developers?|software|programmers?|"
+    r"(?<![A-Za-z])(?:power ?bi|python|java|devops|developers?|software|programmers?|full[- ]?stack|"
     r"data (?:analyst|engineer|scientist)s?|database|network (?:admin|administrator|engineer|"
     r"technician)s?|sys ?admin|systems? administrator|help ?desk|cloud engineer|"
     r"web developer)(?![A-Za-z]))",
@@ -296,6 +296,7 @@ CN_NONTECH_ROLE_RE = re.compile(
 CN_CONTEXT_NONTECH_RE = re.compile(r"(仓库|倉庫|会计|會計)")
 CN_TECH_OCCUPATION_RE = re.compile(
     r"(开发|開發|程序员|程序員|软件工程|軟件工程|系统工程|系統工程|网络工程|網絡工程|数据工程|數據工程|"
+    r"软件测试|軟件測試|系统测试|系統測試|测试工程|測試工程|测试员|測試員|"
     r"数据库管理|數據庫管理|系统管理|系統管理|网络管理|網絡管理|数据分析|數據分析|架构师|架構師|"
     r"运维|運維|网管|網管)"
 )
@@ -327,9 +328,10 @@ _GTA_RE = re.compile(
 )
 # GTA municipalities whose names are also streets, universities or towns in
 # other provinces ("100 King Street West, Hamilton", Brock University,
-# Georgetown PEI): only as a whole address component.
+# Georgetown PEI, Georgetown DC): only as the address component right before
+# Ontario itself — "King, Hamilton, ON" is Hamilton.
 _GTA_COMPONENT_RE = re.compile(
-    r"(?:^|,)\s*(king|brock|georgetown|acton|bolton)\s*(?=$|[,(]|(?-i:ON)\b)", re.I
+    r"(?:^|,)\s*(king|brock|georgetown|acton|bolton)\s*(?:,\s*)?(?:(?-i:ON)\b|ontario\b)", re.I
 )
 _NORTH_RE = re.compile(
     r"\b(yukon|whitehorse|northwest territories|yellowknife|inuvik|hay river|nunavut|iqaluit|"
@@ -357,8 +359,11 @@ _PROVINCE_NAME_RES = tuple((code, re.compile(rf"\b{name}\b", re.I)) for code, na
 _US_NAMED_RE = re.compile(r"\b(?:united states|usa|california)\b", re.I)
 # A state code ends the string or precedes a ZIP; "Nova Scotia, CA, B3K 4N1" is
 # the country code before a Canadian postal code (measured on the real inbox).
+# "CA" is left out: after a Canadian place it is the country code
+# ("Halifax, Nova Scotia, CA"), and California is read by name instead.
 _US_STATE_RE = re.compile(
-    r",\s*(?-i:(?:WA|CA|NY|TX|MA|IL|FL|OR|WI|MN|MI|PA|NJ|CO|GA|NC|VA|AZ|UT|OH))\s*(?:$|\d{5})"
+    r",\s*(?-i:(?:AL|AK|AZ|AR|CO|CT|DC|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS|MO|MT|NE|"
+    r"NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VT|VA|WA|WV|WI|WY))\s*(?:$|\d{5})"
 )
 _CANADA_RE = re.compile(r"\bcanada\b", re.I)
 _ONTARIO_RE = re.compile(
@@ -599,7 +604,10 @@ def score(row: PipelineRow, *, today: date | None = None) -> tuple[float, list[s
     if AI_ROLE_RE.search(row.role):
         points += 3
         reasons.append("applied AI")
-    elif SOLO_ROLE_RE.search(row.role) and not _MARKETS_TECHNICAL_ANALYST_RE.search(row.role):
+    elif SOLO_ROLE_RE.search(row.role) and not (
+        _MARKETS_TECHNICAL_ANALYST_RE.search(row.role)
+        and not SOLO_ROLE_RE.search(re.sub(r"technical analyst", "", row.role, flags=re.I))
+    ):
         points += 2
         reasons.append("one-person scope")
     elif ADJACENT_ROLE_RE.search(row.role) or (

@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -45,9 +46,42 @@ def test_a_run_whose_lock_holder_is_alive_is_skipped(checkout):
     _fake_cli(checkout, 0, 0)
     lock = checkout / "data" / "locks" / "daily-scan.lock"
     lock.mkdir(parents=True)
-    (lock / "pid").write_text(str(os.getpid()))
+    # A live process whose command line is this script.
+    holder = subprocess.Popen(["bash", "-c", "sleep 30; true", "daily_scan.sh"])
+    try:
+        (lock / "pid").write_text(str(holder.pid))
+        assert _run(checkout) == 75
+        assert lock.exists()  # the live holder's lock is left alone
+    finally:
+        holder.kill()
+
+
+def test_a_recycled_pid_owned_by_another_process_does_not_block_the_run(checkout):
+    """agy review 2026-09-16: `kill -0` alone read a recycled PID as a live holder."""
+    _fake_cli(checkout, 0, 0)
+    lock = checkout / "data" / "locks" / "daily-scan.lock"
+    lock.mkdir(parents=True)
+    (lock / "pid").write_text(str(os.getpid()))  # pytest, not daily_scan.sh
+    assert _run(checkout) == 0
+
+
+def test_a_lock_with_no_pid_yet_is_a_run_starting_not_a_stale_one(checkout):
+    """agy review 2026-09-16: between another run's mkdir and its PID write, an
+    empty PID used to be read as stale and the live lock deleted."""
+    _fake_cli(checkout, 0, 0)
+    lock = checkout / "data" / "locks" / "daily-scan.lock"
+    lock.mkdir(parents=True)
     assert _run(checkout) == 75
-    assert lock.exists()  # the live holder's lock is left alone
+    assert lock.exists()
+
+
+def test_a_pid_less_lock_older_than_ten_minutes_is_taken_over(checkout):
+    _fake_cli(checkout, 0, 0)
+    lock = checkout / "data" / "locks" / "daily-scan.lock"
+    lock.mkdir(parents=True)
+    old = time.time() - 3600
+    os.utime(lock, (old, old))
+    assert _run(checkout) == 0
 
 
 def test_a_lock_left_by_a_killed_run_does_not_disable_later_runs(checkout):
