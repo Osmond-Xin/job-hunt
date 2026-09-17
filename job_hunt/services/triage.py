@@ -232,6 +232,18 @@ ADJACENT_ROLE_RE = re.compile(
     r"business analyst|product manager|analyst|developer|engineer)\b",
     re.I,
 )
+# Chinese-titled rows from the 51.ca / Vansky tier (services/cn_boards.py). The
+# English vocabularies above cannot read them, so every one scored as an
+# "off-target role" and sank — the tier would find a systems administrator and
+# triage would bury it. No \b: Python treats CJK characters as word characters,
+# so a boundary never falls inside "电脑测试员". Adjacent tier only, never
+# higher: a Chinese title says the work is technical, not what shape it is.
+CN_TECH_ROLE_RE = re.compile(
+    r"(电脑|電腦|计算机|計算機|软件|軟件|程序员|程序員|编程|編程|开发工程师|開發工程師|"
+    r"前端|后端|後端|全栈|全棧|数据分析|數據分析|数据库|數據庫|数据工程|數據工程|"
+    r"网管|網管|网络管理|網絡管理|系统管理|系統管理|运维|運維|技术支持|技術支持|人工智能|"
+    r"网站开发|網站開發)"
+)
 
 
 @dataclass(frozen=True)
@@ -395,7 +407,7 @@ def score(row: PipelineRow, *, today: date | None = None) -> tuple[float, list[s
     elif SOLO_ROLE_RE.search(row.role):
         points += 2
         reasons.append("one-person scope")
-    elif ADJACENT_ROLE_RE.search(row.role):
+    elif ADJACENT_ROLE_RE.search(row.role) or CN_TECH_ROLE_RE.search(row.role):
         points += 1
     else:
         points -= 2

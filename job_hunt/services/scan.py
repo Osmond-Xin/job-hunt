@@ -18,6 +18,7 @@ from job_hunt.models.posting import JobPosting, from_row
 from job_hunt.models.tracker import normalize
 from job_hunt.repositories.tracker_repo import TrackerRepository
 from job_hunt.services.adzuna import scan_adzuna_source
+from job_hunt.services.cn_boards import scan_cn_boards
 from job_hunt.services.gov_boards import scan_gov_boards
 from job_hunt.services.regional_boards import scan_regional_boards
 from job_hunt.services.immigration import place_tokens as immigration_place_tokens
@@ -87,8 +88,10 @@ def scan_portals(
         largely absent from the national aggregators.
     Tier 6: Workday CxS JSON boards (``workday_boards``).
     Tier 7: Adzuna aggregator API (``settings.adzuna`` + env credentials).
+    Tier 8: Chinese-language community boards (``cn_boards``) — 51.ca and
+        Vansky, screened to technical titles before any detail request.
 
-    Tiers 4-7 need no WebSearch provider and consume no search quota. They
+    Tiers 4-8 need no WebSearch provider and consume no search quota. They
     return structured employer / location fields, so they are strictly better
     per result than the tier-3 channels that cover the same boards.
     """
@@ -200,11 +203,14 @@ def scan_portals(
             _regional_board_scanned_jobs(config.get("regional_boards"), result.errors),
             _workday_scanned_jobs(config.get("workday_boards"), result.errors),
             _adzuna_scanned_jobs(settings, discovery_context().get("roles", []), result.errors),
+            _cn_board_scanned_jobs(config.get("cn_boards"), result.errors),
         ]
-        # All five already establish the occupation before we see the title:
+        # All six already establish the occupation before we see the title:
         # Job Bank is queried by NOC code, Adzuna rows are filtered on their
-        # own `category` facet, and the gov / regional / Workday boards are
-        # small curated employer boards. Requiring a positive title match on
+        # own `category` facet, the gov / regional / Workday boards are
+        # small curated employer boards, and the Chinese boards are screened on
+        # a tech keyword list inside `cn_boards` (their titles are in Chinese,
+        # so the English positive list would discard every one). Requiring a positive title match on
         # top of that discards ~half of them for naming variance alone.
         for tier_jobs in extra_tiers:
             _accept_jobs(
@@ -266,10 +272,8 @@ def _accept_jobs(
             if apply:
                 _append_scan_history(job)
             continue
-        if (
-            job.url in known_urls
-            or (normalize(job.company), normalize(job.title)) in known_company_roles
-        ):
+        pair = _company_role_key(job.company, job.title)
+        if job.url in known_urls or (pair is not None and pair in known_company_roles):
             result.skipped_duplicates += 1
             job.status = "skipped_duplicate"
         else:
@@ -277,9 +281,23 @@ def _accept_jobs(
             job.status = "new"
             result.jobs.append(job)
             known_urls.add(job.url)
-            known_company_roles.add((normalize(job.company), normalize(job.title)))
+            if pair is not None:
+                known_company_roles.add(pair)
         if apply:
             _append_scan_history(job)
+
+
+def _company_role_key(company: str, title: str) -> tuple[str, str] | None:
+    """The (company, title) dedup key, or None when either side normalises away.
+
+    ``normalize`` keeps ASCII letters and digits only, so a Chinese title from
+    the 51.ca / Vansky tier becomes "". Two different postings by the same
+    poster then shared one key, and the second was dropped as a duplicate of
+    the first — the URL, which does differ, never got a say. Same guard as
+    ``triage.tracker_seen``.
+    """
+    key = (normalize(company), normalize(title))
+    return key if all(key) else None
 
 
 def _board_coverage_warnings(stats: dict[str, dict[str, Any]]) -> list[str]:
@@ -346,6 +364,32 @@ def _regional_board_scanned_jobs(
         posting = from_row(
             {**row, "company": row.get("company") or "Unknown (see posting)", "source": board},
             source_id=f"regional:{board}",
+            portal=board,
+        )
+        if posting is not None:
+            jobs.append(_scanned_job_from_posting(posting))
+    return jobs
+
+
+def _cn_board_scanned_jobs(
+    config: dict[str, Any] | None, warnings: list[str] | None = None
+) -> list[ScannedJob]:
+    """Tier 8: Chinese-language community boards. Free, already tech-screened."""
+    stats: dict[str, dict[str, Any]] = {}
+    try:
+        rows = scan_cn_boards(config, stats=stats)
+    except Exception as exc:
+        if warnings is not None:
+            warnings.append(f"cn boards: sweep failed ({exc})")
+        return []
+    if warnings is not None:
+        warnings.extend(_board_coverage_warnings(stats))
+    jobs: list[ScannedJob] = []
+    for row in rows:
+        board = row.get("board", "cn")
+        posting = from_row(
+            {**row, "company": row.get("company") or "Unknown (see posting)", "source": board},
+            source_id=f"cn:{board}",
             portal=board,
         )
         if posting is not None:
@@ -1157,10 +1201,11 @@ def _known_urls() -> set[str]:
 
 
 def _known_company_roles() -> set[tuple[str, str]]:
-    return {
-        (normalize(entry.company), normalize(entry.role))
+    keys = (
+        _company_role_key(entry.company, entry.role)
         for entry in TrackerRepository(Path("data/applications.md")).parse()
-    }
+    )
+    return {key for key in keys if key is not None}
 
 
 def _append_scan_history(job: ScannedJob) -> None:

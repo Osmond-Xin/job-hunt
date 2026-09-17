@@ -133,6 +133,26 @@ def test_a_role_matching_no_target_vocabulary_sinks_below_a_matching_one():
     assert points < score(toronto, today=today)[0]
 
 
+def test_a_chinese_tech_title_is_not_scored_as_off_target():
+    """Rows from the 51.ca / Vansky tier carry Chinese titles the English
+    vocabularies cannot read; they must not sink with the restaurant ads."""
+    today = date(2026, 9, 16)
+    tester = PipelineRow(
+        url="https://www.51.ca/jobs/job-posts/1203004", company="alcmicro",
+        role="大型电脑公司招聘电脑测试员", location="列治文山, Greater Toronto Area, ON, Canada",
+        posted="2026-09-08", source="51ca",
+    )
+    server = PipelineRow(
+        url="https://www.51.ca/jobs/job-posts/1", company="someone",
+        role="餐馆企台", location="北约克, Greater Toronto Area, ON, Canada",
+        posted="2026-09-08", source="51ca",
+    )
+    points, reasons = score(tester, today=today)
+    assert "off-target role" not in reasons
+    assert "off-target role" in score(server, today=today)[1]
+    assert points > score(server, today=today)[0]
+
+
 def test_toronto_is_not_excluded_or_scored_on_location():
     """Toronto used to be down-ranked, then merely a tie-break loser; now
     location plays no part in the score at all."""
