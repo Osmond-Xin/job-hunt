@@ -71,6 +71,16 @@ def _pick(items, limit, inbox=None):
         ("100 King Street West, Hamilton, ON", "ontario"),  # a street, not King Township
         ("Georgetown, Prince Edward Island", "other_province"),
         ("Georgetown, ON", "gta"),
+        # Round 4 (Codex review 2026-09-16, partial run).
+        ("King ON", "gta"),
+        ("Georgetown ON", "gta"),
+        ("Brock University, St. Catharines, ON", "ontario"),
+        ("Ontario, California, United States", "unknown"),
+        ("New Brunswick, NJ", "unknown"),
+        ("Quebec City, QC", "other_province"),
+        ("Halifax, Nova Scotia, CA, B3K 4N1", "other_province"),  # real inbox rows
+        ("Boston, Massachusetts, United States; Ottawa, Ontario, Canada", "ontario"),
+        ("New Brunswick, NJ 08901", "unknown"),
     ],
 )
 def test_region_names_a_place_only_on_positive_evidence(location, expected):

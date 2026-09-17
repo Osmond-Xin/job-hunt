@@ -328,7 +328,9 @@ _GTA_RE = re.compile(
 # GTA municipalities whose names are also streets, universities or towns in
 # other provinces ("100 King Street West, Hamilton", Brock University,
 # Georgetown PEI): only as a whole address component.
-_GTA_COMPONENT_RE = re.compile(r"(?:^|,)\s*(king|brock|georgetown|acton|bolton)\s*(?=$|[,(])", re.I)
+_GTA_COMPONENT_RE = re.compile(
+    r"(?:^|,)\s*(king|brock|georgetown|acton|bolton)\s*(?=$|[,(]|(?-i:ON)\b)", re.I
+)
 _NORTH_RE = re.compile(
     r"\b(yukon|whitehorse|northwest territories|yellowknife|inuvik|hay river|nunavut|iqaluit|"
     r"thunder bay|sudbury|sault ste\.? marie|timmins|north bay|kenora|fort mcmurray|"
@@ -352,10 +354,13 @@ _PROVINCE_NAMES = (
 _PROVINCE_NAME_RES = tuple((code, re.compile(rf"\b{name}\b", re.I)) for code, name in _PROVINCE_NAMES)
 # A US address, read only when nothing in the string is Canadian: "CA" after a
 # Canadian province is the country code, not California ("HALIFAX, NS, CA").
-_US_RE = re.compile(
-    r"\b(?:united states|usa)\b|,\s*(?-i:(?:WA|CA|NY|TX|MA|IL|FL|OR|WI|MN|MI|PA|NJ|CO|GA|NC|VA|AZ|UT|OH))\b",
-    re.I,
+_US_NAMED_RE = re.compile(r"\b(?:united states|usa|california)\b", re.I)
+# A state code ends the string or precedes a ZIP; "Nova Scotia, CA, B3K 4N1" is
+# the country code before a Canadian postal code (measured on the real inbox).
+_US_STATE_RE = re.compile(
+    r",\s*(?-i:(?:WA|CA|NY|TX|MA|IL|FL|OR|WI|MN|MI|PA|NJ|CO|GA|NC|VA|AZ|UT|OH))\s*(?:$|\d{5})"
 )
+_CANADA_RE = re.compile(r"\bcanada\b", re.I)
 _ONTARIO_RE = re.compile(
     r"\b(ottawa|hamilton|kitchener|waterloo|cambridge|london|guelph|kingston|"
     r"niagara|st\.? catharines|welland|barrie|windsor|peterborough|belleville|brantford|"
@@ -373,14 +378,15 @@ _TERRITORY_CODES = {"YT", "NT", "NU"}
 REGIONS = ("gta", "ontario", "other_province", "north", "remote", "unknown")
 
 
-def _province(text: str) -> str | None:
+def _province(text: str) -> tuple[str | None, bool]:
+    """The province, and whether it was read from a code (True) or a name."""
     match = _PROVINCE_CODE_RE.search(text)
     if match:
-        return match.group(1)
+        return match.group(1), True
     for code, pattern in _PROVINCE_NAME_RES:
         if pattern.search(text):
-            return code
-    return None
+            return code, False
+    return None, False
 
 
 def region(location: str) -> str:
@@ -396,8 +402,15 @@ def region(location: str) -> str:
         return "unknown"
     if REMOTE_RE.search(text):
         return "remote"
-    code = _province(text)
-    if code is None and _US_RE.search(text):
+    code, from_code = _province(text)
+    # A province *name* is also a US place ("Ontario, California", "New
+    # Brunswick, NJ"); a Canadian province *code* is not. Named US evidence or
+    # a state code wins over a province name, never over a province code.
+    if (
+        not from_code
+        and not _CANADA_RE.search(text)
+        and (_US_NAMED_RE.search(text) or _US_STATE_RE.search(text))
+    ):
         return "unknown"
     if code in _TERRITORY_CODES or _NORTH_RE.search(text):
         return "north"
