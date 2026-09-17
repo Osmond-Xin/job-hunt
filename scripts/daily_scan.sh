@@ -1,14 +1,19 @@
 #!/usr/bin/env bash
-# Daily quota-free scan, then the balanced shortlist, written where it can be read.
+# The day's quota-free scan, then the balanced shortlist, written where it can be read.
 #
-# Why this exists (2026-09-16): nothing ran the scan on its own. The last
-# `scan --apply` before that day was 2026-09-05, so the government, northern,
-# Job Bank and Chinese-board tiers had not refreshed the inbox in eleven days,
-# and the daily list was whatever the Adzuna AI-phrase harvests returned. The
-# operator asked for it to run every day without being asked.
+# Run by hand from a terminal: `scripts/daily_scan.sh`. The operator runs it and
+# says so; the result is read from data/daily/triage-<date>.txt and
+# logs/daily-scan.log. It is deliberately not scheduled: a launchd agent was
+# tried on 2026-09-16, and macOS refuses a background job access to
+# ~/Documents unless it is granted Full Disk Access — far more than a scan
+# needs, and the operator declined it. Run from a terminal, the script inherits
+# the terminal's own folder permission and needs nothing extra.
 #
-# --no-websearch keeps it off the Brave quota. Installed as a launchd agent by
-# scripts/launchd/install.py; run it by hand the same way.
+# Why it exists: before 2026-09-16 the government, northern, Job Bank and
+# Chinese-board tiers had not refreshed the inbox in eleven days, and the daily
+# list was whatever the Adzuna AI-phrase harvests returned.
+#
+# --no-websearch keeps it off the Brave quota.
 set -u
 
 repo="$(cd "$(dirname "$0")/.." && pwd)"
@@ -19,7 +24,7 @@ today="$(date +%F)"
 
 # One run at a time. `scan --apply` snapshots the known URLs and appends to
 # data/pipeline.md without a lock of its own, so two overlapping runs of this
-# script would both append the same new posting. mkdir is atomic; macOS ships
+# script (two terminals) would both append the same new posting. mkdir is atomic; macOS ships
 # no flock. The holder's PID is recorded so a run killed before its EXIT trap
 # (SIGKILL, power loss) does not disable every later run (Codex review
 # 2026-09-16): a lock whose holder is gone is taken over.

@@ -1,4 +1,4 @@
-"""scripts/daily_scan.sh — the launchd-run daily scan wrapper.
+"""scripts/daily_scan.sh — the hand-run daily scan wrapper.
 
 Run against a throwaway copy with a fake `.venv/bin/job-hunt`, so the real
 scan never runs. Pins the three things Codex found wrong on 2026-09-16: the
