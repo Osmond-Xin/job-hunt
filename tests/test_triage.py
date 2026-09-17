@@ -166,11 +166,21 @@ def test_public_sector_it_analyst_titles_are_in_the_systems_analyst_family():
     assert points >= 3.5
 
 
-def test_royal_bank_of_canada_is_not_the_bank_of_canada():
-    from job_hunt.services.triage import sector
+def test_an_equities_technical_analyst_is_not_the_systems_analyst_family():
+    today = date(2026, 9, 16)
+    trading = PipelineRow(url="https://example.invalid/eq", company="Bank", role="Technical Analyst - Equities Trading",
+                          location="Toronto, ON", posted="2026-09-15", source="a")
+    systems = PipelineRow(url="https://example.invalid/is", company="Hospital",
+                          role="Technical Analyst - Information Systems", location="Whitehorse, YT",
+                          posted="2026-09-15", source="a")
+    assert "one-person scope" not in score(trading, today=today)[1]
+    assert "one-person scope" in score(systems, today=today)[1]
 
-    assert sector("Royal Bank of Canada") == "private"
-    assert sector("Bank of Canada") == "public"
+
+def test_the_chinese_board_exclusion_only_applies_to_chinese_board_rows():
+    workday = PipelineRow(url="https://acme.wd3.myworkdayjobs.com/x", company="Acme",
+                          role="Machine Learning Engineer（中文优先）", location="Toronto, ON", posted="", source="workday")
+    assert excluded(workday) == ""
 
 
 def test_a_non_technical_chinese_title_is_excluded_even_with_an_english_ai_token():

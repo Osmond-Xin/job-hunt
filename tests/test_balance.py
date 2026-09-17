@@ -45,6 +45,20 @@ def _pick(items, limit, inbox=None):
         ("Work on site, Canada", "unknown"),
         ("San Francisco, CA, United States", "unknown"),
         ("", "unknown"),
+        # Round 2 (Codex review 2026-09-16).
+        ("King, ON", "gta"),
+        ("Scugog, ON", "gta"),
+        ("Brock, ON", "gta"),
+        ("Georgetown, PE", "other_province"),  # a province code outranks a city name
+        ("Windsor, NS", "other_province"),
+        ("Vancouver, WA, United States", "unknown"),
+        ("Fort Nelson BC", "north"),  # space-delimited province code
+        ("Mississauga (ON)", "gta"),
+        ("Victory Square, Vancouver", "other_province"),
+        ("Mcquade, Moncton", "other_province"),
+        ("Delta, Greater Vancouver", "other_province"),
+        ("Canada - Ontario - Toronto", "gta"),
+        ("Hybrid - Calgary, AB", "other_province"),
     ],
 )
 def test_region_names_a_place_only_on_positive_evidence(location, expected):
@@ -62,6 +76,9 @@ def test_sector_follows_the_triage_government_vocabulary():
     assert sector("Government of Yukon") == "public"
     assert sector("University of Waterloo") == "public"
     assert sector("OLG") == "public"
+    assert sector("Royal Bank of Canada") == "private"
+    assert sector("Royal  Bank of Canada") == "private"
+    assert sector("National Bank of Canada") == "private"
     assert sector("Hydro One") == "public"
     assert sector("Magical") == "private"
 

@@ -68,6 +68,20 @@ def _overflow_lane(pool: list[Ranked], shortlisted: list[Ranked]) -> list[Ranked
     return overflow[:_OVERFLOW_LANE_SLOTS]
 
 
+def _one_per_url(ranked: list[Ranked]) -> list[Ranked]:
+    """``rank`` dedups on (company, role); one posting under two employer
+    spellings survives that, and with reserved slots each copy could fill a
+    reservation of its own (Codex review 2026-09-16, round 2)."""
+    seen: set[str] = set()
+    unique: list[Ranked] = []
+    for item in ranked:
+        if item.row.url in seen:
+            continue
+        seen.add(item.row.url)
+        unique.append(item)
+    return unique
+
+
 def _employer_and_place(item: Ranked) -> tuple[str, str]:
     return item.row.company, item.row.location
 
@@ -145,13 +159,15 @@ def build_shortlist(
     ranked_limit = options.pool if options.screen else (max(limit * 4, 40) if options.verify else limit)
     # Rank everything, then choose: a plain top-N of the score sort is all
     # Greater Toronto private sector, because that is where the supply is.
-    ranked_all = rank(
-        rows,
-        limit=max(len(rows), 1),
-        seen_urls=seen_urls,
-        seen_pairs=seen_pairs,
-        seen_employers=seen_employers,
-        today=today,
+    ranked_all = _one_per_url(
+        rank(
+            rows,
+            limit=max(len(rows), 1),
+            seen_urls=seen_urls,
+            seen_pairs=seen_pairs,
+            seen_employers=seen_employers,
+            today=today,
+        )
     )
 
     def choose(items: list[Ranked], count: int) -> tuple[list[Ranked], list[ReservationGap]]:

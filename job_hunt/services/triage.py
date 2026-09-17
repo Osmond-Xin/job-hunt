@@ -194,8 +194,10 @@ GOVERNMENT_RE = re.compile(
     r"school board|university|college|crown corporation|"
     # Crown corporations under their own brand, which none of the words above
     # catch; counted private until 2026-09-16 by the shortlist balance check.
+    # Not "Bank of Canada": as a substring it made Royal Bank and National Bank
+    # public sector (Codex review 2026-09-16), and the central bank is one employer.
     r"olg|ontario lottery|hydro one|bc hydro|hydro-qu[eé]bec|manitoba hydro|saskpower|"
-    r"sasktel|canada post|(?<!royal )bank of canada|cmhc)\b",
+    r"sasktel|canada post|cmhc)\b",
     re.I,
 )
 AI_ROLE_RE = re.compile(
@@ -212,7 +214,7 @@ SOLO_ROLE_RE = re.compile(
     # or a hospital "Technical Analyst - Information Systems" fell to the
     # generic adjacent tier and ranked around #400 (measured 2026-09-16).
     r"information systems (analyst|specialist)|applications? analyst|functional analyst|"
-    r"technical analyst|it analyst|business intelligence analyst|systems administrator|"
+    r"technical analyst(?![^,]*\b(?:equit|trading|markets?|securities|investment|stocks?))|it analyst|business intelligence analyst|systems administrator|"
     r"database administrator)\b",
     re.I,
 )
@@ -255,6 +257,9 @@ ADJACENT_ROLE_RE = re.compile(
 # has no \b around "IT". The short all-caps acronyms are case-sensitive so the
 # English word "it" is not read as IT.
 _CJK_RE = re.compile(r"[\u4e00-\u9fff]")
+# Only the Chinese-board tier is screened with it: a Workday "Machine Learning
+# Engineer（中文优先）" is judged by the English vocabularies like any other row.
+_CN_BOARD_URL_RE = re.compile(r"^https?://(?:www\.)?(?:51\.ca|vansky\.com)/", re.I)
 CN_TECH_ROLE_RE = re.compile(
     r"(电脑测试|電腦測試|电脑维修|電腦維修|电脑技术|電腦技術|计算机工程|計算機工程|"
     r"软件工程|軟件工程|软件开发|軟件開發|软件测试|軟件測試|程序员|程序員|编程|編程|"
@@ -271,16 +276,27 @@ CN_TECH_ROLE_RE = re.compile(
 # An explicit non-technical occupation in the same title wins: a front-desk ad
 # "+AI marketing project" and a coding *tutor* ad both matched the list above.
 CN_NONTECH_ROLE_RE = re.compile(
-    r"(搬运|搬運|收银|收銀|服务员|服務員|企台|厨师|廚師|帮厨|幫廚|厨房|廚房|司机|司機|仓库|倉庫|"
+    r"(搬运|搬運|收银|收銀|服务员|服務員|企台|厨师|廚師|帮厨|幫廚|厨房|廚房|司机|司機|"
     r"保洁|保潔|清洁|清潔|洗碗|前台|文员|文員|销售|銷售|店员|店員|装修|裝修|木工|水电|水電|"
-    r"保姆|护工|護工|美容|美甲|按摩|针灸|針灸|老师|老師|家教|会计|會計)"
+    r"保姆|护工|護工|美容|美甲|按摩|针灸|針灸|老师|老師|家教)"
+)
+# Words that name a job only when nothing technical is being built: 仓库 is a
+# warehouse in "仓库搬运" but the system in "数据仓库开发工程师", 会计 is an
+# accountant or "会计软件开发工程师". They veto only a title with no technical
+# occupation in it (Codex review 2026-09-16, round 2).
+CN_CONTEXT_NONTECH_RE = re.compile(r"(仓库|倉庫|会计|會計)")
+CN_TECH_OCCUPATION_RE = re.compile(
+    r"(工程师|工程師|程序员|程序員|开发|開發|管理员|管理員|分析师|分析師|架构师|架構師|"
+    r"测试员|測試員|运维|運維|网管|網管)"
 )
 
 
 def cn_technical_title(title: str) -> bool:
     """True for a technical posting title on the Chinese community boards."""
     text = title or ""
-    return bool(CN_TECH_ROLE_RE.search(text)) and not CN_NONTECH_ROLE_RE.search(text)
+    if not CN_TECH_ROLE_RE.search(text) or CN_NONTECH_ROLE_RE.search(text):
+        return False
+    return not (CN_CONTEXT_NONTECH_RE.search(text) and not CN_TECH_OCCUPATION_RE.search(text))
 
 
 # Region of a free-text location, for the shortlist balance check
@@ -292,20 +308,30 @@ def cn_technical_title(title: str) -> bool:
 # "on-site" as Ontario and "Newfoundland and Labrador" as the North.
 _GTA_RE = re.compile(
     r"\b(toronto|mississauga|brampton|markham|vaughan|richmond hill|north york|east york|"
-    r"scarborough|etobicoke|oakville|burlington|milton|halton hills|georgetown|pickering|"
-    r"ajax|whitby|oshawa|clarington|bowmanville|uxbridge|aurora|newmarket|king city|"
-    r"east gwillimbury|georgina|stouffville|caledon|bolton|thornhill|unionville|don mills|"
+    r"scarborough|etobicoke|oakville|burlington|milton|halton hills|georgetown|acton|pickering|"
+    r"ajax|whitby|oshawa|clarington|bowmanville|courtice|uxbridge|scugog|port perry|brock|"
+    r"aurora|newmarket|king city|king township|king|east gwillimbury|georgina|keswick|"
+    r"whitchurch-stouffville|stouffville|caledon|bolton|thornhill|unionville|don mills|"
     r"york region|durham region|peel region|halton region|greater toronto)\b",
     re.I,
 )
 _NORTH_RE = re.compile(
     r"\b(yukon|whitehorse|northwest territories|yellowknife|inuvik|hay river|nunavut|iqaluit|"
     r"thunder bay|sudbury|sault ste\.? marie|timmins|north bay|kenora|fort mcmurray|"
-    r"grande prairie|prince george|fort st\.? john|labrador city|happy valley|"
-    r"thompson, (?:mb|manitoba)|flin flon|la ronge)\b",
+    r"grande prairie|prince george|fort st\.? john|fort nelson|labrador city|happy valley|"
+    r"thompson|flin flon|la ronge)\b",
     re.I,
 )
-_PROVINCE_CODE_RE = re.compile(r"(?:,|\()\s*(?-i:(ON|QC|AB|BC|MB|SK|NS|NB|NL|PE|PEI|YT|NT|NU))\b")
+# A province code as an address component: after a comma, a parenthesis or a
+# space, and followed by the end, a comma or a closing parenthesis — so
+# "Fort Nelson BC", "Mississauga (ON)" and "Calgary, AB" read, "Work on site" does not.
+_PROVINCE_CODE_RE = re.compile(
+    r"(?:^|[,(\s])(?-i:(ON|QC|AB|BC|MB|SK|NS|NB|NL|PE|PEI|YT|NT|NU))(?=\s*(?:$|[,)]))"
+)
+_US_RE = re.compile(
+    r"\b(?:united states|usa)\b|,\s*(?-i:(?:WA|CA|NY|TX|MA|IL|FL|OR|WI|MN|MI|PA|NJ|CO|GA|NC|VA|AZ|UT|OH))\b",
+    re.I,
+)
 _ONTARIO_RE = re.compile(
     r"\b(ontario|ottawa|hamilton|kitchener|waterloo|cambridge|london|guelph|kingston|"
     r"niagara|st\.? catharines|welland|barrie|windsor|peterborough|belleville|brantford|"
@@ -316,29 +342,43 @@ _OTHER_PROVINCE_RE = re.compile(
     r"\b(qu[eé]bec|alberta|british columbia|manitoba|saskatchewan|nova scotia|new brunswick|"
     r"newfoundland|prince edward island|montr[eé]al|vancouver|calgary|edmonton|winnipeg|"
     r"halifax|victoria|saskatoon|regina|fredericton|moncton|saint john|st\.? john'?s|burnaby|"
-    r"surrey|richmond, bc|coquitlam|kelowna|nanaimo|sherbrooke|laval|gatineau|lethbridge|"
-    r"red deer|brandon|charlottetown|dartmouth|sydney, ns|kamloops|abbotsford|langley)\b",
+    r"surrey|coquitlam|kelowna|nanaimo|sherbrooke|laval|gatineau|lethbridge|red deer|"
+    r"brandon|charlottetown|dartmouth|kamloops|abbotsford|langley|delta)\b",
     re.I,
 )
+_TERRITORY_CODES = {"YT", "NT", "NU"}
 REGIONS = ("gta", "ontario", "other_province", "north", "remote", "unknown")
 
 
 def region(location: str) -> str:
+    """Where a free-text board location is, on positive evidence only.
+
+    A province code outranks a city name: "Georgetown, PE" is not the GTA's
+    Georgetown and "Windsor, NS" is not Windsor, Ontario (Codex review
+    2026-09-16, round 2). A US address is unknown, not "other province".
+    """
     text = (location or "").strip()
     if not text:
         return "unknown"
     if REMOTE_RE.search(text):
         return "remote"
+    if _US_RE.search(text):
+        return "unknown"
+    match = _PROVINCE_CODE_RE.search(text)
+    code = match.group(1) if match else None
+    in_ontario = code == "ON" or (code is None and bool(re.search(r"\bontario\b", text, re.I)))
+    if code in _TERRITORY_CODES:
+        return "north"
     if _NORTH_RE.search(text):
         return "north"
-    if _GTA_RE.search(text):
-        return "gta"
-    code = _PROVINCE_CODE_RE.search(text)
-    if _ONTARIO_RE.search(text) or (code and code.group(1) == "ON"):
-        return "ontario"
-    if code and code.group(1) in {"YT", "NT", "NU"}:
-        return "north"
-    if _OTHER_PROVINCE_RE.search(text) or code:
+    if code is None or in_ontario:
+        if _GTA_RE.search(text):
+            return "gta"
+        if in_ontario or _ONTARIO_RE.search(text):
+            return "ontario"
+    if code is not None:
+        return "other_province"
+    if _OTHER_PROVINCE_RE.search(text):
         return "other_province"
     return "unknown"
 
@@ -443,7 +483,7 @@ def excluded(row: PipelineRow) -> str:
     # Same definition the Chinese-board scan screens with, applied again here so
     # a row admitted before a vocabulary fix — or by a looser earlier screen —
     # does not rank on an English token in a front-desk ad ("+AI marketing").
-    if _CJK_RE.search(row.role) and not cn_technical_title(row.role):
+    if _CN_BOARD_URL_RE.search(row.url) and not cn_technical_title(row.role):
         return "non-technical Chinese-board posting"
     if _too_senior(row.role):
         return "above reachable level"

@@ -90,6 +90,11 @@ def _scan(boards: dict, routes: dict[str, str], hits: list[str] | None = None):
         "招聘IT工程师",
         "AI工程师",
         "招聘Python开发",
+        # 仓库 / 会计 describe the system being built here (Codex review round 2).
+        "数据仓库开发工程师",
+        "会计软件开发工程师",
+        "前端开发工程师",
+        "数据库管理员",
     ],
 )
 def test_technical_titles_pass_the_screen(title):

@@ -353,3 +353,22 @@ def test_screen_then_verify_checks_reserved_rows_the_model_ranked_low(tmp_path) 
 
     assert "https://example.invalid/yk" in checked
     assert "Government of Yukon" in {entry.ranked.row.company for entry in result.entries if not entry.overflow}
+
+
+def test_one_posting_under_two_employer_spellings_fills_one_slot(tmp_path) -> None:
+    """Codex review 2026-09-16, round 2: rank() dedups on (company, role), so the
+    same URL under three spellings took three public-sector slots."""
+    rows = [
+        _row(f"https://example.invalid/t{i}", f"Startup{i}", "AI Engineer", "Toronto, Ontario", posted="2026-09-15")
+        for i in range(20)
+    ] + [
+        _row("https://example.invalid/yk", name, "Systems Analyst", "Whitehorse, Yukon", posted="2026-09-10")
+        for name in ("Government of Yukon", "Yukon Government", "Government of the Yukon")
+    ]
+    pipeline = _write(tmp_path, "pipeline.md", _pipeline(rows))
+    tracker = _write(tmp_path, "applications.md", "")
+    result = build_shortlist(
+        pipeline=pipeline, tracker=tracker, options=ShortlistOptions(limit=10), today=date(2026, 9, 16)
+    )
+    urls = [entry.ranked.row.url for entry in result.entries]
+    assert len(urls) == len(set(urls)) == 10
