@@ -4,7 +4,7 @@ import json
 from datetime import date
 
 from job_hunt.repositories.tracker_repo import TRACKER_HEADER, TrackerEntry, TrackerRepository
-from job_hunt.services.checkup import Check, unrecorded_artifacts
+from job_hunt.services.checkup import Check, scan_freshness, unrecorded_artifacts
 
 
 def tracker_with(tmp_path, *entries: TrackerEntry) -> TrackerRepository:
@@ -150,6 +150,10 @@ def test_run_checkup_returns_failed_check_instead_of_raising(monkeypatch):
         lambda **_: Check("human mail not buried", ok=True, detail="OK", items=[])
     )
     monkeypatch.setattr(
+        "job_hunt.services.checkup.scan_freshness",
+        lambda **_: Check("weekly scan", ok=True, detail="OK", items=[])
+    )
+    monkeypatch.setattr(
         "job_hunt.services.checkup.outreach_followups",
         raise_error
     )
@@ -157,7 +161,7 @@ def test_run_checkup_returns_failed_check_instead_of_raising(monkeypatch):
     checks = run_checkup(today=SINCE)
 
     # Should return one Check per registered check, none of them raising
-    assert len(checks) == 6
+    assert len(checks) == 7
     assert all(isinstance(c, Check) for c in checks)
 
     # Every check but the raising one is ok
@@ -198,3 +202,26 @@ def test_bad_days_argument_produces_failing_check():
     assert checks[0].name == "date range computation"
     assert "TypeError" in checks[0].detail
     assert checks[0].fix != ""
+
+
+def _pipeline(tmp_path, *scan_dates: str):
+    path = tmp_path / "pipeline.md"
+    path.write_text(
+        "# Pipeline\n\n## Pending\n" + "".join(f"\n### Direct ATS Scan — {d}\n\n- [ ] https://x | Co | Role\n" for d in scan_dates),
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_the_weekly_scan_reminder_fires_a_week_after_the_last_scan(tmp_path):
+    """2026-09-17: weekly or on request, run by the operator; this check is the reminder."""
+    pipeline = _pipeline(tmp_path, "2026-09-01", "2026-09-16")
+    assert scan_freshness(pipeline=pipeline, today=date(2026, 9, 22)).ok
+    due = scan_freshness(pipeline=pipeline, today=date(2026, 9, 23))
+    assert not due.ok
+    assert "2026-09-16" in due.detail
+    assert "daily_scan.sh" in due.fix
+
+
+def test_an_inbox_no_scan_ever_wrote_is_reported(tmp_path):
+    assert not scan_freshness(pipeline=tmp_path / "missing.md", today=date(2026, 9, 17)).ok
