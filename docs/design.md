@@ -89,9 +89,9 @@ Core local state:
 
 ## Discovery
 
-`job-hunt scan` runs a seven-tier scan (`job_hunt/services/scan.py::scan_portals`).
+`job-hunt scan` runs an eight-tier scan (`job_hunt/services/scan.py::scan_portals`).
 Tiers 1–3 are per-company or WebSearch-driven and are configured in
-`config/portals.yml`. Tiers 4–7 are quota-free direct board adapters — no
+`config/portals.yml`. Tiers 4–8 are quota-free direct board adapters — no
 WebSearch provider, no search quota, structured fields straight from each
 source. Scans branch on the operator mode at runtime.
 
@@ -100,6 +100,8 @@ source. Scans branch on the operator mode at runtime.
 - Greenhouse
 - Lever
 - Ashby
+- BambooHR
+- Workable (added 2026-09-16 for China-linked employers — Moomoo, CIeNET)
 
 **Tier 2 — per-company WebSearch** (Brave):
 
@@ -142,7 +144,7 @@ Channels run only when a WebSearch provider is configured. Results flow
 through the same title / location / dedup pipeline as tier-1 and tier-2.
 Restrict a single run to one channel via `job-hunt scan --channel <id>`.
 
-### Tiers 4–7 — Quota-Free Direct Boards
+### Tiers 4–8 — Quota-Free Direct Boards
 
 These run whenever `--company` is not set, independent of whether a
 WebSearch provider is configured or tier 3 is enabled. Because each source
@@ -153,8 +155,8 @@ alone; requiring a positive match on top of an already-scoped source was
 measured to discard roughly half of Job Bank's results to title-naming
 variance. Every tier here reports its per-source coverage (collected /
 errors / truncated) so a quiet failure reads as a failure, not as "no
-postings this week" — Workday and Adzuna through a `SourceResult`/
-`SourceHealth` pair (`job_hunt/models/posting.py`), the other three through
+postings this week" — Workday, Adzuna and the Chinese boards through a
+`SourceResult`/`SourceHealth` pair (`job_hunt/models/posting.py`), the other three through
 an older `stats` dict, a migration in progress (`docs/module-map.md` has the
 detail and what each of the three needs first).
 
@@ -204,6 +206,17 @@ detail and what each of the three needs first).
   Adzuna call returns up to 50 structured rows against ten links per Brave
   call.
 
+- **Tier 8 — Chinese-language community boards** (`job_hunt/services/cn_boards.py`,
+  config: `portals.yml::cn_boards`). 51.ca (Toronto-based) and Vansky (Greater
+  Vancouver), where Chinese-owned and Chinese-Canadian employers post in
+  Chinese and no English aggregator syndicates them. Of 20 channels surveyed
+  2026-09-16 these are the two readable without a login or an anti-bot
+  challenge; the rest are listed in the module docstring so nobody retries
+  them. Under 1% of their posts are technical, so titles are screened with
+  `triage.cn_technical_title` before any detail request — the same definition
+  triage scores Chinese titles with. A 200 the module cannot read (a
+  challenge page, changed markup) counts as an error, never as a quiet day.
+
 Two things a reader needs and cannot currently find anywhere else:
 
 - `config/portals.yml` and `config/settings.yml` are gitignored — they hold
@@ -212,7 +225,8 @@ Two things a reader needs and cannot currently find anywhere else:
   checked in — but that example file has no `jobbank_direct`, `gov_boards`,
   `regional_boards`, or `workday_boards` sections at all, and
   `config/settings.example.yml` has no `adzuna` section either. So the
-  authoritative list of tiers 4–7 sources, and how they are tuned, exists
+  authoritative list of tiers 4–7 sources (tier 8's `cn_boards` section is in
+  the example file), and how they are tuned, exists
   only on the machine where `portals.yml` / `settings.yml` were hand-built —
   not in anything checked into this repo.
 - `config/sites.yml` declares a `kind` / `preferred_adapter` /

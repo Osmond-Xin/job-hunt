@@ -20,7 +20,7 @@ from datetime import date
 from pathlib import Path
 from typing import Callable
 
-from job_hunt.services.balance import Mix, Quotas, Shortfall, balanced_slate
+from job_hunt.services.balance import MIN_SCORE, Mix, ReservationGap, balanced_slate
 from job_hunt.services.link_check import SKIPPED, Verdict, annotate_pipeline, check_urls
 from job_hunt.services.screen import Screened, screen
 from job_hunt.services.triage import (
@@ -68,6 +68,10 @@ def _overflow_lane(pool: list[Ranked], shortlisted: list[Ranked]) -> list[Ranked
     return overflow[:_OVERFLOW_LANE_SLOTS]
 
 
+def _employer_and_place(item: Ranked) -> tuple[str, str]:
+    return item.row.company, item.row.location
+
+
 @dataclass(frozen=True)
 class ShortlistOptions:
     limit: int = 10
@@ -75,7 +79,6 @@ class ShortlistOptions:
     pool: int = 60
     verify: bool = False
     verify_delay: float = 1.0
-    quotas: Quotas = Quotas()
 
 
 @dataclass(frozen=True)
@@ -108,7 +111,7 @@ class Shortlist:
     # see `services/balance.py` for why the list is chosen, not just sorted.
     mix_shown: Mix = Mix()
     mix_pool: Mix = Mix()
-    shortfalls: tuple[Shortfall, ...] = ()
+    reservation_gaps: tuple[ReservationGap, ...] = ()
 
 
 def build_shortlist(
@@ -151,17 +154,20 @@ def build_shortlist(
         today=today,
     )
 
-    def choose(items: list[Ranked], count: int) -> tuple[list[Ranked], list[Shortfall]]:
+    def choose(items: list[Ranked], count: int) -> tuple[list[Ranked], list[ReservationGap]]:
+        # Every stage that cuts the list chooses rather than slices, and every
+        # gap is measured against the whole ranked inbox, so the operator can
+        # tell a sourcing gap from a row the screen or a dead link removed.
         return balanced_slate(
             items,
             count,
             company=lambda item: item.row.company,
             location=lambda item: item.row.location,
             score=lambda item: item.score,
-            quotas=options.quotas,
+            inbox=ranked_all,
         )
 
-    best, shortfalls = choose(ranked_all, ranked_limit)
+    best, reservation_gaps = choose(ranked_all, ranked_limit)
 
     fits: dict[int, float] = {}
     reasons: dict[int, str] = {}
@@ -194,7 +200,7 @@ def build_shortlist(
         if options.verify:
             best = list(overflow_pool)
         else:
-            best, shortfalls = choose(overflow_pool, limit)
+            best, reservation_gaps = choose(overflow_pool, limit)
         for item, verdict in kept:
             if verdict.screened:
                 fits[id(item)] = verdict.fit
@@ -209,7 +215,10 @@ def build_shortlist(
         # One batched call: `check_urls` shares a single client and only sleeps
         # *between* URLs, so feeding it one URL at a time meant no keep-alive
         # and no delay at all — the opposite of the intent.
-        head = best[: max(limit * 4, 40)]
+        # Chosen, not sliced: after --screen, `best` is in model-fit order, and a
+        # plain head of it dropped reserved rows the model ranked low before
+        # their links were ever checked (Codex review 2026-09-16).
+        head, _ = choose(best, max(limit * 4, 40))
         progress(f"verifying {len(head)} candidates…")
         verdicts_by_url = checker([item.row.url for item in head], delay_s=options.verify_delay)
         survivors: list[Ranked] = []
@@ -223,7 +232,7 @@ def build_shortlist(
         # Survivors keep their rank order; the shortfall is reported below
         # rather than silently handed back as a shorter list.
         shortfall = limit - len(survivors)
-        best, shortfalls = choose(survivors, limit)
+        best, reservation_gaps = choose(survivors, limit)
         # The lane must never resurrect a posting verification just killed, and
         # rows past `head` were never checked at all.
         if overflow_pool:
@@ -272,13 +281,7 @@ def build_shortlist(
         marked_in_pipeline=marked,
         shortfall=shortfall,
         screen_error=screen_error,
-        mix_shown=Mix.of([(item.row.company, item.row.location) for item in best]),
-        mix_pool=Mix.of(
-            [
-                (item.row.company, item.row.location)
-                for item in ranked_all
-                if item.score >= options.quotas.min_score
-            ]
-        ),
-        shortfalls=tuple(shortfalls),
+        mix_shown=Mix.of([_employer_and_place(item) for item in best]),
+        mix_pool=Mix.of([_employer_and_place(item) for item in ranked_all if item.score >= MIN_SCORE]),
+        reservation_gaps=tuple(reservation_gaps),
     )

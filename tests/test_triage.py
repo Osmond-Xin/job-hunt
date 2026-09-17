@@ -153,6 +153,35 @@ def test_a_chinese_tech_title_is_not_scored_as_off_target():
     assert points > score(server, today=today)[0]
 
 
+def test_public_sector_it_analyst_titles_are_in_the_systems_analyst_family():
+    """A Government of Yukon "Functional Analyst" scored 2.0 and ranked ~#400."""
+    today = date(2026, 9, 16)
+    yukon = PipelineRow(
+        url="https://example.invalid/yk", company="Government of Yukon", role="Functional Analyst - (69058)",
+        location="Whitehorse, Yukon", posted="2026-09-15", source="adzuna",
+    )
+    points, reasons = score(yukon, today=today)
+    assert "one-person scope" in reasons
+    assert "public sector" in reasons
+    assert points >= 3.5
+
+
+def test_royal_bank_of_canada_is_not_the_bank_of_canada():
+    from job_hunt.services.triage import sector
+
+    assert sector("Royal Bank of Canada") == "private"
+    assert sector("Bank of Canada") == "public"
+
+
+def test_a_non_technical_chinese_title_is_excluded_even_with_an_english_ai_token():
+    row = PipelineRow(
+        url="https://www.vansky.com/info/adfree/2846980.html", company="Arica Zhong",
+        role="5星诊所聘请前台兼职+AI marketing project", location="Surrey, BC, Canada",
+        posted="2026-09-12", source="vansky",
+    )
+    assert excluded(row) == "non-technical Chinese-board posting"
+
+
 def test_toronto_is_not_excluded_or_scored_on_location():
     """Toronto used to be down-ranked, then merely a tie-break loser; now
     location plays no part in the score at all."""

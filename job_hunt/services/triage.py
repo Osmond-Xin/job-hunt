@@ -191,7 +191,11 @@ GOVERNMENT_RE = re.compile(
     r"\b(government|gouvernement|province of|city of|town of|village of|township of|"
     r"municipality|regional municipality|public service|health authority|"
     r"nova scotia health|regional health|health services|school district|"
-    r"school board|university|college|crown corporation)\b",
+    r"school board|university|college|crown corporation|"
+    # Crown corporations under their own brand, which none of the words above
+    # catch; counted private until 2026-09-16 by the shortlist balance check.
+    r"olg|ontario lottery|hydro one|bc hydro|hydro-qu[eé]bec|manitoba hydro|saskpower|"
+    r"sasktel|canada post|(?<!royal )bank of canada|cmhc)\b",
     re.I,
 )
 AI_ROLE_RE = re.compile(
@@ -202,7 +206,14 @@ AI_ROLE_RE = re.compile(
 SOLO_ROLE_RE = re.compile(
     r"\b(first technical hire|sole developer|only developer|founding engineer|generalist|"
     r"digital transformation|automation specialist|systems analyst|solutions? (engineer|"
-    r"architect|specialist)|technical lead|full[- ]stack)\b",
+    r"architect|specialist)|technical lead|full[- ]stack|"
+    # The systems-analyst family under the names public employers use. Only
+    # "systems analyst" was here, so a Government of Yukon "Functional Analyst"
+    # or a hospital "Technical Analyst - Information Systems" fell to the
+    # generic adjacent tier and ranked around #400 (measured 2026-09-16).
+    r"information systems (analyst|specialist)|applications? analyst|functional analyst|"
+    r"technical analyst|it analyst|business intelligence analyst|systems administrator|"
+    r"database administrator)\b",
     re.I,
 )
 # Work arrangement (score step 5). "Hybrid" still pins the job to a city, so
@@ -232,18 +243,108 @@ ADJACENT_ROLE_RE = re.compile(
     r"business analyst|product manager|analyst|developer|engineer)\b",
     re.I,
 )
-# Chinese-titled rows from the 51.ca / Vansky tier (services/cn_boards.py). The
-# English vocabularies above cannot read them, so every one scored as an
-# "off-target role" and sank — the tier would find a systems administrator and
-# triage would bury it. No \b: Python treats CJK characters as word characters,
-# so a boundary never falls inside "电脑测试员". Adjacent tier only, never
-# higher: a Chinese title says the work is technical, not what shape it is.
+# Chinese-titled rows from the 51.ca / Vansky tier (services/cn_boards.py). This
+# is the one definition of "a technical posting" for those boards: cn_boards
+# screens on it before fetching anything, and score() below reads it so a row
+# the scan admitted is not then buried as an off-target role.
+#
+# Occupation phrases, not topic words. "电脑" alone admitted a warehouse mover at
+# a computer company and a cashier "familiar with computers" (Codex review
+# 2026-09-16). Latin terms are bounded by ASCII letters and digits rather than
+# \b, because Python treats CJK characters as word characters and "招聘IT工程师"
+# has no \b around "IT". The short all-caps acronyms are case-sensitive so the
+# English word "it" is not read as IT.
+_CJK_RE = re.compile(r"[\u4e00-\u9fff]")
 CN_TECH_ROLE_RE = re.compile(
-    r"(电脑|電腦|计算机|計算機|软件|軟件|程序员|程序員|编程|編程|开发工程师|開發工程師|"
-    r"前端|后端|後端|全栈|全棧|数据分析|數據分析|数据库|數據庫|数据工程|數據工程|"
-    r"网管|網管|网络管理|網絡管理|系统管理|系統管理|运维|運維|技术支持|技術支持|人工智能|"
-    r"网站开发|網站開發)"
+    r"(电脑测试|電腦測試|电脑维修|電腦維修|电脑技术|電腦技術|计算机工程|計算機工程|"
+    r"软件工程|軟件工程|软件开发|軟件開發|软件测试|軟件測試|程序员|程序員|编程|編程|"
+    r"开发工程师|開發工程師|前端|后端|後端|全栈|全棧|数据分析|數據分析|数据库|數據庫|"
+    r"数据工程|數據工程|网管|網管|网络管理|網絡管理|网络工程|網絡工程|系统管理|系統管理|"
+    r"系统工程师|系統工程師|运维|運維|技术支持|技術支持|人工智能|网站开发|網站開發|算法工程|"
+    r"(?<![A-Za-z0-9])(?-i:IT|I\.T\.|AI|LLM|ERP|BI|SQL)(?![A-Za-z0-9])|"
+    r"(?<![A-Za-z])(?:power ?bi|python|java|devops|developers?|software|programmers?|"
+    r"data (?:analyst|engineer|scientist)s?|database|network (?:admin|administrator|engineer|"
+    r"technician)s?|sys ?admin|systems? administrator|help ?desk|cloud engineer|"
+    r"web developer)(?![A-Za-z]))",
+    re.I,
 )
+# An explicit non-technical occupation in the same title wins: a front-desk ad
+# "+AI marketing project" and a coding *tutor* ad both matched the list above.
+CN_NONTECH_ROLE_RE = re.compile(
+    r"(搬运|搬運|收银|收銀|服务员|服務員|企台|厨师|廚師|帮厨|幫廚|厨房|廚房|司机|司機|仓库|倉庫|"
+    r"保洁|保潔|清洁|清潔|洗碗|前台|文员|文員|销售|銷售|店员|店員|装修|裝修|木工|水电|水電|"
+    r"保姆|护工|護工|美容|美甲|按摩|针灸|針灸|老师|老師|家教|会计|會計)"
+)
+
+
+def cn_technical_title(title: str) -> bool:
+    """True for a technical posting title on the Chinese community boards."""
+    text = title or ""
+    return bool(CN_TECH_ROLE_RE.search(text)) and not CN_NONTECH_ROLE_RE.search(text)
+
+
+# Region of a free-text location, for the shortlist balance check
+# (services/balance.py). Kept here beside PLACE_RE and REMOTE_RE so there is one
+# place that reads locations. Deliberately stricter than PLACE_RE: a region is
+# only named on positive evidence. Anything else is "unknown", which fills no
+# reservation — the first version fell through to "other province" and let
+# "Upto $85/hr" and "San Francisco, CA" count as work outside the GTA, read
+# "on-site" as Ontario and "Newfoundland and Labrador" as the North.
+_GTA_RE = re.compile(
+    r"\b(toronto|mississauga|brampton|markham|vaughan|richmond hill|north york|east york|"
+    r"scarborough|etobicoke|oakville|burlington|milton|halton hills|georgetown|pickering|"
+    r"ajax|whitby|oshawa|clarington|bowmanville|uxbridge|aurora|newmarket|king city|"
+    r"east gwillimbury|georgina|stouffville|caledon|bolton|thornhill|unionville|don mills|"
+    r"york region|durham region|peel region|halton region|greater toronto)\b",
+    re.I,
+)
+_NORTH_RE = re.compile(
+    r"\b(yukon|whitehorse|northwest territories|yellowknife|inuvik|hay river|nunavut|iqaluit|"
+    r"thunder bay|sudbury|sault ste\.? marie|timmins|north bay|kenora|fort mcmurray|"
+    r"grande prairie|prince george|fort st\.? john|labrador city|happy valley|"
+    r"thompson, (?:mb|manitoba)|flin flon|la ronge)\b",
+    re.I,
+)
+_PROVINCE_CODE_RE = re.compile(r"(?:,|\()\s*(?-i:(ON|QC|AB|BC|MB|SK|NS|NB|NL|PE|PEI|YT|NT|NU))\b")
+_ONTARIO_RE = re.compile(
+    r"\b(ontario|ottawa|hamilton|kitchener|waterloo|cambridge|london|guelph|kingston|"
+    r"niagara|st\.? catharines|welland|barrie|windsor|peterborough|belleville|brantford|"
+    r"sarnia|cornwall|orillia)\b",
+    re.I,
+)
+_OTHER_PROVINCE_RE = re.compile(
+    r"\b(qu[eé]bec|alberta|british columbia|manitoba|saskatchewan|nova scotia|new brunswick|"
+    r"newfoundland|prince edward island|montr[eé]al|vancouver|calgary|edmonton|winnipeg|"
+    r"halifax|victoria|saskatoon|regina|fredericton|moncton|saint john|st\.? john'?s|burnaby|"
+    r"surrey|richmond, bc|coquitlam|kelowna|nanaimo|sherbrooke|laval|gatineau|lethbridge|"
+    r"red deer|brandon|charlottetown|dartmouth|sydney, ns|kamloops|abbotsford|langley)\b",
+    re.I,
+)
+REGIONS = ("gta", "ontario", "other_province", "north", "remote", "unknown")
+
+
+def region(location: str) -> str:
+    text = (location or "").strip()
+    if not text:
+        return "unknown"
+    if REMOTE_RE.search(text):
+        return "remote"
+    if _NORTH_RE.search(text):
+        return "north"
+    if _GTA_RE.search(text):
+        return "gta"
+    code = _PROVINCE_CODE_RE.search(text)
+    if _ONTARIO_RE.search(text) or (code and code.group(1) == "ON"):
+        return "ontario"
+    if code and code.group(1) in {"YT", "NT", "NU"}:
+        return "north"
+    if _OTHER_PROVINCE_RE.search(text) or code:
+        return "other_province"
+    return "unknown"
+
+
+def sector(company: str) -> str:
+    return "public" if GOVERNMENT_RE.search(company or "") else "private"
 
 
 @dataclass(frozen=True)
@@ -339,6 +440,11 @@ def excluded(row: PipelineRow) -> str:
     """Reason this row should never reach the operator, or ``""``."""
     if AGENCY_RE.search(row.company):
         return "staffing agency"
+    # Same definition the Chinese-board scan screens with, applied again here so
+    # a row admitted before a vocabulary fix — or by a looser earlier screen —
+    # does not rank on an English token in a front-desk ad ("+AI marketing").
+    if _CJK_RE.search(row.role) and not cn_technical_title(row.role):
+        return "non-technical Chinese-board posting"
     if _too_senior(row.role):
         return "above reachable level"
     if CLEARANCE_RE.search(row.haystack):
@@ -407,7 +513,9 @@ def score(row: PipelineRow, *, today: date | None = None) -> tuple[float, list[s
     elif SOLO_ROLE_RE.search(row.role):
         points += 2
         reasons.append("one-person scope")
-    elif ADJACENT_ROLE_RE.search(row.role) or CN_TECH_ROLE_RE.search(row.role):
+    elif ADJACENT_ROLE_RE.search(row.role) or (
+        _CJK_RE.search(row.role) and cn_technical_title(row.role)
+    ):
         points += 1
     else:
         points -= 2

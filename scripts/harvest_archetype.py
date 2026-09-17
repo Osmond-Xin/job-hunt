@@ -198,13 +198,8 @@ def main():
     out.write_text(json.dumps({"kept": kept, "all": rows}, indent=1))
     from collections import Counter
     print(f"\nfetched {len(rows)} unique · kept {len(kept)}", file=sys.stderr)
-    # This harvest reads Adzuna with AI phrases only, so by construction it is
-    # private sector and metro-heavy. Say so every run: on 2026-09-16 this lane
-    # was the whole daily list and public / northern work had silently vanished.
-    # The balanced view of the inbox is `job-hunt triage`.
-    from job_hunt.services.balance import Mix
-    print(f"balance of kept: {Mix.of([(r['company'], r['location']) for r in kept]).line()}"
-          " — AI-phrase lane only; run `job-hunt triage` for the balanced inbox", file=sys.stderr)
+    from job_hunt.services.balance import harvest_line
+    print(harvest_line(kept), file=sys.stderr)
     print(Counter(r["drop"] for r in rows if r["drop"]).most_common(), file=sys.stderr)
     for r in kept[:80]:
         sal = f"{int(r['salary_min']//1000)}-{int(r['salary_max']//1000)}k" if r["salary_min"] else "-"

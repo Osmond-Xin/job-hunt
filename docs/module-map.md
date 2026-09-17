@@ -151,9 +151,10 @@ job_hunt/
 │   └── models.py            Settings (config/settings.yml) — LlmConfig,
 │                             WebSearchConfig, AdzunaConfig, etc.
 ├── services/                 34 top-level modules + 5 subpackages
-│   ├── scan.py               the 7-tier scan orchestrator (below)
+│   ├── scan.py               the 8-tier scan orchestrator (below)
 │   ├── gov_boards.py, regional_boards.py, jobbank.py, adzuna.py,
-│   │   workday_boards.py     tier 4–7 board adapters (docs/design.md
+│   │   workday_boards.py,
+│   │   cn_boards.py          tier 4–8 board adapters (docs/design.md
 │   │                         §Discovery has the per-source detail)
 │   ├── posted_date.py         one body of "N days/hours ago" → ISO date
 │   │                           arithmetic, shared by gov_boards.py and scan.py's
@@ -292,8 +293,9 @@ incident and would silently break if reordered:
 
 **`shortlist.py::build_shortlist()`** composes `triage.py`'s leaves (parse,
 exclude, rank) with an optional LLM screen, optional link verification, and
-an immigration lane, in that order. Five invariants, each with its own test
-in `tests/test_shortlist.py`:
+an overflow lane, in that order — and every stage that cuts the list
+*chooses* rather than slices, through `balance.py::balanced_slate`. Six
+invariants, each with its own test in `tests/test_shortlist.py`:
 
 1. **Pool widening before ranking cuts.** With `--screen` or `--verify`, the
    pool ranked is wider than the limit asked for (`options.pool` for screen;
@@ -309,6 +311,16 @@ in `tests/test_shortlist.py`:
 5. **`SKIPPED` never folds into "nothing dead."** A host the link checker
    declines to fetch comes back `SKIPPED`, not clean — reporting it as clean
    is how a dead posting reached the shortlist once (2026-08-15).
+6. **Cuts reserve slots for balance** (2026-09-16). The pure score sort was
+   53% Greater Toronto with no northern row while 402 public and 95 northern
+   rows sat in the inbox. The ranked pool, the post-screen cut, the
+   verification batch and its survivors are each chosen with slots reserved
+   for the North (10%), public sector (30%) and outside the GTA (50%), filled
+   only from rows scoring ≥ `balance.MIN_SCORE` (2.0, the operator's floor).
+   The score is untouched. Unfilled reservations come back as
+   `reservation_gaps`, each saying whether the inbox had the rows at all
+   (sourcing) or they were lost to the screen or a dead link. Location and
+   sector are read by `triage.region` / `triage.sector`.
 
 **`batch.py::run_batch()`** is the semaphore-bounded concurrent runner behind
 `evaluate-batch`: it gathers the evaluate graph over a target list, tracks
@@ -361,7 +373,7 @@ government site, a new aggregator API, a new ATS not yet supported): trace
 the existing tier-4–7 adapters as the template. There are two shapes to
 copy from, and which one depends on where the migration below stands.
 
-Two of the five tiers — Workday and Adzuna — return a
+Three of the six tiers — Workday, Adzuna and the Chinese boards — return a
 `models.posting.SourceResult` (postings + `SourceHealth`) from a
 `scan_<source>_source()` function; that is the shape a new adapter should
 target. The other three —
@@ -401,9 +413,9 @@ go through — every mapper, converted or not, builds its rows with it.
 3. **`job_hunt/services/scan.py`** — import the new `scan_<source>`
    (or `scan_<source>_source`) function; write a
    `_<source>_scanned_jobs(config, warnings=None)` wrapper following the
-   existing five (`_jobbank_scanned_jobs`, `_gov_board_scanned_jobs`,
+   existing six (`_jobbank_scanned_jobs`, `_gov_board_scanned_jobs`,
    `_regional_board_scanned_jobs`, `_workday_scanned_jobs`,
-   `_adzuna_scanned_jobs`) — it maps rows onto `ScannedJob` (defined in this
+   `_adzuna_scanned_jobs`, `_cn_board_scanned_jobs`) — it maps rows onto `ScannedJob` (defined in this
    same file), reports sweep-level exceptions into `warnings` rather than
    propagating them, and (for the `stats`-shaped tiers) forwards
    `_board_coverage_warnings(stats)`. Add the wrapper's return value to the

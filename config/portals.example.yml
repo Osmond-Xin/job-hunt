@@ -114,3 +114,20 @@ discovery_channels:
     modes: [full]
     query_template: '"{role}" "{location}" site:ca.indeed.com'
     locations: ["Thunder Bay", "Sudbury", "Saskatoon"]
+
+# ---------------------------------------------------------------------------
+# Tier 8 — Chinese-language community boards (job_hunt/services/cn_boards.py).
+# Technical postings only; titles are screened before any detail request.
+# ---------------------------------------------------------------------------
+cn_boards:
+  enabled: true
+  delay_s: 0.6
+  timeout_s: 30.0
+  boards:
+    51ca:
+      enabled: true
+      max_pages: 90       # ~66 pages measured 2026-09-16; bounds a runaway
+    vansky:
+      enabled: true
+      max_age_days: 14    # walk back until free ads are older than this
+      max_pages: 40

@@ -5,7 +5,7 @@ on community classifieds that no English aggregator syndicates. Measured
 2026-09-16 over 20 such channels: two are readable without a login or an
 anti-bot challenge and carry real volume, and they are the two read here.
 
-- **51.ca 加国无忧** (Greater Toronto) — ``/jobs/job-posts?page=N``, 15 cards a
+- **51.ca 加国无忧** (Toronto-based) — ``/jobs/job-posts?page=N``, 15 cards a
   page, ~66 pages, ~990 live posts. The card carries title, district, employer
   handle and badges but no date; each posting page carries a schema.org
   ``JobPosting`` block with ``datePosted``, ``validThrough`` and the employer.
@@ -13,15 +13,15 @@ anti-bot challenge and carry real volume, and they are the two read here.
   in schema.org microdata with ``dateModified``. Pinned commercial ads repeat on
   every page and are always "fresh"; only free ads say how far back a page is.
 
-Fewer than 1% of posts on either board are technical — the rest are
-restaurant, trades, retail and office work — so the listing is screened on a
-tech keyword list *before* any detail page is fetched. A posting that slips
-through is triaged like any other; one that is screened out never costs a
-request. Measured yield on 2026-09-16: one real fit (a systems & network
-administrator) in ~2,100 posts.
+Fewer than 1% of posts on either board are technical, so each listing is
+screened on its title with ``triage.cn_technical_title`` — the same definition
+triage scores with — before any detail page is fetched. Measured yield on
+2026-09-16: one real fit (a systems & network administrator) in ~2,100 posts.
 
-Deliberately not read, because every one of them needs a login or answers with
-an anti-bot challenge and this tier does not work around those: 约克论坛
+A board that answers 200 with a page this module cannot read — a challenge
+page, or changed markup — is counted as an error, never as a quiet day. This
+tier does not work around challenges; it reports them. Deliberately not read at
+all, because each needs a login or answers with an anti-bot challenge: 约克论坛
 (signed API), 温哥华家园 (Cloudflare), rolia, CFC, BOSS直聘, 猎聘, 51job, 智联,
 小红书.
 """
@@ -37,6 +37,9 @@ from typing import Any, Callable
 
 import httpx
 
+from job_hunt.models.posting import JobPosting, SourceHealth, SourceResult, from_row
+from job_hunt.services.triage import cn_technical_title
+
 _USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/128.0 Safari/537.36"
@@ -47,21 +50,22 @@ FIFTYONE_LIST = f"{FIFTYONE_BASE}/jobs/job-posts"
 VANSKY_BASE = "https://www.vansky.com/info/"
 VANSKY_LIST = f"{VANSKY_BASE}ZPQZ01.html"
 
-# Title-level screen. Kept to words that name the work, in simplified and
-# traditional Chinese and English. Broad words like "system", "support",
-# "engineer" or "technician" are left out on purpose: on these boards they are
-# mostly HVAC, renovation and security-camera installers.
-TECH_RE = re.compile(
-    r"(\bIT\b|I\.T\.|电脑|電腦|计算机|計算機|软件|軟件|程序员|程序員|编程|編程|"
-    r"开发工程师|開發工程師|前端|后端|後端|全栈|全棧|数据分析|數據分析|数据库|數據庫|"
-    r"数据工程|數據工程|网管|網管|网络管理|網絡管理|系统管理|系統管理|运维|運維|"
-    r"技术支持|技術支持|人工智能|网站开发|網站開發|"
-    r"\bdevelopers?\b|\bsoftware\b|\bprogrammers?\b|\bdata (?:analyst|engineer|scientist)s?\b|"
-    r"\bdatabase\b|\bnetwork (?:admin|administrator|engineer|technician)s?\b|"
-    r"\bsys ?admin|\bsystems? administrator|\bhelp ?desk\b|\bdevops\b|\bcloud engineer|"
-    r"\bAI\b|\bLLM\b|\bpython\b|\bjava\b|\bweb developer|\bERP\b|\bpower ?bi\b)",
-    re.I,
-)
+# 51.ca writes the locality in Chinese. Only names that are unambiguous are
+# mapped; anything else is kept as written with ", Canada" and reads as an
+# unknown region — 51.ca is Toronto-based, but a posting there can be in Ottawa,
+# and the first version filed every one of them as Greater Toronto.
+_51CA_LOCALITIES = {
+    "多市中心": "Toronto, ON", "多伦多": "Toronto, ON", "北约克": "North York, ON",
+    "士嘉堡": "Scarborough, ON", "怡陶碧谷": "Etobicoke, ON", "万锦": "Markham, ON",
+    "列治文山": "Richmond Hill, ON", "密西沙加": "Mississauga, ON", "旺市": "Vaughan, ON",
+    "宾顿": "Brampton, ON", "奥克维尔": "Oakville, ON", "奥罗拉": "Aurora, ON",
+    "纽马克特": "Newmarket, ON", "皮克林": "Pickering, ON", "阿贾克斯": "Ajax, ON",
+    "惠特比": "Whitby, ON", "奥沙瓦": "Oshawa, ON", "伯灵顿": "Burlington, ON",
+    "大多地区": "Greater Toronto Area, ON", "汉密尔顿": "Hamilton, ON",
+    "滑铁卢": "Waterloo, ON", "基奇纳": "Kitchener, ON", "圭尔夫": "Guelph, ON",
+    "渥太华": "Ottawa, ON", "京士顿": "Kingston, ON", "巴里": "Barrie, ON",
+    "伦敦": "London, ON", "温莎": "Windsor, ON", "尼亚加拉": "Niagara, ON",
+}
 
 _TAG_RE = re.compile(r"<[^>]+>")
 
@@ -73,10 +77,6 @@ def _text(fragment: str) -> str:
 def _cell(value: str) -> str:
     """The pipeline inbox is a ` | `-separated line; a pipe inside a field splits it."""
     return value.replace("|", "/").strip()
-
-
-def is_technical(text: str) -> bool:
-    return bool(TECH_RE.search(text or ""))
 
 
 # --------------------------------------------------------------------------- 51.ca
@@ -101,7 +101,6 @@ def parse_51ca_list(page_html: str) -> list[dict[str, str]]:
                 "title": _text(title.group(1)),
                 "district": _text(district.group(1)).lstrip("· ").strip() if district else "",
                 "company": _text(employer.group(1)) if employer else "",
-                "badges": " ".join(_text(b) for b in re.findall(r'item-badge[^>]*>(.*?)</span>', card, re.S)),
             }
         )
     return rows
@@ -116,16 +115,22 @@ def parse_51ca_detail(page_html: str) -> dict[str, str]:
             continue
         if not isinstance(data, dict) or data.get("@type") != "JobPosting":
             continue
-        address = ((data.get("jobLocation") or {}).get("address") or {})
+        address = (data.get("jobLocation") or {}).get("address") or {}
         return {
             "title": _text(data.get("title", "")),
             "company": _text((data.get("hiringOrganization") or {}).get("name", "")),
             "posted": str(data.get("datePosted", ""))[:10],
             "closes": str(data.get("validThrough", ""))[:10],
             "locality": _text(address.get("addressLocality", "")),
-            "description": _text(data.get("description", "")),
         }
     return {}
+
+
+def _51ca_location(locality: str) -> str:
+    if not locality:
+        return "Canada"
+    mapped = _51CA_LOCALITIES.get(locality)
+    return f"{mapped}, Canada" if mapped else f"{locality}, Canada"
 
 
 # --------------------------------------------------------------------------- Vansky
@@ -152,7 +157,6 @@ def parse_vansky_list(page_html: str) -> list[dict[str, str]]:
         title = meta("headline")
         if not path or not title:
             continue
-        description = re.search(r'itemprop="description"[^>]*>(.*?)</div>', block, re.S)
         city = re.search(r'<td class="adph-font">\s*<div>\s*([^<]*?)\s*</div>', block)
         rows.append(
             {
@@ -160,7 +164,6 @@ def parse_vansky_list(page_html: str) -> list[dict[str, str]]:
                 "title": _text(title),
                 "company": _text(meta("author")),
                 "posted": _vansky_date(meta("dateModified")),
-                "description": _text(description.group(1)) if description else "",
                 "city": _text(city.group(1)) if city else "",
                 # Pinned commercial ads sit on every page with a fresh date; only
                 # free ads tell the walk how far back the listing has gone.
@@ -173,145 +176,174 @@ def parse_vansky_list(page_html: str) -> list[dict[str, str]]:
 # --------------------------------------------------------------------------- sweep
 
 
-def _get(client: httpx.Client, url: str, retries: int, sleep: Callable[[float], None]) -> tuple[str, bool]:
-    """Vansky answers an occasional 503 that a retry a few seconds later clears."""
+def _get(client: httpx.Client, url: str, retries: int, sleep: Callable[[float], None]) -> str | None:
+    """Body of a 200, or None. Vansky answers an occasional 503 that a retry clears."""
     for attempt in range(retries + 1):
         try:
             response = client.get(url)
             if response.status_code == 200:
-                return response.text, False
+                return response.text
         except httpx.HTTPError:
             pass
         if attempt < retries:
             sleep(5.0)
-    return "", True
+    return None
 
 
-def _scan_51ca(client, cfg, *, delay, sleep, stats) -> list[dict[str, str]]:
+def _scan_51ca(client, cfg, *, delay, sleep, today) -> tuple[list[dict[str, str]], dict[str, Any]]:
     max_pages = int(cfg.get("max_pages", 90))
     seen: set[str] = set()
     matches: list[dict[str, str]] = []
-    errors = 0
-    truncated = False
-    read = 0
+    health = {"errors": 0, "truncated": False, "note": ""}
     for page in range(1, max_pages + 1):
         if page > 1 and delay > 0:
             sleep(delay)
-        body, failed = _get(client, f"{FIFTYONE_LIST}?page={page}", 1, sleep)
-        if failed:
-            errors += 1
+        body = _get(client, f"{FIFTYONE_LIST}?page={page}", 1, sleep)
+        if body is None:
+            health["errors"] += 1
             break
-        fresh = [row for row in parse_51ca_list(body) if row["id"] not in seen]
+        cards = parse_51ca_list(body)
+        if not cards:
+            # 51.ca answers a page past the end with the last page again, never
+            # an empty one, so no cards at all is a 200 this module cannot read:
+            # a challenge page or changed markup (checked 2026-09-16, pages 66-120).
+            health["errors"] += 1
+            health["note"] = f"51ca page {page} unreadable"
+            break
+        fresh = [card for card in cards if card["id"] not in seen]
         if not fresh:
             break
-        for row in fresh:
-            seen.add(row["id"])
-        read += len(fresh)
-        matches.extend(row for row in fresh if is_technical(row["title"]))
+        seen.update(card["id"] for card in fresh)
+        matches.extend(card for card in fresh if cn_technical_title(card["title"]))
         if page == max_pages:
-            truncated = True
+            health["truncated"] = True
 
-    out: list[dict[str, str]] = []
-    for row in matches:
+    rows: list[dict[str, str]] = []
+    for card in matches:
         if delay > 0:
             sleep(delay)
-        body, failed = _get(client, row["url"], 1, sleep)
-        detail = {} if failed else parse_51ca_detail(body)
-        errors += int(failed)
-        locality = detail.get("locality") or row["district"]
-        out.append(
+        body = _get(client, card["url"], 1, sleep)
+        detail = parse_51ca_detail(body) if body is not None else {}
+        if not detail:
+            health["errors"] += 1
+        if detail.get("closes") and detail["closes"] < today.strftime("%Y-%m-%d"):
+            continue
+        rows.append(
             {
-                "board": "51ca",
-                "url": row["url"],
-                "title": _cell(detail.get("title") or row["title"]),
-                "company": _cell(detail.get("company") or row["company"]),
-                "location": f"{locality}, Greater Toronto Area, ON, Canada" if locality else "Greater Toronto Area, ON, Canada",
+                "url": card["url"],
+                "title": _cell(detail.get("title") or card["title"]),
+                "company": _cell(detail.get("company") or card["company"]),
+                "location": _51ca_location(detail.get("locality") or card["district"]),
                 "posted": detail.get("posted", ""),
                 "closes": detail.get("closes", ""),
+                "board": "51ca",
             }
         )
-    stats["51ca"] = {"collected": len(out), "read": read, "errors": errors, "truncated": truncated}
-    return out
+    return rows, health
 
 
-def _scan_vansky(client, cfg, *, delay, sleep, stats, today) -> list[dict[str, str]]:
+def _scan_vansky(client, cfg, *, delay, sleep, today) -> tuple[list[dict[str, str]], dict[str, Any]]:
     max_pages = int(cfg.get("max_pages", 40))
     cutoff = (today - timedelta(days=int(cfg.get("max_age_days", 14)))).strftime("%Y-%m-%d")
     seen: set[str] = set()
-    out: list[dict[str, str]] = []
-    errors = 0
-    truncated = False
-    read = 0
+    rows: list[dict[str, str]] = []
+    health = {"errors": 0, "truncated": False, "note": ""}
     for page in range(1, max_pages + 1):
         if page > 1 and delay > 0:
             sleep(delay)
-        body, failed = _get(client, f"{VANSKY_LIST}?page={page}", 3, sleep)
-        if failed:
-            errors += 1
+        body = _get(client, f"{VANSKY_LIST}?page={page}", 3, sleep)
+        if body is None:
+            health["errors"] += 1
             break
-        rows = parse_vansky_list(body)
-        fresh = [row for row in rows if row["url"] not in seen]
+        listing = parse_vansky_list(body)
+        if not listing:
+            # Vansky has no empty last page: the walk ends on the date cutoff,
+            # so a page with no rows at all is a page this module cannot read.
+            health["errors"] += 1
+            health["note"] = f"vansky page {page} unreadable"
+            break
+        fresh = [row for row in listing if row["url"] not in seen]
         if not fresh:
             break
         for row in fresh:
             seen.add(row["url"])
             if row["posted"] and row["posted"] < cutoff:
                 continue
-            read += 1
-            # Title only. Descriptions ask for "熟练掌握电脑" in front-desk and
-            # restaurant ads, which matched two of them on the first live run.
-            if not is_technical(row["title"]):
+            if not cn_technical_title(row["title"]):
                 continue
             city = row["city"]
-            out.append(
+            rows.append(
                 {
-                    "board": "vansky",
                     "url": row["url"],
                     "title": _cell(row["title"]),
                     "company": _cell(row["company"]),
                     "location": f"{city}, BC, Canada" if city else "Greater Vancouver, BC, Canada",
                     "posted": row["posted"],
                     "closes": "",
+                    "board": "vansky",
                 }
             )
-        free_dates = [row["posted"] for row in rows if not row["pinned"] and row["posted"]]
+        free_dates = [row["posted"] for row in listing if not row["pinned"] and row["posted"]]
         if free_dates and max(free_dates) < cutoff:
             break
         if page == max_pages:
-            truncated = True
-    stats["vansky"] = {"collected": len(out), "read": read, "errors": errors, "truncated": truncated}
-    return out
+            health["truncated"] = True
+    return rows, health
 
 
-def scan_cn_boards(
+def scan_cn_boards_source(
     config: dict[str, Any] | None,
     *,
     client: httpx.Client | None = None,
     sleep: Callable[[float], None] = time.sleep,
-    stats: dict[str, dict[str, Any]] | None = None,
     today: datetime | None = None,
-) -> list[dict[str, str]]:
-    """Technical postings from the enabled boards. Same contract as ``scan_regional_boards``."""
+) -> SourceResult:
+    """Technical postings from the enabled boards, with one health for the tier."""
+    boards = (config or {}).get("boards") or {}
     if not config or not config.get("enabled", False):
-        return []
-    boards = config.get("boards") or {}
+        return SourceResult(postings=[], health=SourceHealth(source_id="cn_boards", ok=True))
     delay = float(config.get("delay_s", 0.6))
     timeout = float(config.get("timeout_s", 30.0))
-    stats = stats if stats is not None else {}
+    today = today or datetime.now()
     owns_client = client is None
     if client is None:
         client = httpx.Client(headers={"User-Agent": _USER_AGENT}, timeout=timeout, follow_redirects=True)
+    rows: list[dict[str, str]] = []
+    errors = 0
+    truncated = False
+    notes: list[str] = []
     try:
-        out: list[dict[str, str]] = []
-        cfg = boards.get("51ca") or {}
-        if cfg.get("enabled", False):
-            out.extend(_scan_51ca(client, cfg, delay=delay, sleep=sleep, stats=stats))
-        cfg = boards.get("vansky") or {}
-        if cfg.get("enabled", False):
-            out.extend(
-                _scan_vansky(client, cfg, delay=delay, sleep=sleep, stats=stats, today=today or datetime.now())
-            )
-        return out
+        for board_id, sweep in (("51ca", _scan_51ca), ("vansky", _scan_vansky)):
+            cfg = boards.get(board_id) or {}
+            if not cfg.get("enabled", False):
+                continue
+            board_rows, health = sweep(client, cfg, delay=delay, sleep=sleep, today=today)
+            rows.extend(board_rows)
+            errors += health["errors"]
+            truncated = truncated or health["truncated"]
+            if health["note"]:
+                notes.append(health["note"])
     finally:
         if owns_client:
             client.close()
+
+    postings: list[JobPosting] = []
+    for row in rows:
+        posting = from_row(
+            {**row, "company": row["company"] or "Unknown (see posting)", "source": row["board"]},
+            source_id=f"cn:{row['board']}",
+            portal=row["board"],
+        )
+        if posting is not None:
+            postings.append(posting)
+    return SourceResult(
+        postings=postings,
+        health=SourceHealth(
+            source_id="cn_boards",
+            ok=errors == 0,
+            collected=len(postings),
+            truncated=truncated,
+            errors=errors,
+            note="; ".join(notes),
+        ),
+    )

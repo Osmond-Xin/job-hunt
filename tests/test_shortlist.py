@@ -314,4 +314,42 @@ def test_a_toronto_heavy_inbox_still_surfaces_public_and_northern_work(tmp_path)
     assert result.mix_shown.regions["north"] == 1
     assert result.mix_shown.sectors["public"] == 2
     assert result.mix_pool.total == 42
-    assert {gap.reservation for gap in result.shortfalls} == {"public", "outside GTA"}
+    assert {gap.reservation for gap in result.reservation_gaps} == {"public sector", "outside GTA"}
+    assert all(gap.sourcing for gap in result.reservation_gaps)
+
+
+def test_screen_then_verify_checks_reserved_rows_the_model_ranked_low(tmp_path) -> None:
+    """Codex review 2026-09-16: verification used to check a plain head[:40]
+    of the model-fit order, so a Yukon row the model ranked 60th was dropped
+    before its link was ever fetched, and reported as a sourcing gap."""
+    rows = [
+        _row(f"https://example.invalid/t{i}", f"Startup{i}", "AI Engineer", "Toronto, Ontario", posted="2026-09-15")
+        for i in range(59)
+    ] + [
+        _row("https://example.invalid/yk", "Government of Yukon", "Systems Analyst", "Whitehorse, Yukon",
+             posted="2026-09-10"),
+    ]
+    pipeline = _write(tmp_path, "pipeline.md", _pipeline(rows))
+    tracker = _write(tmp_path, "applications.md", "")
+
+    def fake_screener(batch):
+        # Keep everything, rank the Yukon row last.
+        return {
+            index: Screened(index=index, keep=True, fit=1.0 if company == "Government of Yukon" else 5.0, reason="")
+            for index, (company, _role, _location) in enumerate(batch, start=1)
+        }, ""
+
+    checked: list[str] = []
+
+    def fake_checker(urls, *, delay_s=1.0, **_ignored):
+        checked.extend(urls)
+        return {url: Verdict(url, LIVE) for url in urls}
+
+    result = build_shortlist(
+        pipeline=pipeline, tracker=tracker,
+        options=ShortlistOptions(limit=10, screen=True, pool=60, verify=True),
+        screener=fake_screener, checker=fake_checker, today=date(2026, 9, 16),
+    )
+
+    assert "https://example.invalid/yk" in checked
+    assert "Government of Yukon" in {entry.ranked.row.company for entry in result.entries if not entry.overflow}

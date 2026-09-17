@@ -2,33 +2,67 @@
 
 from __future__ import annotations
 
-from job_hunt.services.balance import Mix, Quotas, balanced_slate, region, sector
+import pytest
+
+from job_hunt.services.balance import MIN_SCORE, Mix, balanced_slate, outside_gta
+from job_hunt.services.triage import region, sector
 
 
-def _pick(items, limit, quotas=Quotas()):
+def _pick(items, limit, inbox=None):
     return balanced_slate(
         items, limit,
         company=lambda item: item[0], location=lambda item: item[1], score=lambda item: item[2],
-        quotas=quotas,
+        inbox=inbox,
     )
 
 
-def test_regions_are_read_from_the_free_text_boards_actually_emit():
-    assert region("Toronto, Ontario") == "gta"
-    assert region("列治文山, Greater Toronto Area, ON, Canada") == "gta"
-    assert region("Greater Sudbury (ON)") == "north"
-    assert region("Whitehorse, Yukon") == "north"
-    assert region("Yellowknife, NT") == "north"
-    assert region("St. Catharines, Niagara, Ontario") == "ontario"
-    assert region("Saskatoon, Saskatchewan") == "other_province"
-    assert region("Remote, Canada") == "remote"
-    assert region("Canada") == "unknown"
-    assert region("") == "unknown"
+@pytest.mark.parametrize(
+    "location, expected",
+    [
+        ("Toronto, Ontario", "gta"),
+        ("Markham, Ontario, Canada", "gta"),
+        # GTA towns the first version called "outside the GTA" (Codex review 2026-09-16).
+        ("Whitby, ON", "gta"),
+        ("Burlington, Ontario", "gta"),
+        ("Milton, ON", "gta"),
+        ("Aurora, ON", "gta"),
+        ("Newmarket, ON", "gta"),
+        ("Greater Sudbury (ON)", "north"),
+        ("Whitehorse, Yukon", "north"),
+        ("Yellowknife, NT", "north"),
+        ("St. Catharines, Niagara", "ontario"),
+        ("London (ON)", "ontario"),
+        ("Saskatoon, Saskatchewan", "other_province"),
+        ("Brandon MB", "other_province"),
+        ("Vancouver, BC (on-site)", "other_province"),  # "on-site" is not Ontario
+        ("St. John's, Newfoundland and Labrador", "other_province"),  # not the North
+        ("Remote, Canada", "remote"),
+        ("WFH, Toronto", "remote"),
+        # No positive evidence of a Canadian place: fills no reservation.
+        ("Canada", "unknown"),
+        ("Unknown", "unknown"),
+        ("Upto $85/hr", "unknown"),
+        ("Work on site, Canada", "unknown"),
+        ("San Francisco, CA, United States", "unknown"),
+        ("", "unknown"),
+    ],
+)
+def test_region_names_a_place_only_on_positive_evidence(location, expected):
+    assert region(location) == expected
+
+
+def test_only_named_places_outside_the_gta_count_as_outside_it():
+    assert outside_gta("Halifax, NS")
+    assert not outside_gta("Whitby, ON")
+    assert not outside_gta("Remote, Canada")
+    assert not outside_gta("Upto $85/hr")
 
 
 def test_sector_follows_the_triage_government_vocabulary():
     assert sector("Government of Yukon") == "public"
     assert sector("University of Waterloo") == "public"
+    assert sector("OLG") == "public"
+    assert sector("Hydro One") == "public"
     assert sector("Magical") == "private"
 
 
@@ -41,32 +75,41 @@ def test_a_toronto_heavy_ranking_still_yields_north_public_and_outside_gta_rows(
     halifax = [(f"NS Co{i}", "Halifax, Nova Scotia", 2.5) for i in range(5)]
     ranked = toronto + [brock] + halifax + [yukon]
 
-    slate, shortfalls = _pick(ranked, 10)
+    slate, gaps = _pick(ranked, 10)
 
     assert len(slate) == 10
     assert yukon in slate
     assert brock in slate
-    assert sum(1 for c, loc, _ in slate if region(loc) not in {"gta", "unknown", "remote"}) >= 5
-    # Order is still the ranking's order.
-    assert slate == [item for item in ranked if item in slate]
-    # Only one Yukon + one Brock public row exist, against 3 wanted.
-    assert [(s.reservation, s.wanted, s.got) for s in shortfalls] == [("public", 3, 2)]
+    assert sum(1 for _c, loc, _s in slate if outside_gta(loc)) >= 5
+    assert slate == [item for item in ranked if item in slate]  # ranking order kept
+    assert [(g.reservation, g.wanted, g.got, g.in_inbox) for g in gaps] == [("public sector", 3, 2, 2)]
+    assert gaps[0].sourcing
 
 
-def test_an_off_target_row_is_never_used_to_fill_a_reservation():
+def test_rows_below_the_floor_never_fill_a_reservation():
+    assert MIN_SCORE == 2.0  # the operator's floor, 2026-09-16
     ranked = [(f"Startup{i}", "Toronto, Ontario", 3.5) for i in range(12)] + [
-        ("City of Windsor", "Windsor, Ontario", -1.0),  # off-target role
+        ("City of Windsor", "Windsor, Ontario", 1.0),  # a generic "Engineer II"
     ]
-    slate, shortfalls = _pick(ranked, 5)
-    assert ("City of Windsor", "Windsor, Ontario", -1.0) not in slate
-    assert {s.reservation for s in shortfalls} == {"North", "public", "outside GTA"}
+    slate, gaps = _pick(ranked, 5)
+    assert ("City of Windsor", "Windsor, Ontario", 1.0) not in slate
+    assert {g.reservation for g in gaps} == {"North", "public sector", "outside GTA"}
 
 
-def test_without_reservations_the_slate_is_the_plain_top_n():
-    ranked = [(f"Co{i}", "Toronto, Ontario", 10 - i) for i in range(10)] + [("City of X", "Regina, SK", 1.0)]
-    slate, shortfalls = _pick(ranked, 3, Quotas(public=0, outside_gta=0, north=0))
-    assert slate == ranked[:3]
-    assert shortfalls == []
+def test_a_gap_says_whether_the_inbox_had_the_rows():
+    """Rows the screen or a dead link removed are not a sourcing gap."""
+    yukon = ("Government of Yukon", "Whitehorse, Yukon", 3.0)
+    survivors = [(f"Startup{i}", "Toronto, Ontario", 3.5) for i in range(10)]
+    _slate, gaps = _pick(survivors, 10, inbox=survivors + [yukon])
+    north = next(g for g in gaps if g.reservation == "North")
+    assert north.in_inbox == 1 and north.got == 0
+    assert not north.sourcing
+
+
+def test_limit_larger_than_the_pool_returns_every_item_once():
+    ranked = [("Government of Yukon", "Whitehorse, Yukon", 3.0), ("Startup", "Toronto, Ontario", 3.0)]
+    slate, _gaps = _pick(ranked, 10)
+    assert slate == ranked
 
 
 def test_mix_line_names_every_non_empty_bucket():

@@ -18,7 +18,7 @@ from job_hunt.models.posting import JobPosting, from_row
 from job_hunt.models.tracker import normalize
 from job_hunt.repositories.tracker_repo import TrackerRepository
 from job_hunt.services.adzuna import scan_adzuna_source
-from job_hunt.services.cn_boards import scan_cn_boards
+from job_hunt.services.cn_boards import scan_cn_boards_source
 from job_hunt.services.gov_boards import scan_gov_boards
 from job_hunt.services.regional_boards import scan_regional_boards
 from job_hunt.services.immigration import place_tokens as immigration_place_tokens
@@ -184,13 +184,13 @@ def scan_portals(
     # Tier 4: Job Bank direct fetch. No WebSearch provider and no quota — the
     # board's own search is queried over NOC code x province. Runs whenever
     # `jobbank_direct.enabled` is set, including when tier 3 is off.
-    # Tiers 4-7 are all direct, structured and quota-free. They are skipped
+    # Tiers 4-8 are all direct, structured and quota-free. They are skipped
     # under --company, which scopes the run to one tracked employer.
     if not company:
         # Migration in progress (job_hunt.models.posting.SourceResult): the
-        # Workday and Adzuna mappers below get their postings + coverage
-        # health from scan_workday_source/scan_adzuna_source. The other three
-        # still build a local `stats` dict and go through
+        # Workday, Adzuna and Chinese-board mappers below get their postings +
+        # coverage health from scan_*_source. The other three (Job Bank, gov,
+        # regional) still build a local `stats` dict and go through
         # `_board_coverage_warnings` because converting them needs a prior
         # refactor first — gov_boards.py's board registry is a dict literal
         # closing over six locals 190 lines into scan_gov_boards, and
@@ -208,10 +208,10 @@ def scan_portals(
         # All six already establish the occupation before we see the title:
         # Job Bank is queried by NOC code, Adzuna rows are filtered on their
         # own `category` facet, the gov / regional / Workday boards are
-        # small curated employer boards, and the Chinese boards are screened on
-        # a tech keyword list inside `cn_boards` (their titles are in Chinese,
-        # so the English positive list would discard every one). Requiring a positive title match on
-        # top of that discards ~half of them for naming variance alone.
+        # small curated employer boards, and the Chinese boards are screened
+        # with `triage.cn_technical_title` (their titles are in Chinese, so the
+        # English positive list would discard every one). Requiring a positive
+        # title match on top of that discards ~half of them for naming variance.
         for tier_jobs in extra_tiers:
             _accept_jobs(
                 tier_jobs,
@@ -374,27 +374,21 @@ def _regional_board_scanned_jobs(
 def _cn_board_scanned_jobs(
     config: dict[str, Any] | None, warnings: list[str] | None = None
 ) -> list[ScannedJob]:
-    """Tier 8: Chinese-language community boards. Free, already tech-screened."""
-    stats: dict[str, dict[str, Any]] = {}
+    """Tier 8: Chinese-language community boards. Free, already tech-screened.
+
+    Built on the ``SourceResult`` seam from the start, same as Workday / Adzuna.
+    """
     try:
-        rows = scan_cn_boards(config, stats=stats)
+        result = scan_cn_boards_source(config)
     except Exception as exc:
         if warnings is not None:
             warnings.append(f"cn boards: sweep failed ({exc})")
         return []
     if warnings is not None:
-        warnings.extend(_board_coverage_warnings(stats))
-    jobs: list[ScannedJob] = []
-    for row in rows:
-        board = row.get("board", "cn")
-        posting = from_row(
-            {**row, "company": row.get("company") or "Unknown (see posting)", "source": board},
-            source_id=f"cn:{board}",
-            portal=board,
-        )
-        if posting is not None:
-            jobs.append(_scanned_job_from_posting(posting))
-    return jobs
+        warnings.extend(result.health.warnings())
+        if result.health.note:
+            warnings.append(f"cn boards: {result.health.note}")
+    return [_scanned_job_from_posting(posting) for posting in result.postings]
 
 
 def _gov_board_scanned_jobs(
@@ -804,7 +798,9 @@ def _supports_direct_fetch(company: dict[str, Any]) -> bool:
         "jobs.lever.co", "jobs.ashbyhq.com", "job-boards.greenhouse.io", "boards.greenhouse.io",
         "apply.workable.com",
     }:
-        return True
+        # A board URL with no slug has no feed; saying "direct fetch" for it
+        # meant the company was quietly scanned into nothing.
+        return _infer_api_url(url) != ""
     # BambooHR gives every employer its own subdomain, so this one is a suffix
     # test rather than a fixed host. Added 2026-09-01: Vendasta and Hiveway —
     # the only two employers that have produced a real human interview — both

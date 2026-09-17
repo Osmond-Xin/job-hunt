@@ -59,3 +59,9 @@ def test_a_remote_posting_says_so_in_its_location():
     feed = {"jobs": [{"title": "Data Analyst", "url": "https://apply.workable.com/j/X", "country": "Canada",
                       "telecommuting": True}]}
     assert _parse_workable(feed, {"name": "Moomoo"})[0].location == "Remote, Canada"
+
+
+def test_a_workable_url_with_no_account_slug_is_not_claimed_as_fetchable():
+    # It used to pass `_supports_direct_fetch`, get "" as its feed URL and be
+    # scanned into nothing without a word.
+    assert _supports_direct_fetch({"careers_url": "https://apply.workable.com/"}) is False
