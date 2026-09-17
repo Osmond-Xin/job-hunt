@@ -198,7 +198,7 @@ GOVERNMENT_RE = re.compile(
     r"sasktel|canada post|cmhc)\b"
     # The central bank only as the whole employer name — as a substring it
     # matched Royal Bank and National Bank of Canada.
-    r"|^\s*(?:the\s+)?bank of canada(?:\s*[/|–-]\s*banque du canada)?\s*$",
+    r"|^\s*(?:(?:the\s+)?bank of canada|(?:la\s+)?banque du canada)(?:\s*[/|–-]\s*(?:bank|banque) (?:of|du) canada)?\s*$",
     re.I,
 )
 AI_ROLE_RE = re.compile(
@@ -331,7 +331,7 @@ _GTA_RE = re.compile(
 # Georgetown PEI, Georgetown DC): only as the address component right before
 # Ontario itself — "King, Hamilton, ON" is Hamilton.
 _GTA_COMPONENT_RE = re.compile(
-    r"(?:^|,)\s*(king|brock|georgetown|acton|bolton)\s*(?:,\s*)?(?:(?-i:ON)\b|ontario\b)", re.I
+    r"(?:^|,)\s*(king|brock|georgetown|acton|bolton)\s*(?:,\s*|\(\s*)?(?:(?-i:ON)\b|ontario\b)", re.I
 )
 _NORTH_RE = re.compile(
     r"\b(yukon|whitehorse|northwest territories|yellowknife|inuvik|hay river|nunavut|iqaluit|"
@@ -359,11 +359,13 @@ _PROVINCE_NAME_RES = tuple((code, re.compile(rf"\b{name}\b", re.I)) for code, na
 _US_NAMED_RE = re.compile(r"\b(?:united states|usa|california)\b", re.I)
 # A state code ends the string or precedes a ZIP; "Nova Scotia, CA, B3K 4N1" is
 # the country code before a Canadian postal code (measured on the real inbox).
-# "CA" is left out: after a Canadian place it is the country code
-# ("Halifax, Nova Scotia, CA"), and California is read by name instead.
+# "CA" counts only before a ZIP: on Canadian boards "Ontario, CA" and
+# "Halifax, Nova Scotia, CA" are the country code, and California is otherwise
+# read by name (agy review 2026-09-16, adjudicated: "Ontario, CA" alone is
+# Ontario, Canada far more often than Ontario, California).
 _US_STATE_RE = re.compile(
-    r",\s*(?-i:(?:AL|AK|AZ|AR|CO|CT|DC|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS|MO|MT|NE|"
-    r"NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VT|VA|WA|WV|WI|WY))\s*(?:$|\d{5})"
+    r",\s*(?:(?-i:(?:AL|AK|AZ|AR|CO|CT|DC|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS|MO|MT|NE|"
+    r"NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VT|VA|WA|WV|WI|WY))\s*(?:$|\d{5})|(?-i:CA)\s+\d{5})"
 )
 _CANADA_RE = re.compile(r"\bcanada\b", re.I)
 _ONTARIO_RE = re.compile(

@@ -88,6 +88,10 @@ def _pick(items, limit, inbox=None):
         ("Brock, St. Catharines, ON", "ontario"),
         ("Georgetown, DC", "unknown"),
         ("Georgetown, Washington, DC", "unknown"),
+        ("Ontario, CA", "ontario"),  # country code on Canadian boards
+        ("Ontario, CA 91764", "unknown"),  # a ZIP makes it California
+        ("Bolton (ON)", "gta"),
+        ("Georgetown (ON)", "gta"),
     ],
 )
 def test_region_names_a_place_only_on_positive_evidence(location, expected):
@@ -110,6 +114,8 @@ def test_sector_follows_the_triage_government_vocabulary():
     assert sector("National Bank of Canada") == "private"
     assert sector("Bank of Canada") == "public"
     assert sector("Bank of Canada / Banque du Canada") == "public"
+    assert sector("Banque du Canada") == "public"
+    assert sector("Banque du Canada / Bank of Canada") == "public"
     assert sector("Hydro One") == "public"
     assert sector("Magical") == "private"
 
