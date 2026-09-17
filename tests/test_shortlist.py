@@ -286,3 +286,32 @@ def test_progress_is_reported_before_each_slow_call(tmp_path) -> None:
         "screening 5 rows through MiniMax…",
         "verifying 5 candidates…",
     ]
+
+
+def test_a_toronto_heavy_inbox_still_surfaces_public_and_northern_work(tmp_path) -> None:
+    """2026-09-16: 402 public and 95 northern rows sat in the inbox while the
+    top 30 was half Greater Toronto and had no northern row. The shortlist now
+    reserves slots for them — from rows that still score as a match."""
+    rows = [
+        _row(f"https://example.invalid/t{i}", f"Startup{i}", "AI Engineer", "Toronto, Ontario", posted="2026-09-15")
+        for i in range(40)
+    ] + [
+        _row("https://example.invalid/yk", "Government of Yukon", "Systems Analyst", "Whitehorse, Yukon",
+             posted="2026-09-10"),
+        _row("https://example.invalid/ns", "Province of Nova Scotia", "Business Analyst", "Halifax, Nova Scotia",
+             posted="2026-09-10"),
+    ]
+    pipeline = _write(tmp_path, "pipeline.md", _pipeline(rows))
+    tracker = _write(tmp_path, "applications.md", "")
+
+    result = build_shortlist(
+        pipeline=pipeline, tracker=tracker, options=ShortlistOptions(limit=10), today=date(2026, 9, 16)
+    )
+
+    shown = {entry.ranked.row.company for entry in result.entries}
+    assert "Government of Yukon" in shown
+    assert "Province of Nova Scotia" in shown
+    assert result.mix_shown.regions["north"] == 1
+    assert result.mix_shown.sectors["public"] == 2
+    assert result.mix_pool.total == 42
+    assert {gap.reservation for gap in result.shortfalls} == {"public", "outside GTA"}

@@ -161,8 +161,19 @@ def triage(
 
     console.print(
         f"[dim]{result.pending} pending · {sum(result.excluded.values())} filtered out · "
-        f"showing top {best_count}{verify_note}[/dim]\n"
+        f"showing top {best_count}{verify_note}[/dim]"
     )
+    # Balance is printed on every run, not on request: the list collapsed into
+    # Greater Toronto private sector for days before anyone noticed.
+    console.print(f"[dim]balance  shown: {result.mix_shown.line()}[/dim]")
+    console.print(f"[dim]         inbox: {result.mix_pool.line()} (rows scoring ≥ reservation floor)[/dim]")
+    for gap in result.shortfalls:
+        console.print(
+            f"[yellow]balance: wanted {gap.wanted} {gap.reservation} slot(s), found {gap.got} "
+            "that score as a match — a sourcing gap (run the free scan tiers: gov / regional / "
+            "Job Bank), not something to fill with off-target rows[/yellow]"
+        )
+    console.print()
     columns = ["#", "Score", "Company", "Role", "Location", "Posted", "Why"]
     if llm_screen:
         columns.insert(2, "Fit")
