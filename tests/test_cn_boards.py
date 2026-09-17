@@ -113,6 +113,8 @@ def test_technical_titles_pass_the_screen(title):
         "熟悉电脑的餐厅收银员",
         "5星诊所聘请前台兼职+AI marketing project",
         "Rootmaths.com新未来学院诚聘数学、英语、计算机编程等网课老师",
+        # A warehouse administrator who uses ERP (Codex review round 3).
+        "仓库管理员 熟悉ERP",
     ],
 )
 def test_non_technical_titles_do_not(title):

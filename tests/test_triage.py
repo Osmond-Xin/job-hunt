@@ -174,7 +174,17 @@ def test_an_equities_technical_analyst_is_not_the_systems_analyst_family():
                           role="Technical Analyst - Information Systems", location="Whitehorse, YT",
                           posted="2026-09-15", source="a")
     assert "one-person scope" not in score(trading, today=today)[1]
+    for role in ("Technical Analyst, Equities Trading", "Equities Technical Analyst"):
+        row = PipelineRow(url="https://example.invalid/eq2", company="Bank", role=role,
+                          location="Toronto, ON", posted="2026-09-15", source="a")
+        assert "one-person scope" not in score(row, today=today)[1], role
     assert "one-person scope" in score(systems, today=today)[1]
+
+
+def test_an_english_technical_title_on_a_chinese_board_is_kept():
+    ml = PipelineRow(url="https://www.51.ca/jobs/job-posts/1", company="x", role="Machine Learning Engineer",
+                     location="Toronto, ON", posted="", source="51ca")
+    assert excluded(ml) == ""
 
 
 def test_the_chinese_board_exclusion_only_applies_to_chinese_board_rows():

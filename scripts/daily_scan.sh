@@ -18,15 +18,27 @@ log="logs/daily-scan.log"
 today="$(date +%F)"
 
 # One run at a time. `scan --apply` snapshots the known URLs and appends to
-# data/pipeline.md without a lock of its own, so two overlapping runs (the
-# 07:30 agent and a manual run) would both append the same new posting.
-# mkdir is atomic; macOS ships no flock.
+# data/pipeline.md without a lock of its own, so two overlapping runs of this
+# script would both append the same new posting. mkdir is atomic; macOS ships
+# no flock. The holder's PID is recorded so a run killed before its EXIT trap
+# (SIGKILL, power loss) does not disable every later run (Codex review
+# 2026-09-16): a lock whose holder is gone is taken over.
 lock="data/locks/daily-scan.lock"
 if ! mkdir "$lock" 2>/dev/null; then
-    echo "=== $(date '+%F %T') another daily scan holds $lock — skipped" >> "$log"
-    exit 75
+    holder="$(cat "$lock/pid" 2>/dev/null || true)"
+    if [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null; then
+        echo "=== $(date '+%F %T') daily scan pid $holder still running — skipped" >> "$log"
+        exit 75
+    fi
+    echo "=== $(date '+%F %T') stale lock (pid ${holder:-unknown} gone) — taking it over" >> "$log"
+    rm -rf "$lock"
+    if ! mkdir "$lock" 2>/dev/null; then
+        echo "=== $(date '+%F %T') lost the race for $lock — skipped" >> "$log"
+        exit 75
+    fi
 fi
-trap 'rmdir "$lock"' EXIT
+echo $$ > "$lock/pid"
+trap 'rm -rf "$lock"' EXIT
 
 scan_status=0
 triage_status=0
