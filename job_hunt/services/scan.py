@@ -800,7 +800,10 @@ def _supports_direct_fetch(company: dict[str, Any]) -> bool:
         return True
     url = company.get("careers_url", "")
     host = urlparse(url).netloc
-    if host in {"jobs.lever.co", "jobs.ashbyhq.com", "job-boards.greenhouse.io", "boards.greenhouse.io"}:
+    if host in {
+        "jobs.lever.co", "jobs.ashbyhq.com", "job-boards.greenhouse.io", "boards.greenhouse.io",
+        "apply.workable.com",
+    }:
         return True
     # BambooHR gives every employer its own subdomain, so this one is a suffix
     # test rather than a fixed host. Added 2026-09-01: Vendasta and Hiveway —
@@ -826,6 +829,8 @@ def _fetch_company_jobs(company: dict[str, Any]) -> list[ScannedJob]:
         return _parse_ashby(raw, company)
     if _bamboohr_slug(host):
         return _parse_bamboohr(raw, company, host)
+    if host == "apply.workable.com":
+        return _parse_workable(raw, company)
     return []
 
 
@@ -842,6 +847,8 @@ def _infer_api_url(careers_url: str) -> str:
         # The board and its JSON live on the same host: /careers is the page a
         # human reads, /careers/list is the feed behind it.
         return f"https://{parsed.netloc}/careers/list"
+    if parsed.netloc == "apply.workable.com" and slug:
+        return f"https://apply.workable.com/api/v1/widget/accounts/{slug}"
     return ""
 
 
@@ -932,6 +939,41 @@ def _parse_bamboohr(raw: dict[str, Any], company: dict[str, Any], host: str) -> 
                 location=", ".join(part for part in (city, region) if part),
                 portal="bamboohr",
                 source=company.get("name") or "",
+            )
+        )
+    return parsed
+
+
+def _parse_workable(raw: dict[str, Any], company: dict[str, Any]) -> list[ScannedJob]:
+    """Parse `https://apply.workable.com/api/v1/widget/accounts/<slug>`.
+
+    Added 2026-09-16 for the China-linked employers: Moomoo (Futu) and CIeNET
+    International post their Toronto-area roles here, and no tier could read
+    it. The widget feed needs no auth and carries a posting URL, a structured
+    city / region / country and a publish date. `country` is kept in the
+    location so a board that mixes Markham with Seattle is split by the
+    Canada gate rather than by guesswork here.
+    """
+    parsed: list[ScannedJob] = []
+    for item in raw.get("jobs") or []:
+        title = (item.get("title") or "").strip()
+        url = (item.get("url") or item.get("shortlink") or "").strip()
+        if not title or not url:
+            continue
+        place = ", ".join(
+            part for part in (item.get("city"), item.get("state"), item.get("country")) if part
+        )
+        if item.get("telecommuting"):
+            place = f"Remote, {place}" if place else "Remote"
+        parsed.append(
+            ScannedJob(
+                url=url,
+                title=title,
+                company=company.get("name") or raw.get("name") or "",
+                location=place,
+                portal="workable",
+                source=company.get("name") or "",
+                posted=str(item.get("published_on") or "")[:10],
             )
         )
     return parsed
