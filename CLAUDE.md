@@ -50,6 +50,22 @@ If a run's warnings show many dropped blocks, the length budget in
 `prompts/evaluate/tailor_cv.md` stopped working — fix that rather than leaning on the
 trimmer.
 
+## 2b. Tailoring never reorders dated roles
+
+**Experience is always reverse-chronological**, newest first, on every résumé.
+
+Tailoring reorders bullets within a role, skills groups, and projects — that is the
+whole point of a tailored résumé, and `prompts/evaluate/tailor_cv.md` says so four
+times. It says "keep every dated role … **in the same order**" exactly once, and a
+hand-written résumé never reads that file. On 2026-09-17/18 ten of seventeen
+hand-written résumés led with whichever role best matched the JD, and the red team
+reported one of them as "reverse-chronological" without checking the dates.
+
+`scripts/render_cv.py` now **refuses to render** a CV whose dated roles are out of
+order — before the PDF exists, the same way the page budget deletes one that
+overflows. An LLM reviewer is not a date checker; do not treat a clean review as
+evidence that the order is right.
+
 ## 3. Record what was sent
 
 **An application that is not in `data/applications.md` did not happen** — not for
