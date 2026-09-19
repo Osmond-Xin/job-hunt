@@ -180,6 +180,7 @@ def build_shortlist(
             company=lambda item: item.row.company,
             location=lambda item: item.row.location,
             score=lambda item: item.score,
+            role=lambda item: item.row.role,
             inbox=ranked_all,
         )
 

@@ -9,9 +9,12 @@ from job_hunt.services.triage import region, sector
 
 
 def _pick(items, limit, inbox=None):
+    # Items are (company, location, score) or (company, location, score, role);
+    # a 3-tuple stands for a technical role.
     return balanced_slate(
         items, limit,
         company=lambda item: item[0], location=lambda item: item[1], score=lambda item: item[2],
+        role=lambda item: item[3] if len(item) > 3 else "software developer",
         inbox=inbox,
     )
 
@@ -118,6 +121,53 @@ def test_sector_follows_the_triage_government_vocabulary():
     assert sector("Banque du Canada / Bank of Canada") == "public"
     assert sector("Hydro One") == "public"
     assert sector("Magical") == "private"
+
+
+@pytest.mark.parametrize(
+    "company",
+    [
+        # Private institutions in the 2026-09-17 inbox that "university|college" called public.
+        "CICCC - Cornerstone International Community College of Canada-",
+        "International Business University",
+        "Yorkville University",
+        "Northeastern University",
+        "Futures Canadian College of Business Health & Technology",
+        "Robertson College",
+        "Canadian College of Health Leaders - Northwestern Ontario Chapter",
+    ],
+)
+def test_private_colleges_and_universities_are_private(company):
+    assert sector(company) == "private"
+
+
+@pytest.mark.parametrize(
+    "company",
+    ["Algonquin College", "Nova Scotia Community College (NSCC)", "Keyano College", "Capilano University",
+     "Womens College Hospital"],
+)
+def test_public_colleges_and_universities_stay_public(company):
+    assert sector(company) == "public"
+
+
+def test_the_north_is_a_lottery_any_technical_role_fills_it_regardless_of_score():
+    """Operator 2026-09-17: a full match in the North almost never exists, so
+    the North slots go to roles he can reach technically, however low they
+    score — and not to a policy or accounting analyst that scores higher."""
+    toronto = [(f"Startup{i}", "Toronto, Ontario", 4.0) for i in range(10)]
+    # Enough public, outside-GTA rows above them that only the North slots are in question.
+    halifax = [("Province of Nova Scotia", "Halifax, NS", 4.0, f"systems analyst {i}") for i in range(10)]
+    policy = ("Government of the Northwest Territories", "Yellowknife", 3.0, "Policy Analyst")
+    accounting = ("Government of the Northwest Territories", "Yellowknife", 3.0,
+                  "Financial Reporting and Accounting Analyst")
+    junior = ("Magna Mining Inc.", "Greater Sudbury (ON)", 1.5, "software developer")
+    it_analyst = ("Town of Hay River", "Hay River (NT)", -1.0, "information technology (IT) analyst")
+    ranked = toronto + halifax + [policy, accounting, junior, it_analyst]
+
+    slate, gaps = _pick(ranked, 20)
+
+    assert junior in slate and it_analyst in slate
+    assert policy not in slate and accounting not in slate
+    assert "North" not in {g.reservation for g in gaps}
 
 
 def test_a_toronto_heavy_ranking_still_yields_north_public_and_outside_gta_rows():

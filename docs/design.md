@@ -217,6 +217,23 @@ detail and what each of the three needs first).
   triage scores Chinese titles with. A 200 the module cannot read (a
   challenge page, changed markup) counts as an error, never as a quiet day.
 
+- **Tier 9 — Getro portfolio boards** (`job_hunt/services/getro_boards.py`,
+  config: `portals.yml::getro_boards`). The accelerator and VC boards where
+  early-stage Canadian companies post — Communitech, MaRS, Inovia, Real
+  Ventures, Antler, Invest Ottawa — all of which run on one JSON API
+  (`POST api.getro.com/api/v2/collections/<network_id>/search/jobs`), so one
+  reader covers them. Added 2026-09-18 when the operator placed himself in the
+  early-stage lane. Two measured constraints shape it: the API ignores
+  `hitsPerPage` and returns 20 rows a page (Communitech alone advertises 1,183
+  jobs, so the tier searches by role query rather than walking boards), and
+  `filters.job_functions` matches nothing while `filters.searchable_locations`
+  works. **Unlike tiers 4–8 these rows keep the positive title filter**: a
+  portfolio board is a general board, and Communitech carried EY tax-litigation
+  roles beside its ML ones. `network_id` is the integer in
+  `props.pageProps.network.id` of the board's own HTML, not the slug; boards on
+  the Consider platform (Golden Ventures, Panache) are bot-walled and cannot
+  join this tier.
+
 Two things a reader needs and cannot currently find anywhere else:
 
 - `config/portals.yml` and `config/settings.yml` are gitignored — they hold
@@ -225,8 +242,8 @@ Two things a reader needs and cannot currently find anywhere else:
   checked in — but that example file has no `jobbank_direct`, `gov_boards`,
   `regional_boards`, or `workday_boards` sections at all, and
   `config/settings.example.yml` has no `adzuna` section either. So the
-  authoritative list of tiers 4–7 sources (tier 8's `cn_boards` section is in
-  the example file), and how they are tuned, exists
+  authoritative list of tiers 4–7 sources (the `cn_boards` and `getro_boards`
+  sections for tiers 8–9 are in the example file), and how they are tuned, exists
   only on the machine where `portals.yml` / `settings.yml` were hand-built —
   not in anything checked into this repo.
 - `config/sites.yml` declares a `kind` / `preferred_adapter` /

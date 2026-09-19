@@ -17,8 +17,15 @@ So the shortlist is chosen, not merely sorted: slots are reserved for the North,
 for public-sector work and for work outside the GTA — filled only from rows that
 already score as a match (at least ``MIN_SCORE``), otherwise left to the ranking.
 The score itself is untouched; the operator ruled 2026-09-16 that reserving
-slots does not break the geography rule, and set the floor at 2.0. A
-reservation that cannot be filled is reported, with whether the inbox had the
+slots does not break the geography rule, and set the floor at 2.0.
+
+The North is the exception, on the operator's ruling 2026-09-17: a full match
+there almost never exists, so those applications are a lottery on technical
+reach. Any role he can do on technology alone fills a North slot whatever it
+scores, and a role he cannot (a policy or accounting analyst) does not, however
+well it scores (``triage.technical_reach``).
+
+A reservation that cannot be filled is reported, with whether the inbox had the
 rows at all — a sourcing gap and a row lost to the model screen or a dead link
 call for different fixes.
 
@@ -33,7 +40,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from typing import Callable, Sequence, TypeVar
 
-from job_hunt.services.triage import REGIONS, region, sector
+from job_hunt.services.triage import REGIONS, region, sector, technical_reach
 
 T = TypeVar("T")
 
@@ -59,11 +66,13 @@ class Reservation:
     name: str
     share: float  # of the slate, rounded up
     belongs: Callable[[str, str], bool]  # (company, location)
+    # Filled on technical reach instead of the score floor (see module docstring).
+    lottery: bool = False
 
 
 RESERVATIONS: tuple[Reservation, ...] = (
     # Smallest bucket first, so a Yukon government row is spent where it is scarcest.
-    Reservation("North", 0.1, lambda _company, location: region(location) == "north"),
+    Reservation("North", 0.1, lambda _company, location: region(location) == "north", lottery=True),
     Reservation("public sector", 0.3, lambda company, _location: sector(company) == "public"),
     Reservation("outside GTA", 0.5, lambda _company, location: outside_gta(location)),
 )
@@ -113,6 +122,7 @@ def balanced_slate(
     company: Callable[[T], str],
     location: Callable[[T], str],
     score: Callable[[T], float],
+    role: Callable[[T], str],
     inbox: Sequence[T] | None = None,
     min_score: float = MIN_SCORE,
     reservations: Sequence[Reservation] = RESERVATIONS,
@@ -130,10 +140,12 @@ def balanced_slate(
     chosen: set[int] = set()
     gaps: list[ReservationGap] = []
 
-    def eligible(item: T) -> bool:
-        return score(item) >= min_score
-
     for reservation in reservations:
+        def eligible(item: T) -> bool:
+            if reservation.lottery:
+                return technical_reach(role(item))
+            return score(item) >= min_score
+
         def belongs(item: T) -> bool:
             return reservation.belongs(company(item), location(item))
 

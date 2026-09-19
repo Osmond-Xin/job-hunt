@@ -19,6 +19,7 @@ from job_hunt.models.tracker import normalize
 from job_hunt.repositories.tracker_repo import TrackerRepository
 from job_hunt.services.adzuna import scan_adzuna_source
 from job_hunt.services.cn_boards import scan_cn_boards_source
+from job_hunt.services.getro_boards import scan_getro_boards_source
 from job_hunt.services.gov_boards import scan_gov_boards
 from job_hunt.services.regional_boards import scan_regional_boards
 from job_hunt.services.immigration import place_tokens as immigration_place_tokens
@@ -90,8 +91,12 @@ def scan_portals(
     Tier 7: Adzuna aggregator API (``settings.adzuna`` + env credentials).
     Tier 8: Chinese-language community boards (``cn_boards``) — 51.ca and
         Vansky, screened to technical titles before any detail request.
+    Tier 9: Getro portfolio boards (``getro_boards``) — the accelerator and VC
+        boards where early-stage companies post (Communitech, MaRS, Inovia,
+        Real Ventures, Antler). Unlike tiers 4-8 these are general boards, so
+        their rows go through the **positive** title filter.
 
-    Tiers 4-8 need no WebSearch provider and consume no search quota. They
+    Tiers 4-9 need no WebSearch provider and consume no search quota. They
     return structured employer / location fields, so they are strictly better
     per result than the tier-3 channels that cover the same boards.
     """
@@ -225,6 +230,22 @@ def scan_portals(
                 count_fetched=True,
                 require_positive=False,
             )
+
+        # Tier 9 is the exception to the paragraph above: a Getro portfolio
+        # board is a general board — Communitech carried EY tax-litigation
+        # roles beside its ML ones on 2026-09-17 — so nothing but the title
+        # says whether a row is his work. It keeps the positive filter.
+        _accept_jobs(
+            _getro_scanned_jobs(config.get("getro_boards"), result.errors),
+            result,
+            positives=positives,
+            negatives=negatives,
+            include_non_canada=include_non_canada,
+            known_urls=known_urls,
+            known_company_roles=known_company_roles,
+            apply=apply,
+            count_fetched=True,
+        )
 
     if apply and result.jobs:
         _append_pipeline(result.jobs)
@@ -388,6 +409,21 @@ def _cn_board_scanned_jobs(
         warnings.extend(result.health.warnings())
         if result.health.note:
             warnings.append(f"cn boards: {result.health.note}")
+    return [_scanned_job_from_posting(posting) for posting in result.postings]
+
+
+def _getro_scanned_jobs(
+    config: dict[str, Any] | None, warnings: list[str] | None = None
+) -> list[ScannedJob]:
+    """Tier 9: accelerator / VC portfolio boards, all on the Getro API."""
+    try:
+        result = scan_getro_boards_source(config)
+    except Exception as exc:
+        if warnings is not None:
+            warnings.append(f"getro boards: sweep failed ({exc})")
+        return []
+    if warnings is not None:
+        warnings.extend(result.health.warnings())
     return [_scanned_job_from_posting(posting) for posting in result.postings]
 
 

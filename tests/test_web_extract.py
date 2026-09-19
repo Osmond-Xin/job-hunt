@@ -89,6 +89,21 @@ def test_workday_metadata_helpers_extract_company_and_location() -> None:
     )
 
     assert _workday_company_from_url(url) == "Acme"
+
+
+def test_a_workday_career_site_label_is_not_the_employer_name() -> None:
+    """2026-09-17: TC Energy's site segment reached the résumé filename and the
+    application answers as "CAREER SITE TC". Empty lets the caller fall back to
+    the name discovery recorded for the posting."""
+    tc = ("https://tcenergy.wd3.myworkdayjobs.com/en-US/CAREER_SITE_TC/job/"
+          "Calgary-Alberta/AI-Applications-Developer_JR-10794")
+    bmo = "https://bmo.wd3.myworkdayjobs.com/en-US/External/job/Toronto-ON-CAN/Role_R1"
+    solar = ("https://canadiansolar.wd5.myworkdayjobs.com/en-US/CanadianSolar/job/"
+             "Kitchener-ON/Commercial-Analyst_R1")
+
+    assert _workday_company_from_url(tc) == ""
+    assert _workday_company_from_url(bmo) == ""
+    assert _workday_company_from_url(solar) == "CanadianSolar"
     assert _workday_location_from_text("Role\nlocations\nToronto\ntime type\nFull time") == "Toronto"
 
 

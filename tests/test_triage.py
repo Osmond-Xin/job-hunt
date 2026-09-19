@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from datetime import date
 
+import pytest
+
 from job_hunt.services.triage import (
     PipelineRow,
     already_applied,
@@ -21,6 +23,7 @@ from job_hunt.services.triage import (
     rank,
     score,
     submitted_employers,
+    technical_reach,
     tracker_seen,
 )
 
@@ -164,6 +167,43 @@ def test_public_sector_it_analyst_titles_are_in_the_systems_analyst_family():
     assert "one-person scope" in reasons
     assert "public sector" in reasons
     assert points >= 3.5
+
+
+@pytest.mark.parametrize(
+    "role, reachable",
+    [
+        # Northern rows in the 2026-09-17 inbox.
+        ("Junior Software Engineer", True),
+        ("software developer", True),
+        ("Web developer", True),
+        ("cloud engineer", True),
+        ("cloud administrator", True),
+        ("IT System Analyst", True),
+        ("information technology (IT) analyst", True),
+        ("Technical Specialist (Applications)", True),
+        ("Technical Support Officer", True),
+        ("Environmental Health System Administrator (16 Month Term)", True),
+        ("Geomatics Data Coordinator", True),
+        ("big data analyst", True),
+        ("Business Intelligence & Reporting Analyst", True),
+        ("Junior IT Business Analyst (QA)", True),
+        ("information systems quality assurance (QA) analyst", True),
+        ("Functional Analyst - (69058)", True),
+        ("AI Agent Developer", True),
+        ("Policy Analyst", False),
+        ("Financial Reporting and Accounting Analyst", False),
+        ("Project Assessment Analyst", False),
+        ("Risk Analyst", False),
+        ("Geotechnical Engineer", False),
+        ("Energy Engineer", False),
+        ("Electrical Engineer - Mine Hoist", False),
+        ("Information and Privacy Analyst", False),
+        ("Court Finance Officer", False),
+        ("Make it count: Finance Officer", False),  # English "it" is not IT
+    ],
+)
+def test_technical_reach_is_about_the_technology_not_the_word_analyst(role, reachable):
+    assert technical_reach(role) is reachable
 
 
 def test_an_equities_technical_analyst_is_not_the_systems_analyst_family():

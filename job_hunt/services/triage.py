@@ -201,6 +201,17 @@ GOVERNMENT_RE = re.compile(
     r"|^\s*(?:(?:the\s+)?bank of canada|(?:la\s+)?banque du canada)(?:\s*[/|–-]\s*(?:bank|banque) (?:of|du) canada)?\s*$",
     re.I,
 )
+# Private institutions whose names GOVERNMENT_RE's "university|college" reads as
+# public. On 2026-09-17 two of them (CICCC, International Business University)
+# took public-sector slots in the shortlist and collected the public-sector
+# point. There is no pattern that tells a private college from a public one by
+# name, so this is a list of the ones seen in the inbox; extend it as they appear.
+PRIVATE_INSTITUTION_RE = re.compile(
+    r"\b(ciccc|cornerstone international community college|international business university|"
+    r"yorkville university|northeastern university|futures canadian college|robertson college|"
+    r"canadian college of health leaders)\b",
+    re.I,
+)
 AI_ROLE_RE = re.compile(
     r"\b(ai|a\.i\.|artificial intelligence|machine learning|\bml\b|llm|genai|generative|"
     r"rag|nlp|data scien|forward deployed|applied scien)\b",
@@ -308,6 +319,33 @@ def cn_technical_title(title: str) -> bool:
     if not CN_TECH_ROLE_RE.search(text) or CN_NONTECH_ROLE_RE.search(text):
         return False
     return not (CN_CONTEXT_NONTECH_RE.search(text) and not CN_TECH_OCCUPATION_RE.search(text))
+
+
+# A role the operator can reach on technology alone, domain experience or not —
+# what the North reservation fills on (services/balance.py). Operator 2026-09-17:
+# a full match in the North almost never exists, so those applications are a
+# lottery on "they need my technical skills and I can learn the rest". The
+# score cannot say that: ADJACENT_ROLE_RE pays for a bare "analyst", so on
+# 2026-09-17 a GNWT Policy Analyst and a Financial Reporting and Accounting
+# Analyst took the North slots while a Sudbury junior software developer and a
+# Town of Hay River IT analyst sat below the floor. "IT" is case-sensitive so
+# the English word "it" is not read as IT.
+TECH_REACH_RE = re.compile(
+    r"\b(software|developer|programmer|webmaster|devops|cloud|cyber\w*|database|informatics|"
+    r"information technology|information systems?|business intelligence|geomatics|gis|big data|"
+    r"data (engineer|analyst|scientist|architect|coordinator|specialist|administrator)|"
+    r"systems? (analyst|administrator|specialist|engineer)|"
+    r"network (administrator|engineer|analyst|technician|specialist)|"
+    r"technical (support|specialist|analyst)|applications? (analyst|specialist|support)|"
+    r"functional analyst|help ?desk|service desk)\b"
+    r"|(?-i:\bIT\b)",
+    re.I,
+)
+
+
+def technical_reach(role: str) -> bool:
+    text = role or ""
+    return bool(TECH_REACH_RE.search(text) or AI_ROLE_RE.search(text) or cn_technical_title(text))
 
 
 # Region of a free-text location, for the shortlist balance check
@@ -432,7 +470,8 @@ def region(location: str) -> str:
 
 
 def sector(company: str) -> str:
-    return "public" if GOVERNMENT_RE.search(company or "") else "private"
+    text = company or ""
+    return "public" if GOVERNMENT_RE.search(text) and not PRIVATE_INSTITUTION_RE.search(text) else "private"
 
 
 @dataclass(frozen=True)
@@ -553,7 +592,7 @@ def excluded(row: PipelineRow) -> str:
         return "a listing page, not one posting"
     if FRENCH_REQUIRED_RE.search(row.role):
         return "French required"
-    if BIG_EMPLOYER_RE.search(row.company) and not GOVERNMENT_RE.search(row.company):
+    if BIG_EMPLOYER_RE.search(row.company) and sector(row.company) != "public":
         return "large employer"
     return ""
 
@@ -584,7 +623,7 @@ def score(row: PipelineRow, *, today: date | None = None) -> tuple[float, list[s
     #     services officer tie with every applied-AI role in the inbox on
     #     2026-09-04, which is the same plateau the tier fix below removes.
     on_target = bool(AI_ROLE_RE.search(row.role) or SOLO_ROLE_RE.search(row.role))
-    if on_target and GOVERNMENT_RE.search(row.company):
+    if on_target and sector(row.company) == "public":
         points += 1
         reasons.append("public sector")
 
@@ -734,7 +773,7 @@ def submitted_employers(tracker_text: str) -> dict[str, str]:
         if len(cells) <= 6 or cells[3] == "Company":
             continue
         company, status = cells[3], cells[6].lower()
-        if status not in SUBMITTED_STATUSES or GOVERNMENT_RE.search(company):
+        if status not in SUBMITTED_STATUSES or sector(company) == "public":
             continue
         key = _norm(company)
         if len(key) >= 4:
