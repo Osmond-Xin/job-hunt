@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from job_hunt.models.events import ApplicationEvent
+from job_hunt.repositories.email_decision_repo import EmailDecisionRepository, EmailEventDecision
 from job_hunt.repositories.email_event_repo import EmailEventRepository
 from job_hunt.repositories.review_repo import ReviewRepository
 from job_hunt.repositories.tracker_repo import TRACKER_HEADER, TrackerEntry, TrackerRepository
@@ -415,3 +416,79 @@ def test_low_confidence_event_can_be_skipped_without_review_file(tmp_path) -> No
     assert result.review_created == 0
     assert result.skipped == 1
     assert not review_path.exists()
+
+
+def test_event_a_human_already_ruled_on_is_left_alone(tmp_path) -> None:
+    """The 2026-09-19 regression: reconcile re-broke rows corrected by hand.
+
+    #667 (Lumerate) had been moved Interview -> Applied on 2026-09-10 after a
+    human read the source mail and found the classifier had matched the word
+    "interview" inside "...if we wish to schedule an interview". The event kept
+    its bad classification, so the next `--apply` put the row back. An event a
+    human has ruled on is settled; reconcile does not get to reopen it.
+    """
+    tracker_path = tmp_path / "applications.md"
+    tracker_path.write_text(TRACKER_HEADER, encoding="utf-8")
+    tracker = TrackerRepository(tracker_path)
+    tracker.append_entry(tracker_entry(667, "Lumerate", "Senior Frontend Developer", "Applied"))
+
+    event_repo = EmailEventRepository(tmp_path / "email-events.jsonl")
+    misclassified = event(
+        event_type="interview",
+        company="Lumerate",
+        role="Senior Frontend Developer",
+        message_id="19d84336c74ed701",
+    )
+    event_repo.append(misclassified)
+
+    decision_repo = EmailDecisionRepository(tmp_path / "decisions.jsonl")
+    decision_repo.append(
+        EmailEventDecision(
+            event_id=misclassified.id,
+            decision="ignored",
+            note="ack, not an interview invitation",
+        )
+    )
+
+    result = reconcile_email_events(
+        apply=True,
+        import_new=True,
+        tracker=tracker,
+        event_repo=event_repo,
+        review_repo=ReviewRepository(tmp_path / "review.jsonl"),
+        decision_repo=decision_repo,
+    )
+
+    assert tracker.parse()[0].status == "Applied"
+    assert result.updated == 0
+    assert result.already_decided == 1
+
+
+def test_an_undecided_event_still_advances_the_row(tmp_path) -> None:
+    """The guard must not freeze reconcile for everything else."""
+    tracker_path = tmp_path / "applications.md"
+    tracker_path.write_text(TRACKER_HEADER, encoding="utf-8")
+    tracker = TrackerRepository(tracker_path)
+    tracker.append_entry(tracker_entry(1, "Lumerate", "Senior Frontend Developer", "Applied"))
+
+    event_repo = EmailEventRepository(tmp_path / "email-events.jsonl")
+    event_repo.append(
+        event(
+            event_type="rejection",
+            company="Lumerate",
+            role="Senior Frontend Developer",
+            message_id="undecided",
+        )
+    )
+
+    result = reconcile_email_events(
+        apply=True,
+        tracker=tracker,
+        event_repo=event_repo,
+        review_repo=ReviewRepository(tmp_path / "review.jsonl"),
+        decision_repo=EmailDecisionRepository(tmp_path / "decisions.jsonl"),
+    )
+
+    assert tracker.parse()[0].status == "Rejected"
+    assert result.updated == 1
+    assert result.already_decided == 0

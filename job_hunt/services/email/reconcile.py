@@ -6,6 +6,7 @@ from pydantic import BaseModel
 
 from job_hunt.models.events import ApplicationEvent
 from job_hunt.models.review import ReviewItem
+from job_hunt.repositories.email_decision_repo import EmailDecisionRepository
 from job_hunt.repositories.email_event_repo import EmailEventRepository
 from job_hunt.repositories.review_repo import ReviewRepository
 from job_hunt.repositories.tracker_repo import TrackerEntry, TrackerRepository
@@ -50,6 +51,7 @@ class ReconcileResult(BaseModel):
     imported: int = 0
     review_created: int = 0
     skipped: int = 0
+    already_decided: int = 0
 
 
 def _transition_kind(current_status: str, new_status: str) -> str:
@@ -94,11 +96,13 @@ def reconcile_email_events(
     event_repo: EmailEventRepository | None = None,
     tracker: TrackerRepository | None = None,
     review_repo: ReviewRepository | None = None,
+    decision_repo: EmailDecisionRepository | None = None,
     aliases: Mapping[str, str] | None = None,
 ) -> ReconcileResult:
     event_repo = event_repo or EmailEventRepository()
     tracker = tracker or TrackerRepository()
     review_repo = review_repo or ReviewRepository()
+    decision_repo = decision_repo or EmailDecisionRepository()
     aliases = aliases if aliases is not None else load_aliases()
     # Read the whole log regardless of `limit`, so `total_available` always
     # reflects the true size and the report can say whether this run's
@@ -106,7 +110,19 @@ def reconcile_email_events(
     all_events = event_repo.list(limit=10**9)
     events = all_events[-limit:]
     result = ReconcileResult(scanned=len(events), total_available=len(all_events))
+    # An event a human has already ruled on is settled, and reconcile is not
+    # entitled to reopen it. `list_review_candidates` has always filtered on
+    # this; reconcile did not, so a row corrected by hand was re-broken on the
+    # next run -- the stored event still carries the classification the human
+    # overruled. On 2026-09-19 that reverted #667 (Lumerate) and #669 (Micro1)
+    # from their 2026-09-10 corrections back to "Interview": one was the word
+    # "interview" inside "...if we wish to schedule an interview", the other an
+    # automated screening that was never taken.
+    decided = decision_repo.decided_event_ids()
     for event in events:
+        if event.id in decided:
+            result.already_decided += 1
+            continue
         status = EMAIL_STATUS_MAP.get(event.event_type)
         if not status:
             result.skipped += 1
