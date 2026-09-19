@@ -131,3 +131,62 @@ cn_boards:
       enabled: true
       max_age_days: 14    # walk back until free ads are older than this
       max_pages: 40
+
+# Tier 9 — accelerator and VC portfolio boards, all on the Getro JSON API.
+# Added 2026-09-18, after he placed himself in the early-stage lane: "我很适合
+# 初创企业。我的工作简历和背景也都是初创企业的". These boards are where seed-stage
+# Canadian companies post; the national aggregators carry them late or not at all.
+#
+# `network_id` is the integer in props.pageProps.network.id of the board's own
+# HTML — NOT the slug. Re-read it from the page if a board ever returns nothing.
+# Boards that are NOT Getro and so cannot go here: jobs.golden.ventures and
+# portfoliojobs.panache.vc (Consider platform, bot-walled), Wellfound, DMZ.
+#
+# The API ignores hitsPerPage and always returns 20 rows a page, so the tier
+# searches by role instead of walking whole boards: queries x boards x max_pages
+# bounds the request count (8 x 6 x 2 = 96 worst case, ~2 minutes with the delay).
+getro_boards:
+  enabled: true
+  delay_s: 0.4
+  timeout_s: 30.0
+  max_pages: 2
+  # Server-side location facet. "Canada" narrowed Communitech 1183 -> 1007.
+  locations:
+    - Canada
+  # His lanes, in the boards' own vocabulary. Keep this short: every query is a
+  # request per board per page, and the positive title filter runs downstream.
+  queries:
+    - ai engineer
+    - machine learning
+    - forward deployed
+    - software developer
+    - data engineer
+    - solutions engineer
+    - full stack
+    - systems analyst
+  boards:
+    - id: communitech
+      network_id: 8936
+      label: Communitech (Waterloo Region)
+      enabled: true
+      # Big-employer heavy (KPMG, EY, GHD) next to the startups — measured 2026-09-18.
+    - id: mars
+      network_id: 383
+      label: MaRS Discovery District (Toronto)
+      enabled: true
+    - id: inovia
+      network_id: 1201
+      label: Inovia Capital (Montreal)
+      enabled: true
+    - id: real-ventures
+      network_id: 166
+      label: Real Ventures
+      enabled: true
+    - id: antler
+      network_id: 7715
+      label: Antler (global, includes the Toronto cohort)
+      enabled: true
+    - id: invest-ottawa
+      network_id: 1546
+      label: Invest Ottawa
+      enabled: true
