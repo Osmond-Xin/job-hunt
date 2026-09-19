@@ -212,6 +212,8 @@ def main():
         json.dumps({"kept": kept, "all": rows}, ensure_ascii=False, indent=1), encoding="utf-8")
 
     print(f"\nfetched {len(rows)} unique · kept {len(kept)}")
+    from job_hunt.services.balance import harvest_line
+    print(harvest_line(kept))
     print(sorted(drops.items(), key=lambda kv: -kv[1]))
     for r in sorted(kept, key=lambda r: r["created"], reverse=True):
         pay = ""

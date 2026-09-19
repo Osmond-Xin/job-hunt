@@ -55,6 +55,8 @@ data/*
 data/locks/
 memory/
 cache/
+# Daily scan logs (scripts/daily_scan.sh) carry scan warnings and inbox detail.
+logs/
 artifacts/
 reports/*
 output/*

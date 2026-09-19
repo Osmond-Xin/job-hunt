@@ -108,7 +108,10 @@ Before you output, check your own draft against this list:
 1. Exactly 2 projects, none with more than 3 bullets?
 2. No role with more than 3 bullets, and only the top two roles at 3?
 3. Body word count between 500 and 600?
-4. At most 4 skills groups?
+4. At most 4 skills groups, and **is every skill in them present in the master CV**?
+   A skill named in the JD and not in the master CV does not go in, however well it
+   would match: on 2026-09-17 a draft added "MLOps / LLMOps" and "Responsible AI"
+   straight from a JD's preferred qualifications, and the red team blocked it.
 5. Does every claim that is qualified in the master CV still carry its qualifier —
    the retired AWS page, the synthetic corpus, the simulated deployment, the
    four-person team, the expired credential?

@@ -198,6 +198,8 @@ def main():
     out.write_text(json.dumps({"kept": kept, "all": rows}, indent=1))
     from collections import Counter
     print(f"\nfetched {len(rows)} unique · kept {len(kept)}", file=sys.stderr)
+    from job_hunt.services.balance import harvest_line
+    print(harvest_line(kept), file=sys.stderr)
     print(Counter(r["drop"] for r in rows if r["drop"]).most_common(), file=sys.stderr)
     for r in kept[:80]:
         sal = f"{int(r['salary_min']//1000)}-{int(r['salary_max']//1000)}k" if r["salary_min"] else "-"

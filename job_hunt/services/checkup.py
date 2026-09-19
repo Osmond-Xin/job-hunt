@@ -338,6 +338,35 @@ def outreach_followups() -> Check:
     )
 
 
+# The operator's cadence, 2026-09-17: the quota-free scan runs weekly or when he
+# asks — daily was too much — and he runs it himself. Nothing is scheduled on
+# his machine, so this check is the reminder: it goes LOOK a week after the
+# last scan, and the agent closing the session says so.
+SCAN_CADENCE_DAYS = 7
+_SCAN_HEADING_RE = re.compile(r"^### Direct ATS Scan — (\d{4}-\d{2}-\d{2})\s*$", re.M)
+
+
+def scan_freshness(
+    *, pipeline: Path = Path("data/pipeline.md"), today: date | None = None
+) -> Check:
+    today = today or date.today()
+    text = pipeline.read_text(encoding="utf-8") if pipeline.exists() else ""
+    dates = [date.fromisoformat(found) for found in _SCAN_HEADING_RE.findall(text)]
+    fix = "run scripts/daily_scan.sh in a terminal, then tell the agent it is updated"
+    if not dates:
+        return Check(name="weekly scan", ok=False, detail="no scan has ever written the inbox", fix=fix)
+    last = max(dates)
+    age = (today - last).days
+    if age < SCAN_CADENCE_DAYS:
+        return Check(name="weekly scan", ok=True, detail=f"last scan {last} ({age} day(s) ago)")
+    return Check(
+        name="weekly scan",
+        ok=False,
+        detail=f"last scan {last}, {age} days ago — due (weekly cadence)",
+        fix=fix,
+    )
+
+
 def run_checkup(*, days: int = 30, today: date | None = None) -> list[Check]:
     # Compute the date range inside the safety net so a bad `days` argument
     # produces a Check instead of raising and killing the whole command.
@@ -369,5 +398,6 @@ def run_checkup(*, days: int = 30, today: date | None = None) -> list[Check]:
         safe_run_check("one output directory per job", superseded_run_dirs),
         safe_run_check("mailbox agrees with the tracker", lambda: mailbox_gaps(since=since_date.isoformat())),
         safe_run_check("human mail not buried", human_mail),
+        safe_run_check("weekly scan", lambda: scan_freshness(today=today)),
         safe_run_check("outreach follow-ups", outreach_followups),
     ]

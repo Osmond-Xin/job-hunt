@@ -286,3 +286,89 @@ def test_progress_is_reported_before_each_slow_call(tmp_path) -> None:
         "screening 5 rows through MiniMax…",
         "verifying 5 candidates…",
     ]
+
+
+def test_a_toronto_heavy_inbox_still_surfaces_public_and_northern_work(tmp_path) -> None:
+    """2026-09-16: 402 public and 95 northern rows sat in the inbox while the
+    top 30 was half Greater Toronto and had no northern row. The shortlist now
+    reserves slots for them — from rows that still score as a match."""
+    rows = [
+        _row(f"https://example.invalid/t{i}", f"Startup{i}", "AI Engineer", "Toronto, Ontario", posted="2026-09-15")
+        for i in range(40)
+    ] + [
+        _row("https://example.invalid/yk", "Government of Yukon", "Systems Analyst", "Whitehorse, Yukon",
+             posted="2026-09-10"),
+        _row("https://example.invalid/ns", "Province of Nova Scotia", "Business Analyst", "Halifax, Nova Scotia",
+             posted="2026-09-10"),
+    ]
+    pipeline = _write(tmp_path, "pipeline.md", _pipeline(rows))
+    tracker = _write(tmp_path, "applications.md", "")
+
+    result = build_shortlist(
+        pipeline=pipeline, tracker=tracker, options=ShortlistOptions(limit=10), today=date(2026, 9, 16)
+    )
+
+    shown = {entry.ranked.row.company for entry in result.entries}
+    assert "Government of Yukon" in shown
+    assert "Province of Nova Scotia" in shown
+    assert result.mix_shown.regions["north"] == 1
+    assert result.mix_shown.sectors["public"] == 2
+    assert result.mix_pool.total == 42
+    assert {gap.reservation for gap in result.reservation_gaps} == {"public sector", "outside GTA"}
+    assert all(gap.sourcing for gap in result.reservation_gaps)
+
+
+def test_screen_then_verify_checks_reserved_rows_the_model_ranked_low(tmp_path) -> None:
+    """Codex review 2026-09-16: verification used to check a plain head[:40]
+    of the model-fit order, so a Yukon row the model ranked 60th was dropped
+    before its link was ever fetched, and reported as a sourcing gap."""
+    rows = [
+        _row(f"https://example.invalid/t{i}", f"Startup{i}", "AI Engineer", "Toronto, Ontario", posted="2026-09-15")
+        for i in range(59)
+    ] + [
+        _row("https://example.invalid/yk", "Government of Yukon", "Systems Analyst", "Whitehorse, Yukon",
+             posted="2026-09-10"),
+    ]
+    pipeline = _write(tmp_path, "pipeline.md", _pipeline(rows))
+    tracker = _write(tmp_path, "applications.md", "")
+
+    def fake_screener(batch):
+        # Keep everything, rank the Yukon row last.
+        return {
+            index: Screened(index=index, keep=True, fit=1.0 if company == "Government of Yukon" else 5.0, reason="")
+            for index, (company, _role, _location) in enumerate(batch, start=1)
+        }, ""
+
+    checked: list[str] = []
+
+    def fake_checker(urls, *, delay_s=1.0, **_ignored):
+        checked.extend(urls)
+        return {url: Verdict(url, LIVE) for url in urls}
+
+    result = build_shortlist(
+        pipeline=pipeline, tracker=tracker,
+        options=ShortlistOptions(limit=10, screen=True, pool=60, verify=True),
+        screener=fake_screener, checker=fake_checker, today=date(2026, 9, 16),
+    )
+
+    assert "https://example.invalid/yk" in checked
+    assert "Government of Yukon" in {entry.ranked.row.company for entry in result.entries if not entry.overflow}
+
+
+def test_one_posting_under_two_employer_spellings_fills_one_slot(tmp_path) -> None:
+    """Codex review 2026-09-16, round 2: rank() dedups on (company, role), so the
+    same URL under three spellings took three public-sector slots."""
+    rows = [
+        _row(f"https://example.invalid/t{i}", f"Startup{i}", "AI Engineer", "Toronto, Ontario", posted="2026-09-15")
+        for i in range(20)
+    ] + [
+        _row("https://example.invalid/yk", name, "Systems Analyst", "Whitehorse, Yukon", posted="2026-09-10")
+        for name in ("Government of Yukon", "Yukon Government", "Government of the Yukon")
+    ]
+    pipeline = _write(tmp_path, "pipeline.md", _pipeline(rows))
+    tracker = _write(tmp_path, "applications.md", "")
+    result = build_shortlist(
+        pipeline=pipeline, tracker=tracker, options=ShortlistOptions(limit=10), today=date(2026, 9, 16)
+    )
+    urls = [entry.ranked.row.url for entry in result.entries]
+    assert len(urls) == len(set(urls)) == 10

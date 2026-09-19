@@ -309,6 +309,10 @@ def email_import_events(
         console.print(
             f"[yellow]Held back, status not ranked: {result.unranked}[/yellow]"
         )
+    if result.already_decided:
+        console.print(
+            f"Left alone, already ruled on by a human: {result.already_decided}"
+        )
     console.print(f"Imported new: {result.imported}")
     console.print(f"Review created: {result.review_created}")
     console.print(f"Skipped: {result.skipped}")

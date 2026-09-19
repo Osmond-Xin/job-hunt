@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from datetime import date
 
+import pytest
+
 from job_hunt.services.triage import (
     PipelineRow,
     already_applied,
@@ -21,6 +23,7 @@ from job_hunt.services.triage import (
     rank,
     score,
     submitted_employers,
+    technical_reach,
     tracker_seen,
 )
 
@@ -131,6 +134,112 @@ def test_a_role_matching_no_target_vocabulary_sinks_below_a_matching_one():
     points, reasons = score(operator, today=today)
     assert "off-target role" in reasons
     assert points < score(toronto, today=today)[0]
+
+
+def test_a_chinese_tech_title_is_not_scored_as_off_target():
+    """Rows from the 51.ca / Vansky tier carry Chinese titles the English
+    vocabularies cannot read; they must not sink with the restaurant ads."""
+    today = date(2026, 9, 16)
+    tester = PipelineRow(
+        url="https://www.51.ca/jobs/job-posts/1203004", company="alcmicro",
+        role="大型电脑公司招聘电脑测试员", location="列治文山, Greater Toronto Area, ON, Canada",
+        posted="2026-09-08", source="51ca",
+    )
+    server = PipelineRow(
+        url="https://www.51.ca/jobs/job-posts/1", company="someone",
+        role="餐馆企台", location="北约克, Greater Toronto Area, ON, Canada",
+        posted="2026-09-08", source="51ca",
+    )
+    points, reasons = score(tester, today=today)
+    assert "off-target role" not in reasons
+    assert "off-target role" in score(server, today=today)[1]
+    assert points > score(server, today=today)[0]
+
+
+def test_public_sector_it_analyst_titles_are_in_the_systems_analyst_family():
+    """A Government of Yukon "Functional Analyst" scored 2.0 and ranked ~#400."""
+    today = date(2026, 9, 16)
+    yukon = PipelineRow(
+        url="https://example.invalid/yk", company="Government of Yukon", role="Functional Analyst - (69058)",
+        location="Whitehorse, Yukon", posted="2026-09-15", source="adzuna",
+    )
+    points, reasons = score(yukon, today=today)
+    assert "one-person scope" in reasons
+    assert "public sector" in reasons
+    assert points >= 3.5
+
+
+@pytest.mark.parametrize(
+    "role, reachable",
+    [
+        # Northern rows in the 2026-09-17 inbox.
+        ("Junior Software Engineer", True),
+        ("software developer", True),
+        ("Web developer", True),
+        ("cloud engineer", True),
+        ("cloud administrator", True),
+        ("IT System Analyst", True),
+        ("information technology (IT) analyst", True),
+        ("Technical Specialist (Applications)", True),
+        ("Technical Support Officer", True),
+        ("Environmental Health System Administrator (16 Month Term)", True),
+        ("Geomatics Data Coordinator", True),
+        ("big data analyst", True),
+        ("Business Intelligence & Reporting Analyst", True),
+        ("Junior IT Business Analyst (QA)", True),
+        ("information systems quality assurance (QA) analyst", True),
+        ("Functional Analyst - (69058)", True),
+        ("AI Agent Developer", True),
+        ("Policy Analyst", False),
+        ("Financial Reporting and Accounting Analyst", False),
+        ("Project Assessment Analyst", False),
+        ("Risk Analyst", False),
+        ("Geotechnical Engineer", False),
+        ("Energy Engineer", False),
+        ("Electrical Engineer - Mine Hoist", False),
+        ("Information and Privacy Analyst", False),
+        ("Court Finance Officer", False),
+        ("Make it count: Finance Officer", False),  # English "it" is not IT
+    ],
+)
+def test_technical_reach_is_about_the_technology_not_the_word_analyst(role, reachable):
+    assert technical_reach(role) is reachable
+
+
+def test_an_equities_technical_analyst_is_not_the_systems_analyst_family():
+    today = date(2026, 9, 16)
+    trading = PipelineRow(url="https://example.invalid/eq", company="Bank", role="Technical Analyst - Equities Trading",
+                          location="Toronto, ON", posted="2026-09-15", source="a")
+    systems = PipelineRow(url="https://example.invalid/is", company="Hospital",
+                          role="Technical Analyst - Information Systems", location="Whitehorse, YT",
+                          posted="2026-09-15", source="a")
+    assert "one-person scope" not in score(trading, today=today)[1]
+    for role in ("Technical Analyst, Equities Trading", "Equities Technical Analyst"):
+        row = PipelineRow(url="https://example.invalid/eq2", company="Bank", role=role,
+                          location="Toronto, ON", posted="2026-09-15", source="a")
+        assert "one-person scope" not in score(row, today=today)[1], role
+    assert "one-person scope" in score(systems, today=today)[1]
+
+
+def test_an_english_technical_title_on_a_chinese_board_is_kept():
+    ml = PipelineRow(url="https://www.51.ca/jobs/job-posts/1", company="x", role="Machine Learning Engineer",
+                     location="Toronto, ON", posted="", source="51ca")
+    assert excluded(ml) == ""
+
+
+def test_the_chinese_board_exclusion_only_applies_to_chinese_board_rows():
+    workday = PipelineRow(url="https://acme.wd3.myworkdayjobs.com/x", company="Acme",
+                          role="Machine Learning Engineer（中文优先）", location="Toronto, ON", posted="", source="workday")
+    assert excluded(workday) == ""
+
+
+def test_a_non_technical_chinese_title_is_excluded_even_with_an_english_ai_token():
+    row = PipelineRow(
+        url="https://www.vansky.com/info/adfree/2846980.html", company="Arica Zhong",
+        role="5星诊所聘请前台兼职+AI marketing project", location="Surrey, BC, Canada",
+        posted="2026-09-12", source="vansky",
+    )
+    assert excluded(row) == "non-technical Chinese-board posting"
 
 
 def test_toronto_is_not_excluded_or_scored_on_location():

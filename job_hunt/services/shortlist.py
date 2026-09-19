@@ -20,6 +20,7 @@ from datetime import date
 from pathlib import Path
 from typing import Callable
 
+from job_hunt.services.balance import MIN_SCORE, Mix, ReservationGap, balanced_slate
 from job_hunt.services.link_check import SKIPPED, Verdict, annotate_pipeline, check_urls
 from job_hunt.services.screen import Screened, screen
 from job_hunt.services.triage import (
@@ -67,6 +68,24 @@ def _overflow_lane(pool: list[Ranked], shortlisted: list[Ranked]) -> list[Ranked
     return overflow[:_OVERFLOW_LANE_SLOTS]
 
 
+def _one_per_url(ranked: list[Ranked]) -> list[Ranked]:
+    """``rank`` dedups on (company, role); one posting under two employer
+    spellings survives that, and with reserved slots each copy could fill a
+    reservation of its own (Codex review 2026-09-16, round 2)."""
+    seen: set[str] = set()
+    unique: list[Ranked] = []
+    for item in ranked:
+        if item.row.url in seen:
+            continue
+        seen.add(item.row.url)
+        unique.append(item)
+    return unique
+
+
+def _employer_and_place(item: Ranked) -> tuple[str, str]:
+    return item.row.company, item.row.location
+
+
 @dataclass(frozen=True)
 class ShortlistOptions:
     limit: int = 10
@@ -102,6 +121,11 @@ class Shortlist:
     # and unscreened alone don't distinguish "no --screen" from "--screen asked
     # for but mmx was unreachable".
     screen_error: str = ""
+    # What the list is made of, against what the inbox could have offered —
+    # see `services/balance.py` for why the list is chosen, not just sorted.
+    mix_shown: Mix = Mix()
+    mix_pool: Mix = Mix()
+    reservation_gaps: tuple[ReservationGap, ...] = ()
 
 
 def build_shortlist(
@@ -133,14 +157,34 @@ def build_shortlist(
     # Verification drops rows, so it needs spare candidates to backfill with —
     # otherwise asking for 10 and losing 6 to dead links returns 4.
     ranked_limit = options.pool if options.screen else (max(limit * 4, 40) if options.verify else limit)
-    best = rank(
-        rows,
-        limit=ranked_limit,
-        seen_urls=seen_urls,
-        seen_pairs=seen_pairs,
-        seen_employers=seen_employers,
-        today=today,
+    # Rank everything, then choose: a plain top-N of the score sort is all
+    # Greater Toronto private sector, because that is where the supply is.
+    ranked_all = _one_per_url(
+        rank(
+            rows,
+            limit=max(len(rows), 1),
+            seen_urls=seen_urls,
+            seen_pairs=seen_pairs,
+            seen_employers=seen_employers,
+            today=today,
+        )
     )
+
+    def choose(items: list[Ranked], count: int) -> tuple[list[Ranked], list[ReservationGap]]:
+        # Every stage that cuts the list chooses rather than slices, and every
+        # gap is measured against the whole ranked inbox, so the operator can
+        # tell a sourcing gap from a row the screen or a dead link removed.
+        return balanced_slate(
+            items,
+            count,
+            company=lambda item: item.row.company,
+            location=lambda item: item.row.location,
+            score=lambda item: item.score,
+            role=lambda item: item.row.role,
+            inbox=ranked_all,
+        )
+
+    best, reservation_gaps = choose(ranked_all, ranked_limit)
 
     fits: dict[int, float] = {}
     reasons: dict[int, str] = {}
@@ -170,7 +214,10 @@ def build_shortlist(
         # Model fit first, then the deterministic priority score as tie-break.
         kept.sort(key=lambda pair: (-pair[1].fit, -pair[0].score))
         overflow_pool = [item for item, _verdict in kept]
-        best = list(overflow_pool) if options.verify else overflow_pool[:limit]
+        if options.verify:
+            best = list(overflow_pool)
+        else:
+            best, reservation_gaps = choose(overflow_pool, limit)
         for item, verdict in kept:
             if verdict.screened:
                 fits[id(item)] = verdict.fit
@@ -185,7 +232,10 @@ def build_shortlist(
         # One batched call: `check_urls` shares a single client and only sleeps
         # *between* URLs, so feeding it one URL at a time meant no keep-alive
         # and no delay at all — the opposite of the intent.
-        head = best[: max(limit * 4, 40)]
+        # Chosen, not sliced: after --screen, `best` is in model-fit order, and a
+        # plain head of it dropped reserved rows the model ranked low before
+        # their links were ever checked (Codex review 2026-09-16).
+        head, _ = choose(best, max(limit * 4, 40))
         progress(f"verifying {len(head)} candidates…")
         verdicts_by_url = checker([item.row.url for item in head], delay_s=options.verify_delay)
         survivors: list[Ranked] = []
@@ -199,7 +249,7 @@ def build_shortlist(
         # Survivors keep their rank order; the shortfall is reported below
         # rather than silently handed back as a shorter list.
         shortfall = limit - len(survivors)
-        best = survivors[:limit]
+        best, reservation_gaps = choose(survivors, limit)
         # The lane must never resurrect a posting verification just killed, and
         # rows past `head` were never checked at all.
         if overflow_pool:
@@ -248,4 +298,7 @@ def build_shortlist(
         marked_in_pipeline=marked,
         shortfall=shortfall,
         screen_error=screen_error,
+        mix_shown=Mix.of([_employer_and_place(item) for item in best]),
+        mix_pool=Mix.of([_employer_and_place(item) for item in ranked_all if item.score >= MIN_SCORE]),
+        reservation_gaps=tuple(reservation_gaps),
     )

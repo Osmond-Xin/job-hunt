@@ -27,6 +27,52 @@ sys.path.insert(0, str(ROOT))
 from job_hunt.services.pdf import pdf_page_count  # noqa: E402
 
 
+_MONTHS = {
+    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+    "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+}
+_DATE = re.compile(r"(?:(" + "|".join(_MONTHS) + r")[a-z]*\.?\s+)?(19|20)\d{2}", re.I)
+
+
+def _start_date(heading: str) -> tuple[int, int] | None:
+    """(year, month) the role started, from the last date range in the heading."""
+    parts = re.split(r"[|(]", heading)
+    for chunk in reversed(parts):
+        match = _DATE.search(chunk)
+        if match:
+            year = int(match.group(0)[-4:])
+            month = _MONTHS.get((match.group(1) or "").lower()[:3], 1)
+            return (year, month)
+    return None
+
+
+def check_experience_order(markdown: str) -> list[str]:
+    """Reverse-chronological is a hard invariant; a tailored CV must not reorder
+    Experience by relevance the way it reorders bullets, skills and projects.
+    Returns the out-of-order pairs, newest-first being the expectation."""
+    lines = markdown.split("\n")
+    starts = [
+        i for i, line in enumerate(lines)
+        if re.fullmatch(r"##\s+(Selected\s+)?(Professional\s+)?Experience", line.strip())
+    ]
+    problems = []
+    for start in starts:
+        end = next(
+            (i for i in range(start + 1, len(lines)) if lines[i].startswith("## ")),
+            len(lines),
+        )
+        dated = [
+            (line[4:].strip(), _start_date(line))
+            for line in lines[start + 1:end]
+            if line.startswith("### ")
+        ]
+        dated = [(h, d) for h, d in dated if d]
+        for (prev_h, prev_d), (next_h, next_d) in zip(dated, dated[1:]):
+            if next_d > prev_d:
+                problems.append(f"{prev_h!r} is listed above {next_h!r}, which is newer")
+    return problems
+
+
 def md_inline(text: str) -> str:
     """Convert inline markdown (bold, italic, code, links) to HTML."""
     text = html.escape(text, quote=False)
@@ -270,6 +316,16 @@ def main() -> None:
     out_dir = args.out or (ROOT / "output" / source.stem)
     if not out_dir.is_absolute():
         out_dir = ROOT / out_dir
+
+    # Checked before rendering, so a misordered CV never gets a PDF to send.
+    out_of_order = check_experience_order(source.read_text(encoding="utf-8"))
+    if out_of_order:
+        raise SystemExit(
+            "REJECTED (nothing rendered): Experience is not reverse-chronological.\n  "
+            + "\n  ".join(out_of_order)
+            + "\nTailoring reorders bullets, skills and projects — never dated roles."
+        )
+
     pdf_path = render(source, out_dir, args.title or f"Yi Xin — {source.stem}", args.pdf_name)
 
     # Hand-written CVs are deliberately not auto-trimmed the way generated ones are:

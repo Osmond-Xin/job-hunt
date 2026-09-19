@@ -18,6 +18,8 @@ from job_hunt.models.posting import JobPosting, from_row
 from job_hunt.models.tracker import normalize
 from job_hunt.repositories.tracker_repo import TrackerRepository
 from job_hunt.services.adzuna import scan_adzuna_source
+from job_hunt.services.cn_boards import scan_cn_boards_source
+from job_hunt.services.getro_boards import scan_getro_boards_source
 from job_hunt.services.gov_boards import scan_gov_boards
 from job_hunt.services.regional_boards import scan_regional_boards
 from job_hunt.services.immigration import place_tokens as immigration_place_tokens
@@ -87,8 +89,14 @@ def scan_portals(
         largely absent from the national aggregators.
     Tier 6: Workday CxS JSON boards (``workday_boards``).
     Tier 7: Adzuna aggregator API (``settings.adzuna`` + env credentials).
+    Tier 8: Chinese-language community boards (``cn_boards``) — 51.ca and
+        Vansky, screened to technical titles before any detail request.
+    Tier 9: Getro portfolio boards (``getro_boards``) — the accelerator and VC
+        boards where early-stage companies post (Communitech, MaRS, Inovia,
+        Real Ventures, Antler). Unlike tiers 4-8 these are general boards, so
+        their rows go through the **positive** title filter.
 
-    Tiers 4-7 need no WebSearch provider and consume no search quota. They
+    Tiers 4-9 need no WebSearch provider and consume no search quota. They
     return structured employer / location fields, so they are strictly better
     per result than the tier-3 channels that cover the same boards.
     """
@@ -181,13 +189,13 @@ def scan_portals(
     # Tier 4: Job Bank direct fetch. No WebSearch provider and no quota — the
     # board's own search is queried over NOC code x province. Runs whenever
     # `jobbank_direct.enabled` is set, including when tier 3 is off.
-    # Tiers 4-7 are all direct, structured and quota-free. They are skipped
+    # Tiers 4-8 are all direct, structured and quota-free. They are skipped
     # under --company, which scopes the run to one tracked employer.
     if not company:
         # Migration in progress (job_hunt.models.posting.SourceResult): the
-        # Workday and Adzuna mappers below get their postings + coverage
-        # health from scan_workday_source/scan_adzuna_source. The other three
-        # still build a local `stats` dict and go through
+        # Workday, Adzuna and Chinese-board mappers below get their postings +
+        # coverage health from scan_*_source. The other three (Job Bank, gov,
+        # regional) still build a local `stats` dict and go through
         # `_board_coverage_warnings` because converting them needs a prior
         # refactor first — gov_boards.py's board registry is a dict literal
         # closing over six locals 190 lines into scan_gov_boards, and
@@ -200,12 +208,15 @@ def scan_portals(
             _regional_board_scanned_jobs(config.get("regional_boards"), result.errors),
             _workday_scanned_jobs(config.get("workday_boards"), result.errors),
             _adzuna_scanned_jobs(settings, discovery_context().get("roles", []), result.errors),
+            _cn_board_scanned_jobs(config.get("cn_boards"), result.errors),
         ]
-        # All five already establish the occupation before we see the title:
+        # All six already establish the occupation before we see the title:
         # Job Bank is queried by NOC code, Adzuna rows are filtered on their
-        # own `category` facet, and the gov / regional / Workday boards are
-        # small curated employer boards. Requiring a positive title match on
-        # top of that discards ~half of them for naming variance alone.
+        # own `category` facet, the gov / regional / Workday boards are
+        # small curated employer boards, and the Chinese boards are screened
+        # with `triage.cn_technical_title` (their titles are in Chinese, so the
+        # English positive list would discard every one). Requiring a positive
+        # title match on top of that discards ~half of them for naming variance.
         for tier_jobs in extra_tiers:
             _accept_jobs(
                 tier_jobs,
@@ -219,6 +230,22 @@ def scan_portals(
                 count_fetched=True,
                 require_positive=False,
             )
+
+        # Tier 9 is the exception to the paragraph above: a Getro portfolio
+        # board is a general board — Communitech carried EY tax-litigation
+        # roles beside its ML ones on 2026-09-17 — so nothing but the title
+        # says whether a row is his work. It keeps the positive filter.
+        _accept_jobs(
+            _getro_scanned_jobs(config.get("getro_boards"), result.errors),
+            result,
+            positives=positives,
+            negatives=negatives,
+            include_non_canada=include_non_canada,
+            known_urls=known_urls,
+            known_company_roles=known_company_roles,
+            apply=apply,
+            count_fetched=True,
+        )
 
     if apply and result.jobs:
         _append_pipeline(result.jobs)
@@ -266,10 +293,8 @@ def _accept_jobs(
             if apply:
                 _append_scan_history(job)
             continue
-        if (
-            job.url in known_urls
-            or (normalize(job.company), normalize(job.title)) in known_company_roles
-        ):
+        pair = _company_role_key(job.company, job.title)
+        if job.url in known_urls or (pair is not None and pair in known_company_roles):
             result.skipped_duplicates += 1
             job.status = "skipped_duplicate"
         else:
@@ -277,9 +302,23 @@ def _accept_jobs(
             job.status = "new"
             result.jobs.append(job)
             known_urls.add(job.url)
-            known_company_roles.add((normalize(job.company), normalize(job.title)))
+            if pair is not None:
+                known_company_roles.add(pair)
         if apply:
             _append_scan_history(job)
+
+
+def _company_role_key(company: str, title: str) -> tuple[str, str] | None:
+    """The (company, title) dedup key, or None when either side normalises away.
+
+    ``normalize`` keeps ASCII letters and digits only, so a Chinese title from
+    the 51.ca / Vansky tier becomes "". Two different postings by the same
+    poster then shared one key, and the second was dropped as a duplicate of
+    the first — the URL, which does differ, never got a say. Same guard as
+    ``triage.tracker_seen``.
+    """
+    key = (normalize(company), normalize(title))
+    return key if all(key) else None
 
 
 def _board_coverage_warnings(stats: dict[str, dict[str, Any]]) -> list[str]:
@@ -351,6 +390,41 @@ def _regional_board_scanned_jobs(
         if posting is not None:
             jobs.append(_scanned_job_from_posting(posting))
     return jobs
+
+
+def _cn_board_scanned_jobs(
+    config: dict[str, Any] | None, warnings: list[str] | None = None
+) -> list[ScannedJob]:
+    """Tier 8: Chinese-language community boards. Free, already tech-screened.
+
+    Built on the ``SourceResult`` seam from the start, same as Workday / Adzuna.
+    """
+    try:
+        result = scan_cn_boards_source(config)
+    except Exception as exc:
+        if warnings is not None:
+            warnings.append(f"cn boards: sweep failed ({exc})")
+        return []
+    if warnings is not None:
+        warnings.extend(result.health.warnings())
+        if result.health.note:
+            warnings.append(f"cn boards: {result.health.note}")
+    return [_scanned_job_from_posting(posting) for posting in result.postings]
+
+
+def _getro_scanned_jobs(
+    config: dict[str, Any] | None, warnings: list[str] | None = None
+) -> list[ScannedJob]:
+    """Tier 9: accelerator / VC portfolio boards, all on the Getro API."""
+    try:
+        result = scan_getro_boards_source(config)
+    except Exception as exc:
+        if warnings is not None:
+            warnings.append(f"getro boards: sweep failed ({exc})")
+        return []
+    if warnings is not None:
+        warnings.extend(result.health.warnings())
+    return [_scanned_job_from_posting(posting) for posting in result.postings]
 
 
 def _gov_board_scanned_jobs(
@@ -756,8 +830,13 @@ def _supports_direct_fetch(company: dict[str, Any]) -> bool:
         return True
     url = company.get("careers_url", "")
     host = urlparse(url).netloc
-    if host in {"jobs.lever.co", "jobs.ashbyhq.com", "job-boards.greenhouse.io", "boards.greenhouse.io"}:
-        return True
+    if host in {
+        "jobs.lever.co", "jobs.ashbyhq.com", "job-boards.greenhouse.io", "boards.greenhouse.io",
+        "apply.workable.com",
+    }:
+        # A board URL with no slug has no feed; saying "direct fetch" for it
+        # meant the company was quietly scanned into nothing.
+        return _infer_api_url(url) != ""
     # BambooHR gives every employer its own subdomain, so this one is a suffix
     # test rather than a fixed host. Added 2026-09-01: Vendasta and Hiveway —
     # the only two employers that have produced a real human interview — both
@@ -782,6 +861,8 @@ def _fetch_company_jobs(company: dict[str, Any]) -> list[ScannedJob]:
         return _parse_ashby(raw, company)
     if _bamboohr_slug(host):
         return _parse_bamboohr(raw, company, host)
+    if host == "apply.workable.com":
+        return _parse_workable(raw, company)
     return []
 
 
@@ -798,6 +879,8 @@ def _infer_api_url(careers_url: str) -> str:
         # The board and its JSON live on the same host: /careers is the page a
         # human reads, /careers/list is the feed behind it.
         return f"https://{parsed.netloc}/careers/list"
+    if parsed.netloc == "apply.workable.com" and slug:
+        return f"https://apply.workable.com/api/v1/widget/accounts/{slug}"
     return ""
 
 
@@ -888,6 +971,41 @@ def _parse_bamboohr(raw: dict[str, Any], company: dict[str, Any], host: str) -> 
                 location=", ".join(part for part in (city, region) if part),
                 portal="bamboohr",
                 source=company.get("name") or "",
+            )
+        )
+    return parsed
+
+
+def _parse_workable(raw: dict[str, Any], company: dict[str, Any]) -> list[ScannedJob]:
+    """Parse `https://apply.workable.com/api/v1/widget/accounts/<slug>`.
+
+    Added 2026-09-16 for the China-linked employers: Moomoo (Futu) and CIeNET
+    International post their Toronto-area roles here, and no tier could read
+    it. The widget feed needs no auth and carries a posting URL, a structured
+    city / region / country and a publish date. `country` is kept in the
+    location so a board that mixes Markham with Seattle is split by the
+    Canada gate rather than by guesswork here.
+    """
+    parsed: list[ScannedJob] = []
+    for item in raw.get("jobs") or []:
+        title = (item.get("title") or "").strip()
+        url = (item.get("url") or item.get("shortlink") or "").strip()
+        if not title or not url:
+            continue
+        place = ", ".join(
+            part for part in (item.get("city"), item.get("state"), item.get("country")) if part
+        )
+        if item.get("telecommuting"):
+            place = f"Remote, {place}" if place else "Remote"
+        parsed.append(
+            ScannedJob(
+                url=url,
+                title=title,
+                company=company.get("name") or raw.get("name") or "",
+                location=place,
+                portal="workable",
+                source=company.get("name") or "",
+                posted=str(item.get("published_on") or "")[:10],
             )
         )
     return parsed
@@ -1157,10 +1275,11 @@ def _known_urls() -> set[str]:
 
 
 def _known_company_roles() -> set[tuple[str, str]]:
-    return {
-        (normalize(entry.company), normalize(entry.role))
+    keys = (
+        _company_role_key(entry.company, entry.role)
         for entry in TrackerRepository(Path("data/applications.md")).parse()
-    }
+    )
+    return {key for key in keys if key is not None}
 
 
 def _append_scan_history(job: ScannedJob) -> None:

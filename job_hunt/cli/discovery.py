@@ -108,6 +108,7 @@ def triage(
     employer over aggregator — so the same inbox always yields the same
     list. Location plays no part in it.
     """
+    from job_hunt.services.balance import MIN_SCORE
     from job_hunt.services.shortlist import ShortlistOptions, build_shortlist
 
     pipeline = Path("data/pipeline.md")
@@ -161,8 +162,27 @@ def triage(
 
     console.print(
         f"[dim]{result.pending} pending · {sum(result.excluded.values())} filtered out · "
-        f"showing top {best_count}{verify_note}[/dim]\n"
+        f"showing top {best_count}{verify_note}[/dim]"
     )
+    # Balance is printed on every run, not on request: the list collapsed into
+    # Greater Toronto private sector for days before anyone noticed.
+    console.print(f"[dim]balance  shown: {result.mix_shown.line()}[/dim]")
+    console.print(f"[dim]         inbox: {result.mix_pool.line()} (rows scoring ≥ {MIN_SCORE:g})[/dim]")
+    for gap in result.reservation_gaps:
+        if gap.sourcing:
+            cause = (
+                f"the inbox has only {gap.in_inbox} such row(s) scoring ≥ {MIN_SCORE:g} — a sourcing gap; "
+                "the daily free-tier scan should fill it, see logs/daily-scan.log"
+            )
+        else:
+            cause = (
+                f"the inbox has {gap.in_inbox}, so the rest were lost to the model screen or "
+                "to link verification, not to sourcing"
+            )
+        console.print(
+            f"[yellow]balance: wanted {gap.wanted} {gap.reservation} slot(s), filled {gap.got} — {cause}[/yellow]"
+        )
+    console.print()
     columns = ["#", "Score", "Company", "Role", "Location", "Posted", "Why"]
     if llm_screen:
         columns.insert(2, "Fit")
@@ -222,12 +242,22 @@ def scan(
             "(linkedin / indeed / glassdoor / waterlooworks / talentegg / ...)."
         ),
     ),
+    no_websearch: bool = typer.Option(
+        False,
+        "--no-websearch",
+        help=(
+            "Skip every Brave-backed tier (tier 2 websearch companies, tier 3 channels) "
+            "and run only the quota-free sources. The daily scheduled scan uses this."
+        ),
+    ),
 ) -> None:
     from job_hunt.services.web_search import build_web_search_provider
 
     settings = load_settings()
-    web_search_provider = build_web_search_provider(settings)
-    if web_search_provider is None:
+    web_search_provider = None if no_websearch else build_web_search_provider(settings)
+    if no_websearch:
+        console.print("[dim]WebSearch tiers skipped (--no-websearch): quota-free sources only.[/dim]")
+    elif web_search_provider is None:
         console.print(
             "[dim]WebSearch tier disabled (set web_search.provider=brave + BRAVE_API_KEY "
             "to scan companies with scan_method: websearch and discovery channels).[/dim]"

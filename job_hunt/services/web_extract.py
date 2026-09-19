@@ -359,6 +359,13 @@ def _client(*, proxy: str = "") -> httpx.AsyncClient:
     return httpx.AsyncClient(**kwargs)  # type: ignore[arg-type]
 
 
+_WORKDAY_SITE_LABEL_RE = re.compile(
+    r"(?:\b(career|careers|career site|site|external|internal|jobs|job|candidate|"
+    r"experienced|professional|search)\b[\s_-]*)+[A-Za-z]{0,4}",
+    re.I,
+)
+
+
 def _is_workday_url(url: str) -> bool:
     # One probe, in services/workday/detect.py. This was its own substring test
     # on the netloc, which is a fourth spelling of the same question and a
@@ -373,7 +380,13 @@ def _workday_company_from_url(url: str) -> str:
         return ""
     parts = [part for part in parsed.path.split("/") if part]
     if len(parts) >= 2 and re.fullmatch(r"[a-z]{2}-[A-Z]{2}", parts[0]):
-        return re.sub(r"[-_]+", " ", parts[1]).strip()
+        site = re.sub(r"[-_]+", " ", parts[1]).strip()
+        # The site segment is the employer's name for its career site, not the
+        # employer: TC Energy's is "CAREER_SITE_TC" and BMO's is "External".
+        # Those reached the résumé filename and the application answers as
+        # "CAREER SITE TC" on 2026-09-17. An empty answer is better — the
+        # caller falls back to the name discovery recorded for the posting.
+        return "" if _WORKDAY_SITE_LABEL_RE.fullmatch(site) else site
     subdomain = parsed.netloc.split(".")[0]
     tenant = subdomain.split("_")[0]
     return re.sub(r"[-_]+", " ", tenant).strip().title()
