@@ -99,6 +99,15 @@ def triage(
     pool: int = typer.Option(60, help="With --screen, how many ranked rows to send to the model."),
     verify: bool = typer.Option(False, "--verify", help="Fetch each candidate before showing it; drop dead, expired, internal-only and talent-pool postings, and mark them in the pipeline. Every text-based rejection is confirmed twice by an independent reader before it counts."),
     verify_delay: float = typer.Option(1.0, help="Seconds between verification requests."),
+    second_look: int = typer.Option(
+        0,
+        "--second-look",
+        help=(
+            "After ranking, re-check up to N rows that were CUT — hidden by one-role-per-employer, "
+            "excluded as a large employer, buried under a generic title, or discarded by the scan's "
+            "title filter — by reading each posting's text. Prints the ones the body argues for."
+        ),
+    ),
 ) -> None:
     """Rank the pipeline inbox down to a day's worth of candidates.
 
@@ -224,8 +233,70 @@ def triage(
         console.print("\n[dim]Filtered out:[/dim]")
         for reason, count in result.excluded.most_common():
             console.print(f"  [dim]{count:>4}  {reason}[/dim]")
+    if second_look > 0:
+        _print_second_look(
+            pipeline, tracker_path, limit=second_look,
+            shown_urls={entry.ranked.row.url for entry in result.entries},
+        )
     if best_count:
         console.print("\nEvaluate one: .venv/bin/job-hunt evaluate '<url>'")
+
+
+def _print_second_look(pipeline: Path, tracker_path: Path, *, limit: int, shown_urls: set[str]) -> None:
+    """Re-check what the filters cut. See services/second_look.py for why."""
+    import asyncio
+
+    from job_hunt.services import second_look as sl
+    from job_hunt.services.triage import parse_pipeline, submitted_employers, tracker_seen
+    from job_hunt.services.web_extract import extract_url_text
+
+    tracker_text = tracker_path.read_text(encoding="utf-8") if tracker_path.exists() else ""
+    seen_urls, seen_pairs = tracker_seen(tracker_text)
+    picked = sl.candidates(
+        parse_pipeline(pipeline.read_text(encoding="utf-8")),
+        shown_urls=shown_urls,
+        seen_urls=seen_urls,
+        seen_pairs=seen_pairs,
+        seen_employers=submitted_employers(tracker_text),
+        near_misses=sl.load_near_misses(),
+        already_reviewed=sl.reviewed_urls(),
+        limit=limit,
+    )
+    console.print(f"\n[bold]Second look[/bold] [dim]— re-reading {len(picked)} row(s) the filters cut[/dim]")
+    if not picked:
+        console.print("[dim]nothing fresh was cut for a reversible reason[/dim]")
+        return
+
+    async def fetch(url: str) -> str:
+        return (await asyncio.wait_for(extract_url_text(url), timeout=60)).text or ""
+
+    findings = asyncio.run(sl.review(picked, fetch))
+    sl.log_findings(findings)
+    rescued = [item for item in findings if item.rescued]
+    confirmed = [item for item in findings if item.kill]
+    unread = [item for item in findings if item.unread]
+    neutral = len(findings) - len(rescued) - len(confirmed) - len(unread)
+    # "Nothing rescued" must not stand in for "nothing checked".
+    console.print(
+        f"[dim]{len(rescued)} the posting argues for · {len(confirmed)} cut confirmed by the posting · "
+        f"{neutral} no signal either way · {len(unread)} could not be read[/dim]"
+    )
+    if rescued:
+        table = Table("Company", "Role", "Location", "Why it was cut", "What the posting says")
+        for item in rescued:
+            row = item.candidate.row
+            table.add_row(
+                _short(row.company, 22), _short(row.role, 34), _short(row.location, 18),
+                _short(item.candidate.why_cut, 30), ", ".join(item.rescue),
+            )
+        console.print(table)
+        for item in rescued:
+            console.print(f"   {item.candidate.row.company} — {item.candidate.row.role}\n   {item.candidate.row.url}")
+    if confirmed:
+        from collections import Counter
+
+        tally = Counter(label for item in confirmed for label in item.kill)
+        console.print("[dim]confirmed cuts: " + ", ".join(f"{n} {label}" for label, n in tally.most_common()) + "[/dim]")
 
 
 @app.command("scan")
