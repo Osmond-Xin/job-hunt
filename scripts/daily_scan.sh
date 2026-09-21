@@ -60,7 +60,11 @@ triage_status=0
     COLUMNS=200 .venv/bin/job-hunt scan --apply --no-websearch
     scan_status=$?
     echo "--- scan exit $scan_status"
-    COLUMNS=200 .venv/bin/job-hunt triage --limit 30 > "data/daily/triage-$today.txt" 2>&1
+    # --second-look re-reads up to 40 postings the filters CUT (one-role-per-employer,
+    # large employer, generic title, the scan's title filter) and lists the ones whose
+    # own text argues for them. Added 2026-09-21: every filter upstream reads a title,
+    # and that day the titles were wrong in both directions. See services/second_look.py.
+    COLUMNS=200 .venv/bin/job-hunt triage --limit 30 --second-look 40 > "data/daily/triage-$today.txt" 2>&1
     triage_status=$?
     echo "--- triage exit $triage_status → data/daily/triage-$today.txt"
     echo "=== $(date '+%F %T') daily scan end"

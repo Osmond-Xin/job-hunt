@@ -111,6 +111,41 @@ This applies to any agent working in this repo, not only this one. The full mech
 including the two inbound mail tracks and why outbound mail is invisible, are in
 `AGENTS.md`.
 
+## 4. A title is a guess — read the posting, and re-check what was cut
+
+**Never recommend a posting, and never build materials for one, from its listing alone.**
+Fetch the body and read it. On 2026-09-19 five of twelve picked postings collapsed on
+reading; on 2026-09-21 it was fourteen of about twenty. The listing's *company name* can
+be wrong too ("Socket.dev" was West Fraser; "ProNavigator" was Guidewire).
+
+Titles fail in both directions, so the filters that read only titles are checked twice:
+
+- **What fitted him was not AI-titled.** Beacon's "Software Engineer" asked in its body for
+  agentic-framework projects at 1–4 years; Ada's was "Customer Solutions Consultant";
+  Chowbus's "POS Support Specialist" required fluent Chinese. The lane is *applied-AI
+  delivery for business users at 1–4 years*, under many titles.
+- **What collapsed mostly was AI-titled**: 5+ years, a co-op term, depth in a named stack
+  he cannot claim (TypeScript, Go, Java/Spring, Kubernetes, Databricks, SQL Server, Azure),
+  or a domain credential (SAP, SCADA/OT, mining, insurance).
+
+The mechanism, all deterministic:
+
+| Where a posting can be lost | What now catches it |
+|---|---|
+| `scan`'s positive title filter — a discard never reaches `data/pipeline.md` | near misses are written to `data/scan-near-misses.tsv` |
+| `triage` — one-role-per-employer, "large employer", a generic title ranked below the cut | `job-hunt triage --second-look N` reads the body of up to N such rows |
+| the second look itself | every posting read is logged with its verdict in `data/second-look-log.tsv`; unread pages are retried, never counted as clean |
+
+`scripts/daily_scan.sh` runs `--second-look 40`; the result is the last section of
+`data/daily/triage-<date>.txt`. It **admits nothing by itself** — a rescued row is a
+posting to read, not a recommendation. The signal lists live in
+`job_hunt/services/second_look.py`; when a reading session teaches a new reason a posting
+fits or collapses, add it there with the posting that taught it.
+
+One role per employer still stands, with the exception he made on 2026-09-21: when a new
+role at an employer fits **better** than the one already applied to, say so and let him
+decide. Do not silently hold it back, and do not offer a menu.
+
 ## Contact details
 
 `jonzy.xin@outlook.com` is the only address for applications the user submits himself.

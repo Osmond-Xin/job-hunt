@@ -283,6 +283,10 @@ def _accept_jobs(
         if not _title_matches(
             job.title, positives, negatives, require_positive=require_positive
         ):
+            if apply and _is_near_miss(job.title, negatives) and (
+                include_non_canada or _passes_canada_filter(job.location)
+            ):
+                _record_near_miss(job)
             continue
         if count_fetched:
             result.fetched_jobs += 1
@@ -1104,11 +1108,68 @@ def _title_matches(
     ``_accept_jobs``. Negatives always apply.
     """
     title_lower = title.lower()
-    if any(item and item in title_lower for item in negatives):
+    if _hits_negative(title_lower, negatives):
         return False
     if not require_positive:
         return True
     return any(item and item in title_lower for item in positives)
+
+
+# Negatives are substring matches on purpose — "Pharmac", "Physiotherap" and
+# "Radiolog" are stems. The price is words that contain a stem without meaning
+# it. Measured 2026-09-21 against the live filter: "Intern" discarded "Internal
+# Tools Engineer" and "Software Engineer, Internal Platform"; "Sales" discarded
+# "Salesforce Developer". These words are blanked before the negatives are read.
+_NEGATIVE_SAFE_WORDS_RE = re.compile(r"\b(internal|international|internet|salesforce)\b", re.I)
+
+
+def _hits_negative(title_lower: str, negatives: list[str]) -> bool:
+    screened = _NEGATIVE_SAFE_WORDS_RE.sub(" ", title_lower)
+    return any(item and item in screened for item in negatives)
+
+
+# A title the positive list does not know, but which names an occupation he
+# could hold. The positive filter's discards never reach data/pipeline.md, so
+# unlike every later filter they cannot be reviewed — on 2026-09-21 it was
+# silently dropping "Functional Analyst", "AI Automation Specialist", "Database
+# Analyst", "Technical Support Specialist" and "Integration Engineer". These
+# rows are not admitted; they are written to a ledger that
+# `job-hunt triage --second-look` reads, so a person sees what was cut.
+NEAR_MISS_RE = re.compile(
+    r"\b(engineer|developer|programmer|analyst|consultant|specialist|administrator|"
+    r"architect|scientist|technologist|implementation|integration|automation|support|"
+    r"solutions?|systems?|database|devops|\bai\b|\bit\b)\b",
+    re.I,
+)
+NEAR_MISS_PATH = Path("data/scan-near-misses.tsv")
+_near_miss_urls: set[str] | None = None
+
+
+def _is_near_miss(title: str, negatives: list[str]) -> bool:
+    """Dropped for lacking a positive term — not for hitting a negative one."""
+    return bool(NEAR_MISS_RE.search(title)) and not _hits_negative(title.lower(), negatives)
+
+
+def _record_near_miss(job: ScannedJob) -> None:
+    global _near_miss_urls
+    if _near_miss_urls is None:
+        _near_miss_urls = set()
+        if NEAR_MISS_PATH.exists():
+            with NEAR_MISS_PATH.open(encoding="utf-8", newline="") as handle:
+                _near_miss_urls = {row[0] for row in csv.reader(handle, delimiter="\t") if row}
+    if job.url in _near_miss_urls:
+        return
+    _near_miss_urls.add(job.url)
+    NEAR_MISS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    new_file = not NEAR_MISS_PATH.exists()
+    with NEAR_MISS_PATH.open("a", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle, delimiter="\t")
+        if new_file:
+            writer.writerow(["url", "first_seen", "portal", "title", "company", "location", "posted"])
+        writer.writerow(
+            [job.url, dt.date.today().isoformat(), job.portal, job.title, job.company,
+             job.location or "", getattr(job, "posted", "") or ""]
+        )
 
 
 def _location_matches_canada(location: str) -> bool:
