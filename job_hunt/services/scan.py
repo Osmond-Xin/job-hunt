@@ -18,9 +18,11 @@ from job_hunt.models.posting import JobPosting, from_row
 from job_hunt.models.tracker import normalize
 from job_hunt.repositories.tracker_repo import TrackerRepository
 from job_hunt.services.adzuna import scan_adzuna_source
+from job_hunt.services import discovered_companies
 from job_hunt.services.cn_boards import scan_cn_boards_source
 from job_hunt.services.getro_boards import scan_getro_boards_source
 from job_hunt.services.gov_boards import scan_gov_boards
+from job_hunt.services.hn_hiring import scan_hn_hiring_source
 from job_hunt.services.regional_boards import scan_regional_boards
 from job_hunt.services.immigration import place_tokens as immigration_place_tokens
 from job_hunt.services.jobbank import scan_jobbank
@@ -95,8 +97,14 @@ def scan_portals(
         boards where early-stage companies post (Communitech, MaRS, Inovia,
         Real Ventures, Antler). Unlike tiers 4-8 these are general boards, so
         their rows go through the **positive** title filter.
+    Tier 10: Hacker News "Who is hiring?" (``hn_hiring``) — the monthly thread
+        where small companies post themselves, read through Algolia's public
+        HN Search API. Free text, so it keeps the positive filter too.
 
-    Tiers 4-9 need no WebSearch provider and consume no search quota. They
+    Tier 1 also reads every company board the other tiers have surfaced
+    (``services/discovered_companies.py``), not only the hand-written list.
+
+    Tiers 4-10 need no WebSearch provider and consume no search quota. They
     return structured employer / location fields, so they are strictly better
     per result than the tier-3 channels that cover the same boards.
     """
@@ -121,7 +129,18 @@ def scan_portals(
             return True
         return False
 
-    companies = [item for item in config.get("tracked_companies", []) if _eligible(item)]
+    # The hand-written list plus every company board a channel has surfaced
+    # (services/discovered_companies.py). A channel shows a company through one
+    # search query; its own board shows every posting it has.
+    # Only for the operator's own config: a caller that passes another
+    # config_path (every test does) must not inherit this machine's data file,
+    # nor write to it. The first version did both — two tests scanned 90 live
+    # company boards over the network before this guard existed.
+    feeds_back = config_path == Path("config/portals.yml")
+    tracked = list(config.get("tracked_companies", []))
+    if feeds_back:
+        tracked = discovered_companies.merge_into(tracked, discovered_companies.load())
+    companies = [item for item in tracked if _eligible(item)]
     if company:
         company_norm = normalize(company)
         companies = [item for item in companies if company_norm in normalize(item.get("name", ""))]
@@ -247,8 +266,29 @@ def scan_portals(
             count_fetched=True,
         )
 
+        # Tier 10: the monthly Hacker News "Who is hiring?" thread. Free text
+        # from any kind of company, so the positive filter stays on.
+        _accept_jobs(
+            _hn_hiring_scanned_jobs(config.get("hn_hiring"), result.errors),
+            result,
+            positives=positives,
+            negatives=negatives,
+            include_non_canada=include_non_canada,
+            known_urls=known_urls,
+            known_company_roles=known_company_roles,
+            apply=apply,
+            count_fetched=True,
+        )
+
     if apply and result.jobs:
         _append_pipeline(result.jobs)
+    if apply and feeds_back:
+        # Feed this run's finds back: next run reads those companies' own boards.
+        pipeline = Path("data/pipeline.md")
+        if pipeline.exists():
+            discovered_companies.record(
+                discovered_companies.harvest(pipeline.read_text(encoding="utf-8"), tracked)
+            )
     return result
 
 
@@ -425,6 +465,21 @@ def _getro_scanned_jobs(
     except Exception as exc:
         if warnings is not None:
             warnings.append(f"getro boards: sweep failed ({exc})")
+        return []
+    if warnings is not None:
+        warnings.extend(result.health.warnings())
+    return [_scanned_job_from_posting(posting) for posting in result.postings]
+
+
+def _hn_hiring_scanned_jobs(
+    config: dict[str, Any] | None, warnings: list[str] | None = None
+) -> list[ScannedJob]:
+    """Tier 10: Hacker News "Who is hiring?" (services/hn_hiring.py)."""
+    try:
+        result = scan_hn_hiring_source(config)
+    except Exception as exc:
+        if warnings is not None:
+            warnings.append(f"hn hiring: sweep failed ({exc})")
         return []
     if warnings is not None:
         warnings.extend(result.health.warnings())
@@ -1177,6 +1232,11 @@ def _location_matches_canada(location: str) -> bool:
     value = _compact_location(location)
     if not value:
         return False
+    # "CAN" is the ISO country code some ATS boards use in place of the word:
+    # Absorb LMS, a Calgary company, writes "Remote CAN" on every Canadian
+    # posting, and all of them were being discarded (measured 2026-09-21).
+    # Spelled out here so the substring list below cannot match "candidate".
+    value = re.sub(r"\bcan\b", "canada", value)
     allowed_tokens = [
         "canada",
         "remote canada",

@@ -192,7 +192,9 @@ def scan_workday(
                 if stats is not None
                 else None
             )
-            for page in range(max_pages):
+            # A per-employer budget: Harris Computer lists several hundred roles
+            # worldwide and the Canadian ones are not the first sixty.
+            for page in range(max(1, int(employer.get("max_pages", max_pages)))):
                 if not first and delay > 0:
                     sleep(delay)
                 first = False

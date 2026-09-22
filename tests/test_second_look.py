@@ -168,3 +168,11 @@ def test_a_posting_already_read_is_not_read_again_but_an_unread_one_is_retried(t
     assert "cut confirmed" in log.read_text(encoding="utf-8")
     rows = [read.candidate.row, unread.candidate.row]
     assert [c.row.company for c in _pick(rows, already_reviewed=done)] == ["B"]
+
+
+def test_the_iso_country_code_counts_as_canada_but_candidate_does_not():
+    from job_hunt.services.scan import _passes_canada_filter
+
+    assert _passes_canada_filter("Remote CAN")
+    assert not _passes_canada_filter("Remote US")
+    assert not _passes_canada_filter("Remote - candidates in EMEA")
