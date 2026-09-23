@@ -190,6 +190,9 @@ def link_project_mentions(html: str) -> str:
     return "".join(out)
 
 
+# Markdown bold inside a single paragraph, non-greedy so two spans on one line stay separate.
+_BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
+
 # Country signals that map to North-American letter paper. Everything else → A4.
 # Matches whole tokens (case-insensitive) so "United Kingdom" doesn't trigger on "US".
 _LETTER_COUNTRY_RE = re.compile(
@@ -214,14 +217,18 @@ def artifact_template_env():
     autoescape is on so LLM-supplied strings (summary_angle, bullets, keywords,
     letter paragraphs) cannot break the HTML; cv_html is the only trusted-markup
     slot (``| safe``). ``project_links`` escapes first and then injects anchors,
-    so it must return Markup to survive autoescaping.
+    so it must return Markup to survive autoescaping. It also turns ``**bold**``
+    into ``<strong>``: these slots carry markdown the CV path converts and this
+    one did not, so the asterisks printed literally — on the Manitoba letter of
+    2026-09-17 and the MSVU letter of 2026-09-21, both already sent. The
+    conversion runs after escaping, so the tags it adds are the only markup.
     """
     from jinja2 import Environment, FileSystemLoader
     from markupsafe import Markup, escape
 
     env = Environment(loader=FileSystemLoader(str(_TEMPLATES_DIR)), autoescape=True)
     env.filters["project_links"] = lambda value: Markup(
-        link_project_mentions(str(escape(value)))
+        _BOLD_RE.sub(r"<strong>\1</strong>", link_project_mentions(str(escape(value))))
     )
     return env
 
