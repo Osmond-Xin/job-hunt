@@ -180,7 +180,8 @@ def test_with_no_total_pages_header_a_used_up_budget_is_truncated():
 
 
 def _one_page(body, headers=None):
-    """No X-WP-Total, so only the loss accounting can flag the sweep."""
+    """One page of ``body``. By default the headers carry no X-WP-Total, so
+    only the loss accounting can make the sweep incomplete."""
     return scan_workpei_source(
         {"enabled": True, "delay_s": 0},
         client=_client(lambda request: httpx.Response(
@@ -197,13 +198,20 @@ def _one_page(body, headers=None):
         pytest.param({**OWN_ROW, "id": None}, id="missing id"),
         pytest.param({**OWN_ROW, "id": [1]}, id="unhashable id"),
         pytest.param({**PUBLIC_SERVICE_ROW, "link": ""}, id="unusable row"),
+        pytest.param({**PUBLIC_SERVICE_ROW, "meta": ["x"]}, id="meta not an object"),
+        pytest.param({**PUBLIC_SERVICE_ROW, "title": "plain"}, id="title not an object"),
+        pytest.param({**PUBLIC_SERVICE_ROW, "link": {"href": "x"}}, id="link not text"),
+        pytest.param({**OWN_ROW, "meta": {"_filled": 1}}, id="duplicate filled id"),
     ],
 )
 def test_each_kind_of_bad_item_is_counted_as_lost(bad):
-    result = _one_page([OWN_ROW, bad])
-    assert len(result.postings) == 1
-    assert result.health.incomplete
-    assert result.health.advertised is None
+    result = _one_page([OWN_ROW, bad, {**PUBLIC_SERVICE_ROW, "id": 7}])
+    # The sweep goes on past the bad item: the row after it is still read.
+    assert [p.title for p in result.postings] == [
+        "Bilingual Administrative Assistant", "AccessAbility Supports Coordinator"]
+    assert result.health.incomplete and result.health.advertised is None
+    [warning] = result.health.warnings()
+    assert warning.startswith("workpei: walk ended short of the source's own count (2 collected)")
 
 
 def test_a_clean_page_without_a_total_is_not_incomplete():
@@ -223,8 +231,18 @@ def test_an_empty_first_page_of_several_is_incomplete_without_a_total():
 
 
 def test_a_non_numeric_total_header_is_ignored():
-    result = _one_page([OWN_ROW], headers={"X-WP-Total": "many", "X-WP-TotalPages": "x"})
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.params["page"])
+        body = [OWN_ROW] if request.url.params["page"] == "1" else []
+        return httpx.Response(200, json=body, headers={"X-WP-Total": "many", "X-WP-TotalPages": "x"})
+
+    result = scan_workpei_source({"enabled": True, "delay_s": 0}, client=_client(handler), sleep=lambda _s: None)
     assert result.health.advertised is None and len(result.postings) == 1
+    # No usable page count: the walk read on until a page came back empty,
+    # which it would not do if "x" had been taken as a known total.
+    assert calls == ["1", "2"] and not result.health.incomplete
 
 
 def test_the_request_goes_to_the_documented_endpoint():

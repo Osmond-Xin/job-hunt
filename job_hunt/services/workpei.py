@@ -47,6 +47,19 @@ def _is_filled(value: Any) -> bool:
     return str(value).strip().lower() in {"1", "true"}
 
 
+def _well_formed(item: Any) -> bool:
+    """The fields read below have the types the API sends, or are absent.
+    One malformed item is counted as lost; it must not raise and discard the
+    whole sweep."""
+    return (
+        isinstance(item, dict)
+        and isinstance(item.get("meta") or {}, dict)
+        and isinstance(item.get("title") or {}, dict)
+        and isinstance(item.get("link") or "", str)
+        and isinstance(item.get("class_list") or [], list)
+    )
+
+
 def parse_listing(item: dict[str, Any]) -> dict[str, str] | None:
     """A pipeline row from one REST item, or None for a filled posting."""
     meta = item.get("meta") or {}
@@ -141,20 +154,23 @@ def scan_workpei_source(
                 empty_early = total_pages is not None and page <= total_pages
                 break
             for item in items:
-                if not isinstance(item, dict):
+                if not _well_formed(item):
                     lost += 1
                     continue
                 item_id = item.get("id")
                 usable_id = isinstance(item_id, (int, str)) and not isinstance(item_id, bool)
-                # Filled is read first: a filled item is skipped on purpose,
-                # with or without an id.
+                # A repeated id is lost whether or not the item is filled.
+                if usable_id and item_id in listed:
+                    lost += 1
+                    continue
+                # A filled item is skipped on purpose, with or without an id.
                 if _is_filled((item.get("meta") or {}).get("_filled")):
                     if usable_id:
                         listed.add(item_id)
                     else:
                         filled_without_id += 1
                     continue
-                if not usable_id or item_id in listed:
+                if not usable_id:
                     lost += 1
                     continue
                 listed.add(item_id)
