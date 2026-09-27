@@ -359,7 +359,10 @@ def scan_gov_boards(
                 for page in range(max_pages):
                     pause()
                     rows = spec["fetch"](client, keyword, page)
-                    if not rows:
+                    # SuccessFactors serves its last page again past the end
+                    # (CMHC, 2026-09-27), so a page with nothing new ends the
+                    # walk as an empty one does.
+                    if not rows or all(row["url"] in board_urls for row in rows):
                         break
                     # Rows on the final allowed page means the budget, not the
                     # board, ended the walk.

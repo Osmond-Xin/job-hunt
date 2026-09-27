@@ -368,6 +368,30 @@ def test_a_successfactors_board_needs_only_its_site_root() -> None:
     assert rows[0]["location"] == "Taber, AB"
 
 
+def test_a_repeated_last_page_ends_the_walk_without_a_truncation_warning() -> None:
+    """SuccessFactors serves its last page again past the end (CMHC,
+    2026-09-27); reading on until the budget ran out reported truncation."""
+    import httpx
+
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.params.get("startrow", "0"))
+        return httpx.Response(200, text=ALBERTA_ROW)  # every page is the same
+
+    stats: dict = {}
+    rows = scan_gov_boards(
+        {"enabled": True, "delay_s": 0, "boards": {"cmhc": {
+            "enabled": True, "company": "CMHC",
+            "successfactors_url": "https://careers.cmhc-schl.gc.ca", "max_pages": 4}}},
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        sleep=lambda _s: None,
+        stats=stats,
+    )
+    assert len(rows) == 1 and calls == ["0", "25"]
+    assert stats["cmhc"]["truncated"] is False
+
+
 def test_an_enabled_board_with_no_platform_url_is_reported_not_empty() -> None:
     stats: dict = {}
     rows = scan_gov_boards(
