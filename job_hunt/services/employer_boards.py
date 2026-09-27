@@ -1,0 +1,243 @@
+"""Tier 11: single-employer career sites on Oracle, iCIMS Jibe and UKG boards.
+
+Each of these platforms serves every one of its customers through the same
+public JSON endpoint, so an employer is one ``portals.yml`` entry — a
+``platform`` and the URL of its career site — rather than code:
+
+- **oracle** — Oracle Recruiting Cloud; see ``services/oracle_recruiting.py``.
+  J.D. Irving (``hcpd.fa.ca2`` / ``CX_5003``): 736 postings on 2026-09-27
+  across its divisions — Cavendish Farms, Kent, Midland, the pulp mills.
+- **jibe** — iCIMS's hosted career site (Jibe). ``GET <site>/api/jobs?page=N
+  &limit=100`` -> ``{"totalCount": N, "jobs": [{"data": {slug, title, city,
+  state, country, posted_date}}]}``. City of Thunder Bay: 32 postings.
+- **ukg** — UKG Pro Recruiting (formerly UltiPro). ``POST <board>/JobBoardView/
+  LoadSearchResults`` -> ``{"totalCount": N, "opportunities": [{Id, Title,
+  Locations, PostedDate}]}``. The board URL carries the tenant code and a
+  GUID; neither can be guessed — Yukon Hospitals' root ``/YUK5001YUHC/
+  JobBoard/`` is a 404, and the GUID came from the redirect behind its own
+  careers page. 52 postings.
+
+These are general employers, not occupation-scoped boards: J.D. Irving's
+first 200 postings on 2026-09-27 were drivers, mechanics, store managers and
+mill students, and Yukon Hospitals posts laboratory and nursing roles. So
+scan.py runs this tier through the **positive** title filter, like Getro
+(tier 9), and a discarded analyst-shaped title still reaches the near-miss
+ledger that ``triage --second-look`` reads.
+"""
+
+from __future__ import annotations
+
+import re
+import time
+from typing import Any, Callable
+from urllib.parse import urlparse
+
+import httpx
+
+from job_hunt.models.posting import JobPosting, SourceHealth, SourceResult, from_row
+from job_hunt.services.oracle_recruiting import (
+    MAX_PAGE_SIZE,
+    fetch_requisitions,
+    parse_requisitions,
+    requisitions_total,
+    resolve_oracle_site,
+)
+
+_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/128.0 Safari/537.36"
+)
+_PAGE_SIZE = 100
+_UKG_BOARD_RE = re.compile(r"^(https://[^/]+/[^/]+/JobBoard/[0-9a-fA-F-]{36})")
+
+# A page reader returns (rows, advertised total), or None when the request failed.
+Page = tuple[list[dict[str, str]], int] | None
+
+
+def _oracle_reader(employer: dict[str, Any]):
+    target = resolve_oracle_site(str(employer.get("url") or ""))
+    if target is None:
+        return None
+    base, site = target
+
+    def read(client: httpx.Client, page: int) -> Page:
+        payload = fetch_requisitions(
+            client, base, site, offset=page * MAX_PAGE_SIZE, limit=MAX_PAGE_SIZE
+        )
+        if payload is None:
+            return None
+        rows = parse_requisitions(payload, base=base, site=site, company="")
+        return rows, requisitions_total(payload)
+
+    return read
+
+
+def _jibe_reader(employer: dict[str, Any]):
+    parsed = urlparse(str(employer.get("url") or ""))
+    if not parsed.netloc:
+        return None
+    base = f"{parsed.scheme or 'https'}://{parsed.netloc}"
+
+    def read(client: httpx.Client, page: int) -> Page:
+        try:
+            response = client.get(f"{base}/api/jobs", params={"page": page + 1, "limit": _PAGE_SIZE})
+            response.raise_for_status()
+            payload = response.json()
+        except (httpx.HTTPError, ValueError):
+            return None
+        rows = []
+        for job in payload.get("jobs") or []:
+            data = job.get("data") or {}
+            slug = str(data.get("slug") or data.get("req_id") or "").strip()
+            if not slug:
+                continue
+            rows.append(
+                {
+                    "url": f"{base}/jobs/{slug}",
+                    "title": str(data.get("title") or "").strip(),
+                    "location": ", ".join(
+                        str(data[k]) for k in ("city", "state", "country") if data.get(k)
+                    ),
+                    "posted": str(data.get("posted_date") or "")[:10],
+                }
+            )
+        return rows, int(payload.get("totalCount") or 0)
+
+    return read
+
+
+def _ukg_reader(employer: dict[str, Any]):
+    match = _UKG_BOARD_RE.match(str(employer.get("url") or ""))
+    if not match:
+        return None
+    board = match.group(1)
+
+    def read(client: httpx.Client, page: int) -> Page:
+        body = {
+            "opportunitySearch": {
+                "Top": _PAGE_SIZE,
+                "Skip": page * _PAGE_SIZE,
+                "QueryString": "",
+                "OrderBy": [{"Value": "postedDateDesc", "PropertyName": "PostedDate", "Ascending": False}],
+                "Filters": [],
+            },
+            "matchCriteria": {
+                "PreferredJobs": [], "Educations": [], "LicenseAndCertifications": [],
+                "Skills": [], "hasNoLicenses": False, "SkippedSkills": [],
+            },
+        }
+        try:
+            response = client.post(f"{board}/JobBoardView/LoadSearchResults", json=body)
+            response.raise_for_status()
+            payload = response.json()
+        except (httpx.HTTPError, ValueError):
+            return None
+        rows = []
+        for item in payload.get("opportunities") or []:
+            job_id = str(item.get("Id") or "").strip()
+            if not job_id:
+                continue
+            address = ((item.get("Locations") or [{}])[0] or {}).get("Address") or {}
+            place = [address.get("City"), (address.get("State") or {}).get("Name"),
+                     (address.get("Country") or {}).get("Name")]
+            rows.append(
+                {
+                    "url": f"{board}/OpportunityDetail?opportunityId={job_id}",
+                    "title": str(item.get("Title") or "").strip(),
+                    "location": ", ".join(str(part) for part in place if part),
+                    "posted": str(item.get("PostedDate") or "")[:10],
+                }
+            )
+        return rows, int(payload.get("totalCount") or 0)
+
+    return read
+
+
+_READERS = {"oracle": _oracle_reader, "jibe": _jibe_reader, "ukg": _ukg_reader}
+
+
+def scan_employer_boards_source(
+    config: dict[str, Any] | None,
+    *,
+    client: httpx.Client | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+) -> SourceResult:
+    """Every configured employer's whole board, as one source.
+
+    Each board is walked until its advertised total is reached, a page brings
+    nothing new, or ``max_pages`` runs out — the last is ``truncated``. An
+    entry whose platform or URL cannot be read counts as an error, so a typo
+    in portals.yml is not mistaken for an employer with no openings.
+    """
+    if not config or not config.get("enabled", False):
+        return SourceResult(postings=[], health=SourceHealth(source_id="employer_boards", ok=True))
+
+    employers = [e for e in (config.get("employers") or []) if isinstance(e, dict) and e.get("enabled", True)]
+    max_pages = max(1, int(config.get("max_pages", 10)))
+    delay = float(config.get("delay_s", 1.0))
+    timeout = float(config.get("timeout_s", 30.0))
+
+    owns_client = client is None
+    if client is None:
+        client = httpx.Client(headers={"User-Agent": _USER_AGENT}, timeout=timeout, follow_redirects=True)
+
+    postings: list[JobPosting] = []
+    seen: set[str] = set()
+    errors = 0
+    advertised = 0
+    truncated = False
+    first = True
+    try:
+        for employer in employers:
+            make_reader = _READERS.get(str(employer.get("platform") or "").lower())
+            read = make_reader(employer) if make_reader else None
+            if read is None:
+                errors += 1
+                continue
+            name = str(employer.get("name") or "").strip()
+            board_urls: set[str] = set()
+            total = 0
+            for page in range(max_pages):
+                if not first and delay > 0:
+                    sleep(delay)
+                first = False
+                got = read(client, page)
+                if got is None:
+                    errors += 1
+                    break
+                rows, total = got
+                fresh = [row for row in rows if row["url"] not in board_urls]
+                if not fresh:
+                    break
+                for row in fresh:
+                    board_urls.add(row["url"])
+                    if row["url"] in seen:
+                        continue
+                    posting = from_row(
+                        {**row, "company": name, "source": f"employer_boards:{name}"},
+                        source_id="employer_boards",
+                        portal=str(employer.get("platform")).lower(),
+                    )
+                    if posting is not None:
+                        seen.add(row["url"])
+                        postings.append(posting)
+                if total and len(board_urls) >= total:
+                    break
+            else:
+                truncated = True
+            advertised += total
+    finally:
+        if owns_client:
+            client.close()
+
+    return SourceResult(
+        postings=postings,
+        health=SourceHealth(
+            source_id="employer_boards",
+            ok=errors == 0,
+            collected=len(postings),
+            advertised=advertised or None,
+            truncated=truncated,
+            errors=errors,
+        ),
+    )
