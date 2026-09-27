@@ -204,7 +204,42 @@ def test_scan_walks_later_pages_until_the_advertised_count() -> None:
     assert len(rows) == 40
     assert "page" not in seen[0] and seen[1]["page"] == "2"
     assert len(seen) == 2  # a short page is the last one
-    assert stats["21222"] == {"collected": 40, "errors": 0, "advertised": 40, "truncated": False}
+    assert stats["21222"] == {
+        "collected": 40, "errors": 0, "advertised": 40, "truncated": False, "incomplete": 0}
+
+
+def test_an_unparseable_article_does_not_make_a_page_look_like_the_last() -> None:
+    """Review 2026-09-27: the short-page test counted parsed rows, so one
+    article in unexpected markup ended the walk with nothing reported."""
+    broken = '<article id="article-999"><p>redesigned</p></article>'
+    pages = {1: _page(range(0, 24), total=49) + broken, 2: _page(range(24, 48))}
+    seen: list[dict[str, str]] = []
+    stats: dict = {}
+    rows = scan_jobbank(
+        {"enabled": True, "noc_codes": ["21222"], "provinces": ["ON"]},
+        client=_client(_paged_handler(pages, seen)),
+        sleep=lambda s: None,
+        stats=stats,
+    )
+    assert len(seen) == 2  # page 1 still had 25 articles, so page 2 was read
+    assert len(rows) == 48
+    # One posting never parsed: the pair fell short of its own count.
+    assert stats["21222"]["incomplete"] == 1
+
+
+def test_a_premature_empty_page_is_reported_as_incomplete() -> None:
+    from job_hunt.services.scan import _board_coverage_warnings
+
+    pages = {1: _page(range(0, 25), total=60)}  # page 2 comes back empty
+    stats: dict = {}
+    scan_jobbank(
+        {"enabled": True, "noc_codes": ["21222"], "provinces": ["ON"]},
+        client=_client(_paged_handler(pages, [])),
+        sleep=lambda s: None,
+        stats=stats,
+    )
+    assert stats["21222"]["incomplete"] == 1 and stats["21222"]["truncated"] is False
+    assert "ended short of the board's own count" in "\n".join(_board_coverage_warnings(stats))
 
 
 def test_a_page_that_repeats_an_earlier_one_ends_the_walk() -> None:

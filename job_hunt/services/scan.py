@@ -410,6 +410,11 @@ def _board_coverage_warnings(stats: dict[str, dict[str, Any]]) -> list[str]:
                 f"{board_id}: page budget ran out with rows still coming "
                 f"({collected} collected{short}) — raise max_pages"
             )
+        if board.get("incomplete"):
+            warnings.append(
+                f"{board_id}: {board['incomplete']} sweep(s) ended short of the board's own "
+                f"count — a page was empty, repeated or unparseable, so rows were missed"
+            )
     return warnings
 
 

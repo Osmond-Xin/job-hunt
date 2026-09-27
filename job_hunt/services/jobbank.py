@@ -214,7 +214,9 @@ def scan_jobbank(
         for code in codes:
             entry = (
                 stats.setdefault(
-                    code, {"collected": 0, "errors": 0, "advertised": None, "truncated": False}
+                    code,
+                    {"collected": 0, "errors": 0, "advertised": None, "truncated": False,
+                     "incomplete": 0},
                 )
                 if stats is not None
                 else None
@@ -236,6 +238,10 @@ def scan_jobbank(
                         if advertised and entry is not None:
                             entry["advertised"] = (entry["advertised"] or 0) + advertised
                     rows = parse_jobbank_results(page)
+                    # A short page is judged by the articles on it, not by the
+                    # rows the parser accepted: one article in unexpected markup
+                    # must not read as the last page.
+                    articles = len(_ARTICLE_RE.findall(page))
                     fresh = [row for row in rows if row["url"] not in pair_urls]
                     # A page past the end may repeat an earlier one rather than
                     # come back empty; nothing new is the end either way.
@@ -250,12 +256,18 @@ def scan_jobbank(
                         out.append(row)
                         if entry is not None:
                             entry["collected"] += 1
-                    if len(rows) < _PAGE_SIZE or (advertised and len(pair_urls) >= advertised):
+                    if articles < _PAGE_SIZE or (advertised and len(pair_urls) >= advertised):
                         break
                 else:
                     # Every allowed page was full: the budget ended the walk.
                     if entry is not None:
                         entry["truncated"] = True
+                    continue
+                # The walk ended on its own. Short of the page's own count
+                # (exact on every pair measured 2026-09-27) means a page came
+                # back empty, repeated or partly unparseable.
+                if entry is not None and advertised and len(pair_urls) < advertised:
+                    entry["incomplete"] += 1
         return out
     finally:
         if owns_client:
