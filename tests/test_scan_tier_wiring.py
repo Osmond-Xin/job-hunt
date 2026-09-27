@@ -118,6 +118,8 @@ CODE_FIELD = [
     "Swift Current, SK S9H 0A1",
     # Round 6: "[" and "+" open a note too.
     "Burnaby, BC [Remote]", "Kanata, ON [Hybrid]", "Burnaby, BC +2 more",
+    # Round 7: ":" opens a note too.
+    "Burnaby, BC: Remote",
 ]
 # Round 6: the code closes the place after a spaced dash.
 CODE_AFTER_NOTE = ["Remote - BC", "Remote - ON", "Hybrid - AB", "On-site - SK", "Remote – NL"]
@@ -140,7 +142,12 @@ def test_a_province_code_after_the_city_without_a_comma_accepts(location) -> Non
     assert _accepted_only_by_code(location) is True
 
 
-@pytest.mark.parametrize("location", ["Burnaby (BC) - Remote", "Swift Current (SK)", "Burnaby (BC"])
+@pytest.mark.parametrize(
+    "location",
+    ["Burnaby (BC) - Remote", "Swift Current (SK)", "Burnaby (BC",
+     # Round 7: square brackets around the code read like parentheses.
+     "Burnaby [BC]", "Remote [BC]"],
+)
 def test_a_bracketed_province_code_accepts(location) -> None:
     assert _accepted_only_by_code(location) is True
 
@@ -163,7 +170,9 @@ def test_a_code_with_a_glued_or_bare_word_after_it_is_not_a_province(location) -
     "location",
     ["Vancouver, WA (ON-SITE)", "Waterloo, IA (IN OFFICE)", "Waterloo, IA - Hybrid",
      "Waterloo, IA 50701 - Remote", "Austin TX", "Waterloo IA - Hybrid", "Remote - TX",
-     "Omaha NE", "Hybrid - Tijuana, BC", "Tijuana BC"],
+     "Omaha NE", "Hybrid - Tijuana, BC", "Tijuana BC",
+     # Round 7: accents are folded before the collision lookup.
+     "San Pedro Garza García, NL", "Tijuana [BC]"],
 )
 def test_a_us_state_or_collision_city_vetoes(location) -> None:
     from job_hunt.services.scan import _passes_canada_filter

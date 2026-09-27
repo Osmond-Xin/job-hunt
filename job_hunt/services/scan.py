@@ -6,6 +6,7 @@ import json
 import os
 import re
 import time
+import unicodedata
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -1367,14 +1368,25 @@ def _codes_in(fields: list[str], whole=None, tail=None, after_note=None) -> list
 def _collision_city(place: str) -> str:
     """The first field, bracketed qualifiers removed ("(Remote) Amsterdam
     (NL)", "Amsterdam (HQ)"), for the collision lookup."""
-    return re.sub(r"\([^)]*\)?", " ", place).split(",")[0].strip().lower()
+    city = re.sub(r"\([^)]*\)?|\[[^\]]*\]?", " ", place).split(",")[0].strip().lower()
+    return _fold_accents(city)
+
+
+def _fold_accents(text: str) -> str:
+    """"garcía" -> "garcia", so the collision list need not spell accents."""
+    return "".join(
+        ch for ch in unicodedata.normalize("NFKD", text) if not unicodedata.combining(ch)
+    )
 
 
 def _is_collision(city: str, code: str) -> bool:
     """A collision city named anywhere in the first field, as whole words, so
     a leading note or a trailing code does not hide it ("Hybrid - Tijuana",
     "Tijuana BC")."""
-    return any(re.search(rf"\b{re.escape(name)}\b", city) for name in _FOREIGN_COLLISIONS.get(code, ()))
+    return any(
+        re.search(rf"\b{re.escape(_fold_accents(name))}\b", city)
+        for name in _FOREIGN_COLLISIONS.get(code, ())
+    )
 
 
 def _matches_canada_by_name(location: str) -> bool:
@@ -1480,12 +1492,12 @@ _PLACE_SPLIT_RE = re.compile(r"\s*(?:/|;|\|)\s*")
 _ALL_PROVINCE_CODES = UNAMBIGUOUS_PROVINCE_CODES | AMBIGUOUS_PROVINCE_CODES
 _CODE_ALT = "|".join(sorted(_ALL_PROVINCE_CODES))
 _POSTAL = r"[ABCEGHJ-NPRSTVXY]\d[ABCEGHJ-NPRSTV-Z]\s?\d[ABCEGHJ-NPRSTV-Z]\d"
-# What may follow a code in its field: a note opened by "(", "[" or "+", or by
+# What may follow a code in its field: a note opened by "(", "[", "+" or ":", or by
 # a dash with space on both sides ("BC (Hybrid)", "BC [Remote]", "BC +2 more",
 # "ON - Remote", "NL – Remote"). A dash
 # glued to letters ("ON-SITE") or a bare word ("ON SITE", "IN PERSON", "OR
 # Remote") is not a code. Shared by province and state codes so they agree.
-_CODE_SUFFIX = r"(?:\s*[(\[+].*|\s+[-–—]\s+.*)?"
+_CODE_SUFFIX = r"(?:\s*[(\[+:].*|\s+[-–—]\s+.*)?"
 # A code field: the code, optionally its postal code (any case), optionally a note.
 _CODE_FIELD_RE = re.compile(
     r"(" + _CODE_ALT + r")(?:\s+(?i:" + _POSTAL + r"))?" + _CODE_SUFFIX
@@ -1506,7 +1518,7 @@ _CODE_AFTER_NOTE_RE = re.compile(r".*\S\s+[-–—]\s+(" + _CODE_ALT + r")")
 #   are English words.
 # "(BC)", "(BC/Colombie-Britannique)"; also "(BC" at the end of a place,
 # which is what splitting "(BC/Colombie-Britannique)" on "/" leaves.
-_BRACKETED_CODE_RE = re.compile(r"\((" + _CODE_ALT + r")(?=[)/]|\s*$)")
+_BRACKETED_CODE_RE = re.compile(r"[(\[](" + _CODE_ALT + r")(?=[)\]/]|\s*$)")
 # ISO 3166-2, as Oracle and Taleo write it: "CA-ON-Whitby".
 _ISO_CANADA_RE = re.compile(r"\bCA-(?:" + _CODE_ALT + r")\b")
 _CANADIAN_EVIDENCE_RE = re.compile(
