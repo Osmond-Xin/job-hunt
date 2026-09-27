@@ -90,6 +90,42 @@ def test_a_failed_request_is_an_error_not_an_empty_board():
     assert result.postings == [] and result.health.errors == 1
 
 
+# --- review round 1, 2026-09-27 ----------------------------------------------
+
+_HEADERS = {"X-WP-Total": "271", "X-WP-TotalPages": "3"}
+
+
+def test_a_200_whose_body_is_not_the_list_is_an_error():
+    result = scan_workpei_source(
+        {"enabled": True, "delay_s": 0},
+        client=_client(lambda request: httpx.Response(200, json={"message": "down"}, headers=_HEADERS)),
+        sleep=lambda _s: None,
+    )
+    assert result.postings == [] and result.health.errors == 1 and not result.health.ok
+
+
+def test_an_empty_page_before_the_last_advertised_one_is_incomplete():
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = [OWN_ROW] if request.url.params["page"] == "1" else []
+        return httpx.Response(200, json=body, headers=_HEADERS)
+
+    result = scan_workpei_source({"enabled": True, "delay_s": 0}, client=_client(handler), sleep=lambda _s: None)
+    assert result.health.incomplete and not result.health.truncated
+    assert any("ended short" in w for w in result.health.warnings())
+
+
+def test_filled_postings_count_toward_the_advertised_total():
+    """A filled posting is dropped on purpose; it must not read as a missed row."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=[OWN_ROW, {**OWN_ROW, "link": "https://workpei.ca/job/f",
+                                                   "meta": {"_filled": 1}}],
+                              headers={"X-WP-Total": "2", "X-WP-TotalPages": "1"})
+
+    result = scan_workpei_source({"enabled": True, "delay_s": 0}, client=_client(handler), sleep=lambda _s: None)
+    assert len(result.postings) == 1
+    assert not result.health.incomplete and result.health.warnings() == []
+
+
 def test_the_request_goes_to_the_documented_endpoint():
     urls: list[str] = []
 

@@ -86,6 +86,9 @@ def scan_workpei_source(
     errors = 0
     advertised: int | None = None
     total_pages = max_pages
+    # Items the API returned, filled postings included — the number the
+    # advertised X-WP-Total is checked against.
+    listed = 0
     try:
         for page in range(1, max_pages + 1):
             if page > total_pages:
@@ -102,8 +105,14 @@ def scan_workpei_source(
             if page == 1:
                 advertised = int(response.headers.get("X-WP-Total") or 0) or None
                 total_pages = int(response.headers.get("X-WP-TotalPages") or max_pages)
-            if not isinstance(items, list) or not items:
+            # A 200 whose body is not the list (an error object, a maintenance
+            # page) is a failed read, not an empty board.
+            if not isinstance(items, list):
+                errors += 1
                 break
+            if not items:
+                break
+            listed += len(items)
             for item in items:
                 row = parse_listing(item) if isinstance(item, dict) else None
                 posting = from_row(row, source_id="workpei", portal="workpei") if row else None
@@ -124,5 +133,8 @@ def scan_workpei_source(
             advertised=advertised,
             truncated=total_pages > max_pages,
             errors=errors,
+            # Ended on an empty page, or a failed one, before the advertised
+            # count — only meaningful when the page budget was not the cause.
+            incomplete=bool(advertised) and total_pages <= max_pages and listed < advertised,
         ),
     )
