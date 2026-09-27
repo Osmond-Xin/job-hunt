@@ -128,6 +128,29 @@ def test_an_empty_page_before_the_last_advertised_one_is_incomplete():
     assert any("ended short" in w for w in result.health.warnings())
 
 
+def test_an_early_empty_page_is_incomplete_not_truncated_even_past_the_budget():
+    """Round 2: TotalPages above max_pages made an empty first page read as a
+    budget problem; only a walk the budget actually stopped is truncated."""
+    result = scan_workpei_source(
+        {"enabled": True, "delay_s": 0, "max_pages": 6},
+        client=_client(lambda request: httpx.Response(
+            200, json=[], headers={"X-WP-Total": "1000", "X-WP-TotalPages": "10"})),
+        sleep=lambda _s: None,
+    )
+    assert result.health.incomplete and not result.health.truncated
+
+
+def test_a_failed_read_is_one_warning_not_two():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.params["page"] == "1":
+            return httpx.Response(200, json=[OWN_ROW], headers=_HEADERS)
+        return httpx.Response(500)
+
+    result = scan_workpei_source({"enabled": True, "delay_s": 0}, client=_client(handler), sleep=lambda _s: None)
+    assert result.health.errors == 1 and not result.health.incomplete
+    assert len(result.health.warnings()) == 1
+
+
 def test_filled_postings_count_toward_the_advertised_total():
     """A filled posting is dropped on purpose; it must not read as a missed row."""
     def handler(request: httpx.Request) -> httpx.Response:

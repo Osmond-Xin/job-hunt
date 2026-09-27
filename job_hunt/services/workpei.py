@@ -97,9 +97,14 @@ def scan_workpei_source(
     # Items the API returned, filled postings included — the number the
     # advertised X-WP-Total is checked against.
     listed = 0
+    # How the walk ended: "done" (past the last advertised page), "budget"
+    # (max_pages ran out first), "empty" (an empty page before the last
+    # advertised one) or "error" (already counted in `errors`).
+    ended = "budget"
     try:
         for page in range(1, max_pages + 1):
             if page > total_pages:
+                ended = "done"
                 break
             if page > 1 and delay > 0:
                 sleep(delay)
@@ -109,6 +114,7 @@ def scan_workpei_source(
                 items = response.json()
             except (httpx.HTTPError, ValueError):
                 errors += 1
+                ended = "error"
                 break
             if page == 1:
                 advertised = int(response.headers.get("X-WP-Total") or 0) or None
@@ -117,8 +123,10 @@ def scan_workpei_source(
             # page) is a failed read, not an empty board.
             if not isinstance(items, list):
                 errors += 1
+                ended = "error"
                 break
             if not items:
+                ended = "empty"
                 break
             listed += len(items)
             for item in items:
@@ -128,6 +136,9 @@ def scan_workpei_source(
                     continue
                 seen.add(posting.url)
                 postings.append(posting)
+        else:
+            if total_pages <= max_pages:
+                ended = "done"
     finally:
         if owns_client:
             client.close()
@@ -139,10 +150,13 @@ def scan_workpei_source(
             ok=errors == 0,
             collected=len(postings),
             advertised=advertised,
-            truncated=total_pages > max_pages,
+            # Only a walk the page budget actually stopped is truncated.
+            truncated=ended == "budget",
             errors=errors,
-            # Ended on an empty page, or a failed one, before the advertised
-            # count — only meaningful when the page budget was not the cause.
-            incomplete=bool(advertised) and total_pages <= max_pages and listed < advertised,
+            # An empty page early, or a walk that read every advertised page
+            # and still came up short. A failed read is already an error and
+            # is not reported twice.
+            incomplete=ended != "error" and ended != "budget"
+            and bool(advertised) and listed < advertised,
         ),
     )
