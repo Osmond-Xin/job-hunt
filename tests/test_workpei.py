@@ -7,6 +7,7 @@ a row posted on WorkPEI itself and a syndicated PEI public-service row.
 from __future__ import annotations
 
 import httpx
+import pytest
 
 from job_hunt.services.workpei import API, parse_listing, scan_workpei_source
 
@@ -178,17 +179,52 @@ def test_with_no_total_pages_header_a_used_up_budget_is_truncated():
     assert len(result.postings) == 3 and result.health.truncated
 
 
-def test_repeated_or_malformed_items_are_reported_not_silent():
-    body = [OWN_ROW, OWN_ROW, None, {"title": {"rendered": "no id"}},
-            {**PUBLIC_SERVICE_ROW, "link": ""}]
-    result = scan_workpei_source(
+def _one_page(body, headers=None):
+    """No X-WP-Total, so only the loss accounting can flag the sweep."""
+    return scan_workpei_source(
         {"enabled": True, "delay_s": 0},
         client=_client(lambda request: httpx.Response(
-            200, json=body, headers={"X-WP-Total": "3", "X-WP-TotalPages": "1"})),
+            200, json=body, headers=headers or {"X-WP-TotalPages": "1"})),
         sleep=lambda _s: None,
     )
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        pytest.param(OWN_ROW, id="duplicate id"),
+        pytest.param(None, id="null item"),
+        pytest.param({**OWN_ROW, "id": None}, id="missing id"),
+        pytest.param({**OWN_ROW, "id": [1]}, id="unhashable id"),
+        pytest.param({**PUBLIC_SERVICE_ROW, "link": ""}, id="unusable row"),
+    ],
+)
+def test_each_kind_of_bad_item_is_counted_as_lost(bad):
+    result = _one_page([OWN_ROW, bad])
     assert len(result.postings) == 1
-    assert result.health.incomplete and any("ended short" in w for w in result.health.warnings())
+    assert result.health.incomplete
+    assert result.health.advertised is None
+
+
+def test_a_clean_page_without_a_total_is_not_incomplete():
+    result = _one_page([OWN_ROW, PUBLIC_SERVICE_ROW])
+    assert len(result.postings) == 2 and not result.health.incomplete
+
+
+def test_a_filled_item_without_an_id_is_a_deliberate_skip():
+    filled = {**OWN_ROW, "id": None, "meta": {"_filled": 1}}
+    result = _one_page([OWN_ROW, filled], headers={"X-WP-Total": "2", "X-WP-TotalPages": "1"})
+    assert len(result.postings) == 1 and not result.health.incomplete
+
+
+def test_an_empty_first_page_of_several_is_incomplete_without_a_total():
+    result = _one_page([], headers={"X-WP-TotalPages": "3"})
+    assert result.health.incomplete and not result.health.truncated
+
+
+def test_a_non_numeric_total_header_is_ignored():
+    result = _one_page([OWN_ROW], headers={"X-WP-Total": "many", "X-WP-TotalPages": "x"})
+    assert result.health.advertised is None and len(result.postings) == 1
 
 
 def test_the_request_goes_to_the_documented_endpoint():

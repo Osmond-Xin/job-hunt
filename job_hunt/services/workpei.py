@@ -98,7 +98,11 @@ def scan_workpei_source(
     total_pages: int | None = None
     # Unique item ids the API returned, filled postings included — the number
     # the advertised X-WP-Total is checked against.
-    listed: set[Any] = set()
+    listed: set[int | str] = set()
+    # Filled items with no id: skipped on purpose, but still part of the total.
+    filled_without_id = 0
+    # An empty page at or before the last advertised page.
+    empty_early = False
     # Items that were not usable rows (null, no id, no title or link) or that
     # repeated an id already read. Neither is a quiet board.
     lost = 0
@@ -122,7 +126,8 @@ def scan_workpei_source(
                 ended = "error"
                 break
             if page == 1:
-                advertised = int(response.headers.get("X-WP-Total") or 0) or None
+                count = response.headers.get("X-WP-Total") or ""
+                advertised = int(count) if count.isdigit() and int(count) else None
                 header = response.headers.get("X-WP-TotalPages")
                 total_pages = int(header) if header and header.isdigit() else None
             # A 200 whose body is not the list (an error object, a maintenance
@@ -133,15 +138,26 @@ def scan_workpei_source(
                 break
             if not items:
                 ended = "empty"
+                empty_early = total_pages is not None and page <= total_pages
                 break
             for item in items:
-                item_id = item.get("id") if isinstance(item, dict) else None
-                if item_id is None or item_id in listed:
+                if not isinstance(item, dict):
+                    lost += 1
+                    continue
+                item_id = item.get("id")
+                usable_id = isinstance(item_id, (int, str)) and not isinstance(item_id, bool)
+                # Filled is read first: a filled item is skipped on purpose,
+                # with or without an id.
+                if _is_filled((item.get("meta") or {}).get("_filled")):
+                    if usable_id:
+                        listed.add(item_id)
+                    else:
+                        filled_without_id += 1
+                    continue
+                if not usable_id or item_id in listed:
                     lost += 1
                     continue
                 listed.add(item_id)
-                if _is_filled((item.get("meta") or {}).get("_filled")):
-                    continue  # dropped on purpose, not lost
                 row = parse_listing(item)
                 posting = from_row(row, source_id="workpei", portal="workpei") if row else None
                 if posting is None:
@@ -171,8 +187,10 @@ def scan_workpei_source(
             # An empty page early, or a walk that read every advertised page
             # and still came up short. A failed read is already an error and
             # is not reported twice.
-            incomplete=bool(lost) or (
-                ended not in ("error", "budget") and bool(advertised) and len(listed) < advertised
+            incomplete=bool(lost) or empty_early or (
+                ended not in ("error", "budget")
+                and bool(advertised)
+                and len(listed) + filled_without_id < advertised
             ),
         ),
     )
