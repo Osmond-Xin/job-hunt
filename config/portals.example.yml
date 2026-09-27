@@ -370,3 +370,13 @@ workbc:
   delay_s: 1.0
   timeout_s: 45.0
   max_pages: 3
+
+# Tier 15 — Workable cross-employer search (job_hunt/services/workable_search.py),
+# 2026-09-27. Every Workable customer's Canadian postings, by profile role term
+# (`queries` overrides). 20 rows a page, token-paged. Positive title filter.
+workable_search:
+  enabled: true
+  location: Canada
+  delay_s: 1.0
+  timeout_s: 30.0
+  max_pages: 5
