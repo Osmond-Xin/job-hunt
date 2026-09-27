@@ -86,7 +86,8 @@ def test_the_sweep_stops_at_the_advertised_page_count():
 
 def test_more_pages_than_the_budget_is_reported():
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json=[{**OWN_ROW, "link": f"https://workpei.ca/job/{request.url.params['page']}"}],
+        return httpx.Response(200, json=[{**OWN_ROW, "id": int(request.url.params["page"]),
+                                    "link": f"https://workpei.ca/job/{request.url.params['page']}"}],
                               headers={"X-WP-Total": "271", "X-WP-TotalPages": "3"})
 
     result = scan_workpei_source(
@@ -154,13 +155,40 @@ def test_a_failed_read_is_one_warning_not_two():
 def test_filled_postings_count_toward_the_advertised_total():
     """A filled posting is dropped on purpose; it must not read as a missed row."""
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json=[OWN_ROW, {**OWN_ROW, "link": "https://workpei.ca/job/f",
+        return httpx.Response(200, json=[OWN_ROW, {**OWN_ROW, "id": 1, "link": "https://workpei.ca/job/f",
                                                    "meta": {"_filled": 1}}],
                               headers={"X-WP-Total": "2", "X-WP-TotalPages": "1"})
 
     result = scan_workpei_source({"enabled": True, "delay_s": 0}, client=_client(handler), sleep=lambda _s: None)
     assert len(result.postings) == 1
     assert not result.health.incomplete and result.health.warnings() == []
+
+
+# --- review round 3, 2026-09-27 ----------------------------------------------
+
+
+def test_with_no_total_pages_header_a_used_up_budget_is_truncated():
+    def handler(request: httpx.Request) -> httpx.Response:
+        page = int(request.url.params["page"])
+        return httpx.Response(200, json=[{**OWN_ROW, "id": page, "link": f"https://workpei.ca/job/{page}"}])
+
+    result = scan_workpei_source(
+        {"enabled": True, "delay_s": 0, "max_pages": 3}, client=_client(handler), sleep=lambda _s: None
+    )
+    assert len(result.postings) == 3 and result.health.truncated
+
+
+def test_repeated_or_malformed_items_are_reported_not_silent():
+    body = [OWN_ROW, OWN_ROW, None, {"title": {"rendered": "no id"}},
+            {**PUBLIC_SERVICE_ROW, "link": ""}]
+    result = scan_workpei_source(
+        {"enabled": True, "delay_s": 0},
+        client=_client(lambda request: httpx.Response(
+            200, json=body, headers={"X-WP-Total": "3", "X-WP-TotalPages": "1"})),
+        sleep=lambda _s: None,
+    )
+    assert len(result.postings) == 1
+    assert result.health.incomplete and any("ended short" in w for w in result.health.warnings())
 
 
 def test_the_request_goes_to_the_documented_endpoint():

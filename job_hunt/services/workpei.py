@@ -93,17 +93,22 @@ def scan_workpei_source(
     seen: set[str] = set()
     errors = 0
     advertised: int | None = None
-    total_pages = max_pages
-    # Items the API returned, filled postings included — the number the
-    # advertised X-WP-Total is checked against.
-    listed = 0
+    # None until the API says; with no header the end is unknown, so a walk
+    # that uses the whole budget is truncated, never "done".
+    total_pages: int | None = None
+    # Unique item ids the API returned, filled postings included — the number
+    # the advertised X-WP-Total is checked against.
+    listed: set[Any] = set()
+    # Items that were not usable rows (null, no id, no title or link) or that
+    # repeated an id already read. Neither is a quiet board.
+    lost = 0
     # How the walk ended: "done" (past the last advertised page), "budget"
     # (max_pages ran out first), "empty" (an empty page before the last
     # advertised one) or "error" (already counted in `errors`).
     ended = "budget"
     try:
         for page in range(1, max_pages + 1):
-            if page > total_pages:
+            if total_pages is not None and page > total_pages:
                 ended = "done"
                 break
             if page > 1 and delay > 0:
@@ -118,7 +123,8 @@ def scan_workpei_source(
                 break
             if page == 1:
                 advertised = int(response.headers.get("X-WP-Total") or 0) or None
-                total_pages = int(response.headers.get("X-WP-TotalPages") or max_pages)
+                header = response.headers.get("X-WP-TotalPages")
+                total_pages = int(header) if header and header.isdigit() else None
             # A 200 whose body is not the list (an error object, a maintenance
             # page) is a failed read, not an empty board.
             if not isinstance(items, list):
@@ -128,16 +134,25 @@ def scan_workpei_source(
             if not items:
                 ended = "empty"
                 break
-            listed += len(items)
             for item in items:
-                row = parse_listing(item) if isinstance(item, dict) else None
+                item_id = item.get("id") if isinstance(item, dict) else None
+                if item_id is None or item_id in listed:
+                    lost += 1
+                    continue
+                listed.add(item_id)
+                if _is_filled((item.get("meta") or {}).get("_filled")):
+                    continue  # dropped on purpose, not lost
+                row = parse_listing(item)
                 posting = from_row(row, source_id="workpei", portal="workpei") if row else None
-                if posting is None or posting.url in seen:
+                if posting is None:
+                    lost += 1
+                    continue
+                if posting.url in seen:
                     continue
                 seen.add(posting.url)
                 postings.append(posting)
         else:
-            if total_pages <= max_pages:
+            if total_pages is not None and total_pages <= max_pages:
                 ended = "done"
     finally:
         if owns_client:
@@ -156,7 +171,8 @@ def scan_workpei_source(
             # An empty page early, or a walk that read every advertised page
             # and still came up short. A failed read is already an error and
             # is not reported twice.
-            incomplete=ended != "error" and ended != "budget"
-            and bool(advertised) and listed < advertised,
+            incomplete=bool(lost) or (
+                ended not in ("error", "budget") and bool(advertised) and len(listed) < advertised
+            ),
         ),
     )
