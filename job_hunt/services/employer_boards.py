@@ -1,4 +1,4 @@
-"""Tier 11: single-employer career sites on Oracle, iCIMS Jibe, UKG, hrSmart and SuccessFactors.
+"""Tier 11: single-employer career sites on Oracle, Jibe, UKG, hrSmart, SuccessFactors and eRecruit.
 
 Each of these platforms serves every one of its customers through the same
 public JSON endpoint, so an employer is one ``portals.yml`` entry — a
@@ -23,6 +23,12 @@ public JSON endpoint, so an employer is one ``portals.yml`` entry — a
   so a row is read as its ``/hr/ats/Posting/view/<id>`` link plus whichever
   cell holds a ``City, PR, CA`` address. Government of Yukon (47 postings,
   mostly nurses and trades) and BC Public Service (84, 4 pages).
+- **erecruit** — the eRecruit RSS feed (``<site>/RSS.aspx``) Ontario
+  hospitals run. It is not well-formed XML — each posting is an ``<h1>``
+  title followed by its ``<description>``, ``<link>`` and ``<pubDate>`` — so
+  it is read as that sequence rather than parsed as RSS. One feed, no paging.
+  Niagara Health: 36 postings on 2026-09-27, locations like "NIAGARA FALLS
+  SITE", hence ``location_hint``.
 - **successfactors** — SAP SuccessFactors career sites, read with the parser
   the public-sector boards use (``gov_boards.parse_successfactors``); the
   total is the page's "of <b>N</b>". For crown corporations — ICBC,
@@ -42,6 +48,7 @@ from __future__ import annotations
 import html
 import re
 import time
+from email.utils import parsedate_to_datetime
 from typing import Any, Callable
 from urllib.parse import urlparse
 
@@ -259,12 +266,60 @@ def _successfactors_reader(employer: dict[str, Any]):
     return read
 
 
+_ERECRUIT_ITEM_RE = re.compile(r"<h1>(.*?)</h1>(.*?)(?=<h1>|$)", re.S)
+
+
+def parse_erecruit(feed: str) -> list[dict[str, str]]:
+    rows = []
+    for title, body in _ERECRUIT_ITEM_RE.findall(feed or ""):
+        link = re.search(r"<link>\s*(\S+?)\s*</link>", body)
+        if not link:
+            continue
+        place = re.search(r"LOCATION:\s*([^<]*)<", body)
+        posted = re.search(r"<pubDate>\s*(.*?)\s*</pubDate>", body)
+        try:
+            date = parsedate_to_datetime(posted.group(1)).date().isoformat() if posted else ""
+        except (TypeError, ValueError):
+            date = ""
+        rows.append(
+            {
+                "url": html.unescape(link.group(1)),
+                "title": re.sub(r"\s+", " ", html.unescape(_TAG_RE.sub(" ", title))).strip(),
+                "location": html.unescape(place.group(1)).strip() if place else "",
+                "posted": date,
+            }
+        )
+    return rows
+
+
+def _erecruit_reader(employer: dict[str, Any]):
+    parsed = urlparse(str(employer.get("url") or ""))
+    if not parsed.netloc:
+        return None
+    feed_url = f"https://{parsed.netloc}{parsed.path.rstrip('/')}/RSS.aspx"
+
+    def read(client: httpx.Client, page: int) -> Page:
+        if page:
+            return [], 0  # one feed, no paging
+        try:
+            response = client.get(feed_url)
+            response.raise_for_status()
+        except httpx.HTTPError:
+            return None
+        rows = parse_erecruit(response.text)
+        # A hospital always has postings; none parsed is a changed feed.
+        return (rows, len(rows)) if rows else None
+
+    return read
+
+
 _READERS = {
     "oracle": _oracle_reader,
     "jibe": _jibe_reader,
     "ukg": _ukg_reader,
     "hrsmart": _hrsmart_reader,
     "successfactors": _successfactors_reader,
+    "erecruit": _erecruit_reader,
 }
 
 
@@ -309,6 +364,8 @@ def scan_employer_boards_source(
                 errors += 1
                 continue
             name = str(employer.get("name") or "").strip()
+            # For boards that name a site, not a town ("NIAGARA FALLS SITE").
+            hint = str(employer.get("location_hint") or "").strip()
             board_urls: set[str] = set()
             total = 0
             failed = False
@@ -334,6 +391,8 @@ def scan_employer_boards_source(
                     board_urls.add(row["url"])
                     if row["url"] in seen:
                         continue
+                    if hint:
+                        row["location"] = f"{row['location']}, {hint}" if row.get("location") else hint
                     posting = from_row(
                         {**row, "company": name, "source": f"employer_boards:{name}"},
                         source_id="employer_boards",

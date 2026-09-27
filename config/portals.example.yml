@@ -269,8 +269,9 @@ gov_boards:
       max_pages: 6
 
 # Tier 11 — single-employer career sites (job_hunt/services/employer_boards.py).
-# `platform` is oracle | jibe | ukg | hrsmart | successfactors and `url` the
-# employer's career-site URL. `max_pages` may be set per employer.
+# `platform` is oracle | jibe | ukg | hrsmart | successfactors | erecruit and
+# `url` the employer's career-site URL. `max_pages` and `location_hint` may be
+# set per employer.
 # General employers, so these rows face the positive title filter.
 employer_boards:
   enabled: true
@@ -317,6 +318,11 @@ employer_boards:
     - name: SaskTel
       platform: successfactors
       url: https://jobs.sasktel.com
+    - name: Niagara Health
+      platform: erecruit
+      url: https://careers.niagarahealth.on.ca/erecruit
+      # Locations name the hospital site ("NIAGARA FALLS SITE"), not the town.
+      location_hint: "Niagara, ON"
 
 # Tier 12 — WorkPEI (job_hunt/services/workpei.py), over its WordPress REST API.
 # General board: positive title filter.

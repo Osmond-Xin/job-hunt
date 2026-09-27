@@ -395,6 +395,46 @@ def test_an_employer_can_carry_its_own_page_budget():
     assert len(calls) == 4 and len(result.postings) == 100 and result.health.truncated
 
 
+# Trimmed from careers.niagarahealth.on.ca/erecruit/RSS.aspx, 2026-09-27: the
+# feed is not well-formed XML, and the postings follow an empty <item/>.
+ERECRUIT_FEED = """<?xml version="1.0" encoding="Windows-1252"?><rss version="2.0"><channel>
+<item /></channel></rss><main><div id="pnlRSS"><title>Careers at Niagara Health</title>
+<link>https://careers.niagarahealth.on.ca/eRecruit </link><ttl>60 </ttl>
+<h1>SR CASE COSTING PERFORMANCE ADVISOR, FT      </h1><description><B>VACANCY DETAILS</B><br><br>
+VACANCY NUMBER: 44060<br><br>LOCATION: ST. CATHARINES SITE / HYBRID <br><br></description>
+<link>https://careers.niagarahealth.on.ca/eRecruit/VacancyDetail.aspx?VacancyUID=000000041084 </link>
+<pubDate>Tue, 18 Aug 2026 10:00:34 GMT </pubDate>
+<h1>REGISTERED NURSE      </h1><description>LOCATION: NIAGARA HEALTH <br></description>
+<link>https://careers.niagarahealth.on.ca/eRecruit/VacancyDetail.aspx?VacancyUID=000000039887 </link>
+<pubDate>Mon, 16 Mar 2026 10:00:34 GMT </pubDate></div></main>"""
+
+
+def test_an_erecruit_feed_is_read_as_its_h1_sequence_with_a_location_hint():
+    paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        paths.append(request.url.path)
+        return httpx.Response(200, text=ERECRUIT_FEED)
+
+    result = _scan(_config({"name": "Niagara Health", "platform": "erecruit",
+                            "url": "https://careers.niagarahealth.on.ca/erecruit",
+                            "location_hint": "Niagara, ON"}), handler)
+    assert paths == ["/erecruit/RSS.aspx"]  # one feed, no paging
+    first = result.postings[0]
+    assert first.title == "SR CASE COSTING PERFORMANCE ADVISOR, FT"
+    assert first.url.endswith("VacancyUID=000000041084")
+    assert first.location == "ST. CATHARINES SITE / HYBRID, Niagara, ON"
+    assert first.posted == "2026-08-18"
+    assert len(result.postings) == 2 and result.health.ok and not result.health.incomplete
+
+
+def test_an_erecruit_feed_with_no_postings_is_an_error():
+    result = _scan(_config({"name": "Niagara Health", "platform": "erecruit",
+                            "url": "https://careers.niagarahealth.on.ca/erecruit"}),
+                   lambda request: httpx.Response(200, text="<rss><channel><item /></channel></rss>"))
+    assert result.health.errors == 1
+
+
 def test_the_tier_keeps_the_positive_title_filter():
     """J.D. Irving's board is drivers, mechanics and store managers; only the
     title says which of its 736 postings is his work."""
