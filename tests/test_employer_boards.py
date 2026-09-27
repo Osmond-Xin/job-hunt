@@ -160,6 +160,78 @@ def test_an_unreadable_entry_or_a_failed_request_is_an_error_not_an_empty_board(
     assert any("failed request" in w for w in result.health.warnings())
 
 
+# hrSmart: the two tenants order their columns differently (trimmed 2026-09-27).
+YUKON_GOV_ROW = """<tr>
+ <td class="tdhighlight">Job Opportunity</td>
+ <td class="tdhighlight">69353</td>
+ <td class="tdhighlight"><a href="/hr/ats/Posting/view/69353"> <i class="fas fa-star"></i> <span>Registered Nurse Supervisor</span>
+ </a></td>
+ <td class="tdhighlight">Health &amp; Social Services - Administration - Mcdonald Lodge</td>
+ <td class="tdhighlight"> Dawson City, YT, CA Y0B 1G0<br />
+ </td>
+ <td class="tdhighlight">23 December 2026</td>
+</tr>"""
+BC_ROW = """<tr> <td>Attorney General</td>
+ <td><a href="/hr/ats/Posting/view/{id}"> <span>Data Analyst R{id}</span>
+ </a></td>
+ <td>GEU</td>
+ <td>On-Site</td>
+ <td> Abbotsford, BC, CA V2S 1H4<br />
+ </td>
+ <td>9/25/2026</td>
+</tr>"""
+HEADER_ROW = '<tr><th scope="col">Req. #</th><th scope="col">Job Title</th></tr>'
+
+
+def test_an_hrsmart_row_is_read_whatever_the_column_order():
+    from job_hunt.services.employer_boards import parse_hrsmart
+
+    site = "https://yukongovernment.hua.hrsmart.com"
+    assert parse_hrsmart(HEADER_ROW + YUKON_GOV_ROW, site) == [{
+        "url": f"{site}/hr/ats/Posting/view/69353",
+        "title": "Registered Nurse Supervisor",
+        "location": "Dawson City, YT, Canada",
+    }]
+    bc = parse_hrsmart(BC_ROW.format(id=126069), "https://bcpublicservice.hua.hrsmart.com")
+    assert bc[0]["title"] == "Data Analyst R126069" and bc[0]["location"] == "Abbotsford, BC, Canada"
+
+
+def test_an_hrsmart_board_is_walked_until_a_page_repeats():
+    paths: list[str] = []
+    pages = {
+        "/hr/ats/JobSearch/viewAll": "".join(BC_ROW.format(id=i) for i in range(25)),
+        "/hr/ats/JobSearch/viewAll/jobSearchPaginationExternal_page:2": BC_ROW.format(id=99),
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        paths.append(request.url.path)
+        # Past the end the site serves its last page again.
+        return httpx.Response(200, text=pages.get(request.url.path, pages[paths[1]] if len(paths) > 1 else ""))
+
+    result = _scan(
+        _config({"name": "BC Public Service", "platform": "hrsmart",
+                 "url": "https://bcpublicservice.hua.hrsmart.com/hr/ats/JobSearch/viewAll"}),
+        handler,
+    )
+    assert paths == [
+        "/hr/ats/JobSearch/viewAll",
+        "/hr/ats/JobSearch/viewAll/jobSearchPaginationExternal_page:2",
+        "/hr/ats/JobSearch/viewAll/jobSearchPaginationExternal_page:3",
+    ]
+    assert len(result.postings) == 26
+    assert result.postings[0].company == "BC Public Service" and result.postings[0].portal == "hrsmart"
+    assert result.health.ok and not result.health.truncated
+
+
+def test_an_hrsmart_first_page_with_no_rows_is_an_error():
+    result = _scan(
+        _config({"name": "Government of Yukon", "platform": "hrsmart",
+                 "url": "https://yukongovernment.hua.hrsmart.com/"}),
+        lambda request: httpx.Response(200, text="<html>redesigned</html>"),
+    )
+    assert result.postings == [] and result.health.errors == 1
+
+
 def test_the_tier_keeps_the_positive_title_filter():
     """J.D. Irving's board is drivers, mechanics and store managers; only the
     title says which of its 736 postings is his work."""

@@ -1,4 +1,4 @@
-"""Tier 11: single-employer career sites on Oracle, iCIMS Jibe and UKG boards.
+"""Tier 11: single-employer career sites on Oracle, iCIMS Jibe, UKG and hrSmart.
 
 Each of these platforms serves every one of its customers through the same
 public JSON endpoint, so an employer is one ``portals.yml`` entry — a
@@ -16,6 +16,13 @@ public JSON endpoint, so an employer is one ``portals.yml`` entry — a
   GUID; neither can be guessed — Yukon Hospitals' root ``/YUK5001YUHC/
   JobBoard/`` is a 404, and the GUID came from the redirect behind its own
   careers page. 52 postings.
+- **hrsmart** — hrSmart (``*.hua.hrsmart.com``), plain server-rendered HTML:
+  ``<site>/hr/ats/JobSearch/viewAll`` then ``.../viewAll/
+  jobSearchPaginationExternal_page:N``, 25 rows a page, no advertised total;
+  a page past the end repeats the last one. Column order differs per tenant,
+  so a row is read as its ``/hr/ats/Posting/view/<id>`` link plus whichever
+  cell holds a ``City, PR, CA`` address. Government of Yukon (47 postings,
+  mostly nurses and trades) and BC Public Service (84, 4 pages).
 
 These are general employers, not occupation-scoped boards: J.D. Irving's
 first 200 postings on 2026-09-27 were drivers, mechanics, store managers and
@@ -27,6 +34,7 @@ ledger that ``triage --second-look`` reads.
 
 from __future__ import annotations
 
+import html
 import re
 import time
 from typing import Any, Callable
@@ -153,7 +161,57 @@ def _ukg_reader(employer: dict[str, Any]):
     return read
 
 
-_READERS = {"oracle": _oracle_reader, "jibe": _jibe_reader, "ukg": _ukg_reader}
+_HRSMART_ROW_RE = re.compile(r"<tr\b(.*?)</tr>", re.S)
+_HRSMART_LINK_RE = re.compile(r'href="/hr/ats/Posting/view/(\d+)"[^>]*>(.*?)</a>', re.S)
+_HRSMART_PLACE_RE = re.compile(r"<td[^>]*>\s*([^<]+?,\s*[A-Z]{2}),\s*CA\b")
+_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def parse_hrsmart(page_html: str, site: str) -> list[dict[str, str]]:
+    rows = []
+    for block in _HRSMART_ROW_RE.findall(page_html or ""):
+        link = _HRSMART_LINK_RE.search(block)
+        if not link:
+            continue
+        place = _HRSMART_PLACE_RE.search(block)
+        rows.append(
+            {
+                "url": f"{site}/hr/ats/Posting/view/{link.group(1)}",
+                "title": re.sub(r"\s+", " ", html.unescape(_TAG_RE.sub(" ", link.group(2)))).strip(),
+                "location": f"{html.unescape(place.group(1)).strip()}, Canada" if place else "",
+            }
+        )
+    return rows
+
+
+def _hrsmart_reader(employer: dict[str, Any]):
+    parsed = urlparse(str(employer.get("url") or ""))
+    if not parsed.netloc.endswith(".hrsmart.com"):
+        return None
+    site = f"https://{parsed.netloc}"
+
+    def read(client: httpx.Client, page: int) -> Page:
+        path = "/hr/ats/JobSearch/viewAll"
+        if page:
+            path += f"/jobSearchPaginationExternal_page:{page + 1}"
+        try:
+            response = client.get(site + path)
+            response.raise_for_status()
+        except httpx.HTTPError:
+            return None
+        rows = parse_hrsmart(response.text, site)
+        # A first page with no rows is markup the parser no longer reads.
+        return (rows, 0) if rows or page else None
+
+    return read
+
+
+_READERS = {
+    "oracle": _oracle_reader,
+    "jibe": _jibe_reader,
+    "ukg": _ukg_reader,
+    "hrsmart": _hrsmart_reader,
+}
 
 
 def scan_employer_boards_source(
