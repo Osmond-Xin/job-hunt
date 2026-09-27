@@ -73,7 +73,19 @@ def test_strips_jsessionid_and_tracking_query() -> None:
 
 def test_collapses_undetermined_location_tooltip() -> None:
     rows = parse_jobbank_results(RESULTS_HTML)
-    assert rows[1]["location"] == "Undetermined location"
+    assert rows[1]["location"] == "Undetermined location, Canada"
+
+
+def test_a_location_without_a_province_code_is_stamped_canadian() -> None:
+    """Job Bank lists only Canadian jobs; the Canada gate dropped these."""
+    from job_hunt.services.scan import _passes_canada_filter
+
+    various = RESULTS_HTML.replace("Halifax (NS)", "Various locations")
+    rows = parse_jobbank_results(various)
+    assert rows[0]["location"] == "Various locations, Canada"
+    assert rows[1]["location"] == "Undetermined location, Canada"
+    assert parse_jobbank_results(RESULTS_HTML)[0]["location"] == "Halifax (NS)"
+    assert all(_passes_canada_filter(row["location"]) for row in rows)
 
 
 def test_parse_tolerates_empty_and_garbage() -> None:

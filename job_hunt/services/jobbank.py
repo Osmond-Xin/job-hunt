@@ -52,6 +52,7 @@ _SEARCH_URL = f"{_BASE}/jobsearch/jobsearch"
 _USER_AGENT = "Mozilla/5.0 (compatible; job-hunt/0.1; personal job search)"
 _PAGE_SIZE = 25
 
+_PROVINCE_RE = re.compile(r"\((?:AB|BC|MB|NB|NL|NS|NT|NU|ON|PE|QC|SK|YT)\)")
 _TOTAL_RE = re.compile(r'id="results-count"[^>]*>\s*([\d,]+)')
 
 _ARTICLE_RE = re.compile(r'<article\b[^>]*\bid="article-(\d+)"(.*?)</article>', re.S)
@@ -129,7 +130,12 @@ def _location(block: str) -> str:
     raw = raw.removeprefix("Location").strip()
     # "Undetermined location" rows carry a long explanatory sentence.
     if raw.lower().startswith("undetermined location"):
-        return "Undetermined location"
+        raw = "Undetermined location"
+    # Job Bank lists only Canadian jobs. A row with no "(PR)" code —
+    # "Undetermined location", "Various locations" — is still Canadian, and
+    # without saying so the scan's Canada gate drops it (7 of 580, 2026-09-27).
+    if not _PROVINCE_RE.search(raw):
+        raw = f"{raw}, Canada" if raw else "Canada"
     return raw
 
 
