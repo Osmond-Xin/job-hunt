@@ -41,10 +41,12 @@ import json
 import re
 import time
 from typing import Any, Callable
+from urllib.parse import urljoin
 
 import httpx
 
 from job_hunt.models.posting import JobPosting, SourceHealth, SourceResult, from_row
+from job_hunt.services.immigration import AMBIGUOUS_PROVINCE_CODES, UNAMBIGUOUS_PROVINCE_CODES
 from job_hunt.services.posted_date import relative_age_to_iso
 
 BASE = "https://www.ycombinator.com"
@@ -52,7 +54,7 @@ DIRECTORY = f"{BASE}/companies"
 _ALGOLIA = "https://{app}-dsn.algolia.net/1/indexes/YCCompany_production/query"
 _OPTS_RE = re.compile(r"window\.AlgoliaOpts\s*=\s*(\{.*?\})")
 _PAGE_RE = re.compile(r'data-page="([^"]*)"')
-_PROVINCES = {"AB", "BC", "MB", "NB", "NL", "NS", "NT", "NU", "ON", "PE", "QC", "SK", "YT"}
+_APP_ID_RE = re.compile(r"^[A-Za-z0-9]+$")
 _USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/128.0 Safari/537.36"
@@ -68,8 +70,9 @@ def algolia_opts(page_html: str) -> tuple[str, str] | None:
         opts = json.loads(match.group(1))
     except ValueError:
         return None
-    app, key = opts.get("app"), opts.get("key")
-    return (str(app), str(key)) if app and key else None
+    app, key = str(opts.get("app") or ""), str(opts.get("key") or "")
+    # The app id becomes a hostname; anything but an id is not used as one.
+    return (app, key) if _APP_ID_RE.match(app) and key else None
 
 
 def job_postings(page_html: str) -> list[dict[str, Any]] | None:
@@ -100,8 +103,15 @@ def canadian_location(location: str) -> str | None:
         if len(parts) in (1, 3) and re.fullmatch(r"[A-Z]{2}", parts[-1]):
             if parts[-1] == "CA":
                 return ", ".join(parts[:-1] + ["Canada"])
-        elif len(parts) == 2 and parts[1] in _PROVINCES:
-            return f"{place}, Canada"
+        elif len(parts) == 2 and re.fullmatch(r"[A-Z]{2}", parts[1]):
+            # "City, XX": a province only when XX cannot be anything else.
+            # "Waterloo, IA" is Iowa and "Amsterdam, NL" the Netherlands; a code
+            # that is both ("Regina, SK") is left to the scan's gate, which
+            # places Canadian capitals by name.
+            if parts[1] in UNAMBIGUOUS_PROVINCE_CODES:
+                return f"{place}, Canada"
+            if parts[1] in AMBIGUOUS_PROVINCE_CODES:
+                uncoded = True
         else:
             uncoded = True
     return "" if uncoded else None
@@ -192,7 +202,7 @@ def scan_yc_companies_source(
                     continue
                 posting = from_row(
                     {
-                        "url": BASE + str(job.get("url") or "") if job.get("url") else "",
+                        "url": urljoin(BASE, str(job.get("url"))) if job.get("url") else "",
                         "title": str(job.get("title") or "").strip(),
                         "company": str(job.get("companyName") or slug),
                         "location": place or location,

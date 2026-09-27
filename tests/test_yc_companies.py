@@ -68,6 +68,12 @@ def test_postings_are_read_from_the_escaped_page_props():
         # No country code anywhere: the scan's own Canada filter decides.
         ("Toronto and Open to across Canada / Remote / Remote (US)", ""),
         ("Main Office - Toronto", ""),
+        # Review 2026-09-27: a two-letter code that is a US state or a foreign
+        # country is foreign, not uncoded and not a province.
+        ("Waterloo, IA", None),
+        ("Amsterdam, NL", ""),
+        ("Bratislava, SK", ""),
+        ("Austin, TX", None),
     ],
 )
 def test_a_location_is_placed_by_its_country_codes(location, expected):
@@ -118,6 +124,29 @@ def test_the_company_search_uses_the_scraped_key_and_canada_facets():
     assert search.headers["x-algolia-api-key"] == "c2VhcmNoLW9ubHk="
     assert json.loads(search.content)["facetFilters"] == [["regions:Canada"], ["isHiring:true"]]
     assert calls[-1].url.path == "/companies/bree/jobs"
+
+
+def test_an_ambiguous_code_is_never_rewritten_to_canada_and_the_gate_rejects_it():
+    """"Amsterdam, NL" is deferred rather than rewritten, and the scan's gate
+    then drops it — the location is never turned into "..., Canada"."""
+    from job_hunt.services.scan import _passes_canada_filter
+
+    for location in ("Amsterdam, NL", "Bratislava, SK"):
+        assert canadian_location(location) == ""
+        assert _passes_canada_filter(location) is False
+
+
+def test_an_app_id_that_is_not_an_id_is_not_used_as_a_hostname():
+    page = '<script>window.AlgoliaOpts = {"app":"evil.example.com/x","key":"k"};</script>'
+    assert algolia_opts(page) is None
+
+
+def test_an_absolute_posting_url_is_kept_as_it_is():
+    calls: list[httpx.Request] = []
+    page = _jobs_page(_job("Software Engineer", "Toronto, ON, CA", "2 days",
+                           "https://jobs.lever.co/bree/abc"))
+    result = _scan(_handler(calls, jobs_html=page))
+    assert result.postings[0].url == "https://jobs.lever.co/bree/abc"
 
 
 def test_a_directory_without_a_key_is_an_error_not_an_empty_source():
