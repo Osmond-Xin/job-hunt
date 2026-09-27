@@ -31,6 +31,15 @@ tracked_companies:
     enabled: false
     careers_url: "https://jobs.lever.co/example"
 
+  # BambooHR and Lever boards are read the same way (verified 2026-09-27).
+  - name: "City of Hamilton"
+    enabled: true
+    careers_url: "https://cityofhamilton.bamboohr.com/careers"
+
+  - name: "Okanagan College"
+    enabled: true
+    careers_url: "https://jobs.lever.co/okanagan"
+
   # Brave WebSearch example. Requires config/settings.yml web_search.provider=brave
   # and BRAVE_API_KEY in .env.
   - name: "Example Search Company"
@@ -192,6 +201,26 @@ getro_boards:
       network_id: 1546
       label: Invest Ottawa
       enabled: true
+    - id: georgian
+      network_id: 14282
+      label: Georgian
+      enabled: true
+    - id: portage
+      network_id: 144
+      label: Portage Ventures
+      enabled: true
+    - id: pender
+      network_id: 3854
+      label: Pender Ventures
+      enabled: true
+    - id: queertech
+      network_id: 883
+      label: QueerTech
+      enabled: true
+    - id: getro-community
+      network_id: 8870
+      label: Getro Community
+      enabled: true
 
 # Tier 4b — SaskJobs.ca (job_hunt/services/saskjobs.py). Rows are kept only when
 # their NOC code is in `jobbank_direct.noc_codes`; with no such list the tier
@@ -222,9 +251,26 @@ gov_boards:
       company: Government of Alberta
       successfactors_url: https://jobpostings.alberta.ca
       max_pages: 8      # 130 postings at 25 per page (2026-09-27)
+    cmhc:
+      enabled: true
+      company: Canada Mortgage and Housing Corporation
+      successfactors_url: https://careers.cmhc-schl.gc.ca
+      max_pages: 4
+    nrc:
+      enabled: true
+      company: National Research Council Canada
+      successfactors_url: https://recruitment-recrutement.nrc-cnrc.gc.ca
+      max_pages: 4
+    hsn:
+      enabled: true
+      company: Health Sciences North
+      successfactors_url: https://careers.hsnsudbury.ca
+      title_screen: true    # a hospital: titles are screened by the model
+      max_pages: 6
 
 # Tier 11 — single-employer career sites (job_hunt/services/employer_boards.py).
-# `platform` is oracle | jibe | ukg | hrsmart and `url` the employer's career-site URL.
+# `platform` is oracle | jibe | ukg | hrsmart | successfactors and `url` the
+# employer's career-site URL. `max_pages` may be set per employer.
 # General employers, so these rows face the positive title filter.
 employer_boards:
   enabled: true
@@ -252,6 +298,25 @@ employer_boards:
       url: https://bcpublicservice.hua.hrsmart.com/hr/ats/JobSearch/viewAll
       # 84 postings in 4 pages of 25 (2026-09-27). hrSmart advertises no total
       # and serves its last page again past the end; the walk stops there.
+    - name: WSIB
+      platform: oracle
+      url: https://wsib-iaepup.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1001/requisitions
+    - name: Emera
+      platform: jibe
+      url: https://careers.emera.com
+    - name: Island Health
+      platform: hrsmart
+      url: https://islandhealth.hua.hrsmart.com/hr/ats/JobSearch/viewAll
+      max_pages: 55     # per-employer budget: ~1,229 postings at 25 a page
+    - name: ICBC
+      platform: successfactors
+      url: https://careers.icbc.com
+    - name: SaskPower
+      platform: successfactors
+      url: https://jobs.saskpower.com
+    - name: SaskTel
+      platform: successfactors
+      url: https://jobs.sasktel.com
 
 # Tier 12 — WorkPEI (job_hunt/services/workpei.py), over its WordPress REST API.
 # General board: positive title filter.
@@ -268,3 +333,29 @@ yc_companies:
   delay_s: 1.0
   timeout_s: 30.0
   max_age_days: 120
+
+# Tier 6 — Workday CxS JSON boards (job_hunt/services/workday_boards.py). Paste
+# any myworkdayjobs.com URL as `url`. `location_hint` is appended to every row's
+# location, for tenants that name a building ("City Hall") instead of a town.
+workday_boards:
+  enabled: true
+  page_size: 20
+  max_pages: 3
+  delay_s: 1.0
+  timeout_s: 30.0
+  employers:
+    - name: Brock University
+      url: https://brocku.wd3.myworkdayjobs.com/brocku_careers
+      location_hint: "St. Catharines, ON"
+    - name: City of Niagara Falls
+      url: https://niagarafalls.wd10.myworkdayjobs.com/CNF
+      location_hint: "Niagara Falls, ON"
+    - name: City of Port Colborne
+      url: https://portcolborne.wd10.myworkdayjobs.com/CPC
+      location_hint: "Port Colborne, ON"
+    - name: Fallsview Casino / Casino Niagara (Mohegan)
+      url: https://mohegan.wd1.myworkdayjobs.com/Niagara
+      location_hint: "Niagara Falls, ON"
+    - name: WCB Alberta
+      url: https://wcbalberta.wd10.myworkdayjobs.com/wcbalbertacareers
+      location_hint: "Alberta"
