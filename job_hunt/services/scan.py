@@ -1451,8 +1451,15 @@ _PLACE_SPLIT_RE = re.compile(r"\s*(?:/|;|\|)\s*")
 _ALL_PROVINCE_CODES = UNAMBIGUOUS_PROVINCE_CODES | AMBIGUOUS_PROVINCE_CODES
 _CODE_ALT = "|".join(sorted(_ALL_PROVINCE_CODES))
 _POSTAL = r"[ABCEGHJ-NPRSTVXY]\d[ABCEGHJ-NPRSTV-Z]\s?\d[ABCEGHJ-NPRSTV-Z]\d"
-# A whole field: the code alone, or the code and a postal code (any case).
-_CODE_FIELD_RE = re.compile(r"(" + _CODE_ALT + r")(?:\s+(?i:" + _POSTAL + r"))?")
+# What may follow a code in its field: a note opened by "(" or by a dash with
+# space on both sides ("BC (Hybrid)", "ON - Remote", "NL – Remote"). A dash
+# glued to letters ("ON-SITE") or a bare word ("ON SITE", "IN PERSON", "OR
+# Remote") is not a code. Shared by province and state codes so they agree.
+_CODE_SUFFIX = r"(?:\s*\(.*|\s+[-–—]\s+.*)?"
+# A code field: the code, optionally its postal code (any case), optionally a note.
+_CODE_FIELD_RE = re.compile(
+    r"(" + _CODE_ALT + r")(?:\s+(?i:" + _POSTAL + r"))?" + _CODE_SUFFIX
+)
 # "(BC)", "(BC/Colombie-Britannique)"; also "(BC" at the end of a place,
 # which is what splitting "(BC/Colombie-Britannique)" on "/" leaves.
 _BRACKETED_CODE_RE = re.compile(r"\((" + _CODE_ALT + r")(?=[)/]|\s*$)")
@@ -1474,9 +1481,10 @@ _US_STATE_CODES = frozenset(
     "AL AK AZ AR CO CT DE FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NV "
     "NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY DC".split()
 )
-# A whole field: the state code alone, or with its ZIP ("IA 50701").
+# A state field, by the same rule as a province field: the code, optionally
+# its ZIP ("IA 50701"), optionally a note ("WA (ON-SITE)", "IA - Hybrid").
 _US_STATE_FIELD_RE = re.compile(
-    r"(?:" + "|".join(sorted(_US_STATE_CODES)) + r")(?:\s+\d{5}(?:-\d{4})?)?"
+    r"(?:" + "|".join(sorted(_US_STATE_CODES)) + r")(?:\s+\d{5}(?:-\d{4})?)?" + _CODE_SUFFIX
 )
 _FOREIGN_COUNTRY_RE = re.compile(
     r"\b(?:united states|mexico|m[eé]xico|netherlands|australia|germany|"

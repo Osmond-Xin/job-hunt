@@ -82,6 +82,8 @@ CANADIAN = [
     "Calgary, NE", "CA-ON-Whitby", "CA-BC-Burnaby", "CA-AB-Canmore", "CA-QC-Sherbrooke",
     # Explicit Canadian evidence beats a collision city (only Baja overrides BC).
     "Amsterdam, NL, Canada", "Darwin, NT, Toronto, ON",
+    # Round 5, allow-listed city with a work-mode note.
+    "London, ON (Hybrid)",
 ]
 FOREIGN = [
     "Waterloo, IA", "Waterloo, IA 50701", "Vancouver, WA 98660", "Amsterdam, NL",
@@ -95,6 +97,41 @@ FOREIGN = [
     "(Remote) Amsterdam (NL)", "(Remote) Tijuana (BC)", "Tijuana, Mexico (BC)",
     "Amsterdam (HQ), NL",
 ]
+
+
+# Accepted by the CODE path, not by name: none of these cities is on an allow
+# list, so `_matches_canada_by_name` alone would drop every one — asserted
+# below, so a case that starts passing by name instead is noticed.
+CODE_PATH_CANADIAN = [
+    "Burnaby, BC", "Burnaby, BC - Remote", "Burnaby, BC (Hybrid)", "Burnaby, BC - On-site",
+    "Burnaby, BC – Remote", "Burnaby, BC — Remote", "Kanata, ON - Hybrid", "Kanata, ON (Hybrid)",
+    "Vaughan, ON - Hybrid", "Laval, QC - Remote", "Gatineau, QC - Hybrid", "Red Deer, AB - Remote",
+    "Taber, AB - On-site", "Taber, AB T1G 2C9 - Hybrid", "Truro, NS - Hybrid",
+    "Corner Brook, NL (Remote)", "Corner Brook, NL - Remote", "Swift Current, SK - Hybrid",
+    "Swift Current, SK S9H 0A1", "Burnaby (BC) - Remote", "CA-BC-Burnaby",
+]
+# Rejected by the CODE path: a code with a glued dash or a bare word after it
+# is not a code, and US states follow the same rule as provinces.
+CODE_PATH_FOREIGN = [
+    "Burnaby, BC-SITE", "Kanata, ON SITE", "Kanata, ON Remote",
+    "Vancouver, WA (ON-SITE)", "Waterloo, IA (IN OFFICE)", "Waterloo, IA - Hybrid",
+    "Waterloo, IA 50701 - Remote",
+]
+
+
+@pytest.mark.parametrize("location", CODE_PATH_CANADIAN)
+def test_a_province_code_field_accepts_where_the_name_would_not(location) -> None:
+    from job_hunt.services.scan import _matches_canada_by_name, _passes_canada_filter
+
+    assert _matches_canada_by_name(location) is False, "case no longer exercises the code path"
+    assert _passes_canada_filter(location) is True
+
+
+@pytest.mark.parametrize("location", CODE_PATH_FOREIGN)
+def test_a_code_with_a_glued_or_bare_word_after_it_is_not_a_province(location) -> None:
+    from job_hunt.services.scan import _passes_canada_filter
+
+    assert _passes_canada_filter(location) is False
 
 
 @pytest.mark.parametrize("location", CANADIAN)
