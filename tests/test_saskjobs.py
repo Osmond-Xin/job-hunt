@@ -97,5 +97,36 @@ def test_disabled_or_no_codes_does_not_touch_the_network():
         raise AssertionError("must not hit the network")
 
     client = httpx.Client(transport=httpx.MockTransport(handler))
-    assert scan_saskjobs_source({"enabled": False}, ["21221"], client=client).postings == []
-    assert scan_saskjobs_source({"enabled": True}, [], client=client).postings == []
+    disabled = scan_saskjobs_source({"enabled": False}, ["21221"], client=client)
+    assert disabled.postings == [] and disabled.health.ok
+
+
+def test_enabled_with_no_noc_codes_is_unhealthy_and_says_why():
+    """Review 2026-09-27: this returned ok with nothing, like a quiet week."""
+    from job_hunt.services.scan import _source_scanned_jobs
+
+    result = scan_saskjobs_source({"enabled": True}, [])
+    assert result.postings == [] and not result.health.ok
+    warnings: list[str] = []
+    _source_scanned_jobs("saskjobs", lambda cfg: scan_saskjobs_source(cfg, None), {"enabled": True}, warnings)
+    assert any("noc_codes is empty" in w for w in warnings)
+
+
+def test_each_category_is_paged_on_its_own_rows():
+    """Distinct rows per category, so a broken category-2 walk cannot hide
+    behind rows category 1 already returned."""
+    pages = {
+        ("1", "1"): _row(1, "Accountant", "11100"),
+        ("2", "1"): _row(21, "Developer A", "21232"),
+        ("2", "2"): _row(22, "Developer B", "21232"),
+    }
+    seen: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        key = (request.url.params["noc_skill_type"], request.url.params["page"])
+        seen.append(key)
+        return httpx.Response(200, text=pages.get(key, ""))
+
+    result = _scan(handler, codes=("21232", "11100"))
+    assert seen == [("1", "1"), ("1", "2"), ("2", "1"), ("2", "2"), ("2", "3")]
+    assert sorted(p.title for p in result.postings) == ["Accountant", "Developer A", "Developer B"]

@@ -92,8 +92,18 @@ def scan_saskjobs_source(
 ) -> SourceResult:
     """Postings whose NOC code is on ``noc_codes``, across every page."""
     codes = {str(code).strip() for code in (noc_codes or []) if str(code).strip()}
-    if not config or not config.get("enabled", False) or not codes:
+    if not config or not config.get("enabled", False):
         return SourceResult(postings=[], health=SourceHealth(source_id="saskjobs", ok=True))
+    if not codes:
+        # Enabled but with nothing to filter by: say so, or it reads as a
+        # province with no openings.
+        return SourceResult(
+            postings=[],
+            health=SourceHealth(
+                source_id="saskjobs", ok=False,
+                note="enabled, but jobbank_direct.noc_codes is empty — nothing read",
+            ),
+        )
     categories = sorted({code[0] for code in codes})
     max_pages = max(1, int(config.get("max_pages", 10)))
     delay = float(config.get("delay_s", 1.0))
