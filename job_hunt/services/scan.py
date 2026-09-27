@@ -20,6 +20,7 @@ from job_hunt.repositories.tracker_repo import TrackerRepository
 from job_hunt.services.adzuna import scan_adzuna_source
 from job_hunt.services import discovered_companies
 from job_hunt.services.cn_boards import scan_cn_boards_source
+from job_hunt.services.employer_boards import scan_employer_boards_source
 from job_hunt.services.getro_boards import scan_getro_boards_source
 from job_hunt.services.gov_boards import scan_gov_boards
 from job_hunt.services.hn_hiring import scan_hn_hiring_source
@@ -27,7 +28,10 @@ from job_hunt.services.regional_boards import scan_regional_boards
 from job_hunt.services.immigration import place_tokens as immigration_place_tokens
 from job_hunt.services.jobbank import scan_jobbank
 from job_hunt.services.posted_date import jobbank_date_to_iso
+from job_hunt.services.saskjobs import scan_saskjobs_source
 from job_hunt.services.workday_boards import scan_workday_source
+from job_hunt.services.workpei import scan_workpei_source
+from job_hunt.services.yc_companies import scan_yc_companies_source
 from job_hunt.services.profile_loader import current_mode, discovery_context
 from job_hunt.services.web_extract import _bamboohr_slug
 
@@ -84,8 +88,9 @@ def scan_portals(
             Pass ``discovery_channel="<id>"`` to restrict tier 3 to one
             channel.
     Tier 4: Job Bank direct search (``jobbank_direct``).
+    Tier 4b: SaskJobs.ca (``saskjobs``), filtered to Job Bank's NOC codes.
     Tier 5: public-sector boards — GNWT, Nova Scotia, New Brunswick,
-        Manitoba (``gov_boards``), and regional tech-industry boards
+        Manitoba, Nunavut, Alberta (``gov_boards``), and regional tech-industry boards
         (``regional_boards``). Highest signal per request in this search:
         small local employers in the regions that carry immigration value,
         largely absent from the national aggregators.
@@ -100,11 +105,16 @@ def scan_portals(
     Tier 10: Hacker News "Who is hiring?" (``hn_hiring``) — the monthly thread
         where small companies post themselves, read through Algolia's public
         HN Search API. Free text, so it keeps the positive filter too.
+    Tier 11: single-employer career sites on Oracle / Jibe / UKG
+        (``employer_boards``) — J.D. Irving, City of Thunder Bay, Yukon
+        Hospitals. General employers: positive filter.
+    Tier 12: WorkPEI (``workpei``). General board: positive filter.
+    Tier 13: YC companies hiring in Canada (``yc_companies``). Positive filter.
 
     Tier 1 also reads every company board the other tiers have surfaced
     (``services/discovered_companies.py``), not only the hand-written list.
 
-    Tiers 4-10 need no WebSearch provider and consume no search quota. They
+    Tiers 4-13 need no WebSearch provider and consume no search quota. They
     return structured employer / location fields, so they are strictly better
     per result than the tier-3 channels that cover the same boards.
     """
@@ -221,16 +231,24 @@ def scan_portals(
         # regional_boards.py's BOARDS vtable dispatches `fetch` as the string
         # "curl" rather than through a real seam. jobbank.py has neither
         # obstacle and is the next one worth converting.
+        noc_codes = (config.get("jobbank_direct") or {}).get("noc_codes")
         extra_tiers = [
             _jobbank_scanned_jobs(config.get("jobbank_direct"), result.errors),
+            _source_scanned_jobs(
+                "saskjobs",
+                lambda cfg: scan_saskjobs_source(cfg, noc_codes),
+                config.get("saskjobs"),
+                result.errors,
+            ),
             _gov_board_scanned_jobs(config.get("gov_boards"), result.errors),
             _regional_board_scanned_jobs(config.get("regional_boards"), result.errors),
             _workday_scanned_jobs(config.get("workday_boards"), result.errors),
             _adzuna_scanned_jobs(settings, discovery_context().get("roles", []), result.errors),
             _cn_board_scanned_jobs(config.get("cn_boards"), result.errors),
         ]
-        # All six already establish the occupation before we see the title:
-        # Job Bank is queried by NOC code, Adzuna rows are filtered on their
+        # All seven already establish the occupation before we see the title:
+        # Job Bank is queried by NOC code, SaskJobs rows are kept only when
+        # their own NOC code is on that same list, Adzuna rows are filtered on their
         # own `category` facet, the gov / regional / Workday boards are
         # small curated employer boards, and the Chinese boards are screened
         # with `triage.cn_technical_title` (their titles are in Chinese, so the
@@ -250,35 +268,39 @@ def scan_portals(
                 require_positive=False,
             )
 
-        # Tier 9 is the exception to the paragraph above: a Getro portfolio
-        # board is a general board — Communitech carried EY tax-litigation
-        # roles beside its ML ones on 2026-09-17 — so nothing but the title
-        # says whether a row is his work. It keeps the positive filter.
-        _accept_jobs(
+        # Tiers 9-13 are the exception to the paragraph above: each is a
+        # general board, where nothing but the title says whether a row is his
+        # work, so they keep the positive filter (and its near-miss ledger).
+        # Tier 9: a Getro portfolio board carried EY tax-litigation roles
+        # beside its ML ones on 2026-09-17. Tier 10: the monthly Hacker News
+        # "Who is hiring?" thread is free text from any kind of company.
+        # Tier 11: J.D. Irving's 736 postings are mostly drivers, mechanics and
+        # store staff. Tier 12: WorkPEI carries the whole island's job market.
+        # Tier 13: YC companies post sales and design roles beside engineering.
+        general_tiers = [
             _getro_scanned_jobs(config.get("getro_boards"), result.errors),
-            result,
-            positives=positives,
-            negatives=negatives,
-            include_non_canada=include_non_canada,
-            known_urls=known_urls,
-            known_company_roles=known_company_roles,
-            apply=apply,
-            count_fetched=True,
-        )
-
-        # Tier 10: the monthly Hacker News "Who is hiring?" thread. Free text
-        # from any kind of company, so the positive filter stays on.
-        _accept_jobs(
             _hn_hiring_scanned_jobs(config.get("hn_hiring"), result.errors),
-            result,
-            positives=positives,
-            negatives=negatives,
-            include_non_canada=include_non_canada,
-            known_urls=known_urls,
-            known_company_roles=known_company_roles,
-            apply=apply,
-            count_fetched=True,
-        )
+            _source_scanned_jobs(
+                "employer boards", scan_employer_boards_source,
+                config.get("employer_boards"), result.errors,
+            ),
+            _source_scanned_jobs("workpei", scan_workpei_source, config.get("workpei"), result.errors),
+            _source_scanned_jobs(
+                "yc companies", scan_yc_companies_source, config.get("yc_companies"), result.errors
+            ),
+        ]
+        for tier_jobs in general_tiers:
+            _accept_jobs(
+                tier_jobs,
+                result,
+                positives=positives,
+                negatives=negatives,
+                include_non_canada=include_non_canada,
+                known_urls=known_urls,
+                known_company_roles=known_company_roles,
+                apply=apply,
+                count_fetched=True,
+            )
 
     if apply and result.jobs:
         _append_pipeline(result.jobs)
@@ -483,6 +505,28 @@ def _hn_hiring_scanned_jobs(
         return []
     if warnings is not None:
         warnings.extend(result.health.warnings())
+    return [_scanned_job_from_posting(posting) for posting in result.postings]
+
+
+def _source_scanned_jobs(
+    label: str, scan, config: dict[str, Any] | None, warnings: list[str] | None = None
+) -> list[ScannedJob]:
+    """Any ``SourceResult`` tier (saskjobs, employer boards, WorkPEI, YC).
+
+    The same body as the Getro / HN mappers above, once: a sweep that raises
+    becomes a warning, and so does a source's own record of failed requests,
+    truncation, or — when it failed — the reason it gives.
+    """
+    try:
+        result = scan(config)
+    except Exception as exc:
+        if warnings is not None:
+            warnings.append(f"{label}: sweep failed ({exc})")
+        return []
+    if warnings is not None:
+        warnings.extend(result.health.warnings())
+        if result.health.note and not result.health.ok:
+            warnings.append(f"{label}: {result.health.note}")
     return [_scanned_job_from_posting(posting) for posting in result.postings]
 
 
