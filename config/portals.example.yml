@@ -359,3 +359,14 @@ workday_boards:
     - name: WCB Alberta
       url: https://wcbalberta.wd10.myworkdayjobs.com/wcbalbertacareers
       location_hint: "Alberta"
+
+# Tier 14 — WorkBC (job_hunt/services/workbc.py), 2026-09-27. BC's provincial
+# board over its public search API: a title search per profile role term
+# (`queries` overrides). Job Bank mirrors are skipped; each row records the
+# employer's own posting URL. General board: positive title filter.
+# 25 roles x up to max_pages pages of 100, paced by delay_s.
+workbc:
+  enabled: true
+  delay_s: 1.0
+  timeout_s: 45.0
+  max_pages: 3

@@ -31,6 +31,7 @@ from job_hunt.services.immigration import place_tokens as immigration_place_toke
 from job_hunt.services.jobbank import scan_jobbank
 from job_hunt.services.posted_date import jobbank_date_to_iso
 from job_hunt.services.saskjobs import scan_saskjobs_source
+from job_hunt.services.workbc import scan_workbc_source
 from job_hunt.services.workday_boards import scan_workday_source
 from job_hunt.services.workpei import scan_workpei_source
 from job_hunt.services.yc_companies import scan_yc_companies_source
@@ -112,11 +113,12 @@ def scan_portals(
         Hospitals. General employers: positive filter.
     Tier 12: WorkPEI (``workpei``). General board: positive filter.
     Tier 13: YC companies hiring in Canada (``yc_companies``). Positive filter.
+    Tier 14: WorkBC (``workbc``), searched by the profile's role terms. Positive filter.
 
     Tier 1 also reads every company board the other tiers have surfaced
     (``services/discovered_companies.py``), not only the hand-written list.
 
-    Tiers 4-13 need no WebSearch provider and consume no search quota. They
+    Tiers 4-14 need no WebSearch provider and consume no search quota. They
     return structured employer / location fields, so they are strictly better
     per result than the tier-3 channels that cover the same boards.
     """
@@ -279,6 +281,7 @@ def scan_portals(
         # Tier 11: J.D. Irving's 736 postings are mostly drivers, mechanics and
         # store staff. Tier 12: WorkPEI carries the whole island's job market.
         # Tier 13: YC companies post sales and design roles beside engineering.
+        # Tier 14: WorkBC aggregates every kind of BC employer.
         general_tiers = [
             _getro_scanned_jobs(config.get("getro_boards"), result.errors),
             _hn_hiring_scanned_jobs(config.get("hn_hiring"), result.errors),
@@ -289,6 +292,12 @@ def scan_portals(
             _source_scanned_jobs("workpei", scan_workpei_source, config.get("workpei"), result.errors),
             _source_scanned_jobs(
                 "yc companies", scan_yc_companies_source, config.get("yc_companies"), result.errors
+            ),
+            _source_scanned_jobs(
+                "workbc",
+                lambda cfg: scan_workbc_source(cfg, discovery_context().get("roles", [])),
+                config.get("workbc"),
+                result.errors,
             ),
         ]
         for tier_jobs in general_tiers:
