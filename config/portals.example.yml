@@ -66,6 +66,8 @@ discovery_channels:
     modes: [full]
     query_template: '"{role}" {location} site:glassdoor.com/Job'
 
+  # For Canadian roles this is superseded by the `yc_companies` tier below,
+  # which reads ycombinator.com directly at no search quota.
   - id: ycombinator
     enabled: false
     modes: [full]
@@ -190,3 +192,70 @@ getro_boards:
       network_id: 1546
       label: Invest Ottawa
       enabled: true
+
+# Tier 4b — SaskJobs.ca (job_hunt/services/saskjobs.py). Rows are kept only when
+# their NOC code is in `jobbank_direct.noc_codes`; with no such list the tier
+# reads nothing. Occupation comes from the code, so no positive title filter.
+saskjobs:
+  enabled: true
+  delay_s: 1.0
+  timeout_s: 30.0
+  max_pages: 10
+
+# Tier 5 — public-sector boards (job_hunt/services/gov_boards.py). Besides the
+# built-in boards (gnwt, ns_gov, nb_gov, mb_gov, nsha, wrha), a board can be
+# defined wholly here by its platform URL plus a `company`:
+#   oracle_url          any Oracle Candidate Experience URL (.../sites/<site>/...)
+#   successfactors_url  the SuccessFactors career site's root
+gov_boards:
+  enabled: true
+  delay_s: 1.5
+  timeout_s: 30.0
+  boards:
+    nu_gov:
+      enabled: true
+      company: Government of Nunavut
+      oracle_url: https://fa-exux-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_5/requisitions
+      max_pages: 4      # 92 postings at 50 per page (2026-09-27)
+    ab_gov:
+      enabled: true
+      company: Government of Alberta
+      successfactors_url: https://jobpostings.alberta.ca
+      max_pages: 8      # 130 postings at 25 per page (2026-09-27)
+
+# Tier 11 — single-employer career sites (job_hunt/services/employer_boards.py).
+# `platform` is oracle | jibe | ukg and `url` the employer's career-site URL.
+# General employers, so these rows face the positive title filter.
+employer_boards:
+  enabled: true
+  delay_s: 1.0
+  timeout_s: 30.0
+  max_pages: 10         # pages of 200 (Oracle) or 100 (Jibe, UKG)
+  employers:
+    - name: J.D. Irving
+      platform: oracle
+      url: https://hcpd.fa.ca2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_5003/requisitions
+    - name: City of Thunder Bay
+      platform: jibe
+      url: https://careers.thunderbay.ca
+    - name: Yukon Hospitals
+      platform: ukg
+      # The board GUID cannot be guessed; take it from the employer's own
+      # careers link (here, the redirect behind yukonhospitals.ca/en/careers).
+      url: https://recruiting.ultipro.ca/YUK5001YUHC/JobBoard/7ed94cc1-3925-495d-a225-c5d6b7c3ad3e/
+
+# Tier 12 — WorkPEI (job_hunt/services/workpei.py), over its WordPress REST API.
+# General board: positive title filter.
+workpei:
+  enabled: true
+  delay_s: 1.0
+  timeout_s: 30.0
+  max_pages: 6          # 271 postings in 3 pages of 100 (2026-09-27)
+
+# Tier 13 — YC companies hiring in Canada (job_hunt/services/yc_companies.py).
+# One request per company; YC leaves postings up for years, so older ones go.
+yc_companies:
+  enabled: true
+  delay_s: 1.0
+  timeout_s: 30.0
+  max_age_days: 120
