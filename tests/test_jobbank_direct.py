@@ -166,6 +166,81 @@ def test_scan_paces_requests_between_pages() -> None:
     assert slept == [2.5, 2.5]
 
 
+# --- pagination -------------------------------------------------------------
+# Only page 1 was ever read: Ontario / 21222 advertised 353 results on
+# 2026-09-27 and the sweep returned 25 of them.
+
+
+def _page(ids, total: int | None = None) -> str:
+    count = f'<h2><span class="found" id="results-count">{total}</span> results</h2>' if total else ""
+    articles = "".join(
+        f'<article id="article-{i}"><a href="/jobsearch/jobposting/{i}">'
+        f'<span class="noctitle">developer {i}</span></a></article>'
+        for i in ids
+    )
+    return count + articles
+
+
+def _paged_handler(pages: dict[int, str], seen: list[dict[str, str]]):
+    def handler(request: httpx.Request) -> httpx.Response:
+        params = dict(request.url.params)
+        seen.append(params)
+        return httpx.Response(200, text=pages.get(int(params.get("page", 1)), ""), request=request)
+
+    return handler
+
+
+def test_scan_walks_later_pages_until_the_advertised_count() -> None:
+    pages = {1: _page(range(0, 25), total=40), 2: _page(range(25, 40))}
+    seen: list[dict[str, str]] = []
+    stats: dict = {}
+    rows = scan_jobbank(
+        {"enabled": True, "noc_codes": ["21222"], "provinces": ["ON"]},
+        client=_client(_paged_handler(pages, seen)),
+        sleep=lambda s: None,
+        stats=stats,
+    )
+
+    assert len(rows) == 40
+    assert "page" not in seen[0] and seen[1]["page"] == "2"
+    assert len(seen) == 2  # a short page is the last one
+    assert stats["21222"] == {"collected": 40, "errors": 0, "advertised": 40, "truncated": False}
+
+
+def test_a_page_that_repeats_an_earlier_one_ends_the_walk() -> None:
+    same = _page(range(0, 25))
+    seen: list[dict[str, str]] = []
+    stats: dict = {}
+    rows = scan_jobbank(
+        {"enabled": True, "noc_codes": ["21222"], "provinces": ["ON"], "max_pages": 5},
+        client=_client(_paged_handler({1: same, 2: same, 3: same}, seen)),
+        sleep=lambda s: None,
+        stats=stats,
+    )
+    assert len(rows) == 25
+    assert len(seen) == 2
+    assert stats["21222"]["truncated"] is False
+
+
+def test_the_page_budget_running_out_is_recorded_and_warned() -> None:
+    from job_hunt.services.scan import _board_coverage_warnings
+
+    pages = {n: _page(range((n - 1) * 25, n * 25), total=353) for n in range(1, 16)}
+    seen: list[dict[str, str]] = []
+    stats: dict = {}
+    rows = scan_jobbank(
+        {"enabled": True, "noc_codes": ["21222"], "provinces": ["ON"], "max_pages": 3},
+        client=_client(_paged_handler(pages, seen)),
+        sleep=lambda s: None,
+        stats=stats,
+    )
+
+    assert len(rows) == 75 and len(seen) == 3
+    assert stats["21222"]["truncated"] is True
+    warning = "\n".join(_board_coverage_warnings(stats))
+    assert "21222" in warning and "raise max_pages" in warning and "advertises 353" in warning
+
+
 def test_tier4_rows_become_scanned_jobs() -> None:
     from job_hunt.services.scan import _jobbank_scanned_jobs
 
