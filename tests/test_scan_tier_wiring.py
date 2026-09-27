@@ -61,6 +61,29 @@ def test_a_province_code_field_places_a_posting_in_canada() -> None:
         assert _passes_canada_filter(location) is False
 
 
+def test_a_province_code_that_is_also_foreign_does_not_place_a_posting() -> None:
+    """Review 2026-09-27: the bare-code rule accepted these."""
+    from job_hunt.services.scan import _passes_canada_filter
+
+    for location in ("Darwin, NT, Australia", "Monterrey, NL, Mexico", "Amsterdam, NL",
+                     "Lima, PE", "Bratislava, SK", "Munich, BC, Germany"):
+        assert _passes_canada_filter(location) is False, location
+    # A code followed by Canada, or a capital placed by name, still passes.
+    for location in ("Taber, AB, CA", "Moncton, NB, Canada", "Whitehorse, YT", "Regina, SK"):
+        assert _passes_canada_filter(location) is True, location
+
+
+def test_a_province_code_followed_by_a_postal_code_places_a_posting() -> None:
+    """Second review 2026-09-27: "Taber, AB T1G 2C9" did not match the rule and
+    Taber is in no place list, so the posting was dropped."""
+    from job_hunt.services.scan import _passes_canada_filter
+
+    assert _passes_canada_filter("Taber, AB T1G 2C9") is True
+    assert _passes_canada_filter("Lethbridge County, AB T1J4L1, Canada") is True
+    # A Canadian city name the blocked list shares with London, England.
+    assert _passes_canada_filter("London, ON") is True
+
+
 def test_saskjobs_is_filtered_by_job_banks_noc_codes(tmp_path: Path, monkeypatch) -> None:
     portals = tmp_path / "portals.yml"
     portals.write_text(

@@ -25,6 +25,7 @@ from job_hunt.services.getro_boards import scan_getro_boards_source
 from job_hunt.services.gov_boards import scan_gov_boards
 from job_hunt.services.hn_hiring import scan_hn_hiring_source
 from job_hunt.services.regional_boards import scan_regional_boards
+from job_hunt.services.immigration import UNAMBIGUOUS_PROVINCE_CODES
 from job_hunt.services.immigration import place_tokens as immigration_place_tokens
 from job_hunt.services.jobbank import scan_jobbank
 from job_hunt.services.posted_date import jobbank_date_to_iso
@@ -1380,7 +1381,16 @@ def _location_matches_canada(location: str) -> bool:
 
 # Upper case and comma-delimited on purpose: "on" and "ns" are words, and a
 # bare two-letter token elsewhere in a location is more often a US state.
-_PROVINCE_FIELD_RE = re.compile(r"(?:^|,)\s*(?:AB|BC|MB|NB|NL|NS|NT|NU|ON|PE|QC|SK|YT)\s*(?:,|$)")
+# The code must be the last field — optionally with a postal code ("Taber, AB
+# T1G 2C9") — or be followed only by Canada, so a named foreign country always
+# wins. The ambiguous codes (immigration.AMBIGUOUS_PROVINCE_CODES) are left out:
+# "Darwin, NT, Australia" and "Amsterdam, NL" must not pass; those provinces'
+# capitals are placed by name. This rule deliberately comes before the blocked
+# list, which names cities that exist in Ontario too ("London, ON").
+_PROVINCE_FIELD_RE = re.compile(
+    r"(?:^|,)\s*(?:" + "|".join(sorted(UNAMBIGUOUS_PROVINCE_CODES)) + r")"
+    r"(?:\s+[A-Z]\d[A-Z]\s?\d[A-Z]\d)?\s*(?:,\s*(?:CA|CAN|Canada)\b[^,]*)?$"
+)
 
 _EXPLICIT_CANADA_RE = re.compile(
     r"\b(canada|canadian|ontario|quebec|qu[eé]bec|alberta|manitoba|saskatchewan|yukon|nunavut|"
