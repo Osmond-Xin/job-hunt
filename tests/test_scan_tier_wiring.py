@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 import yaml
 
 import job_hunt.services.scan as scan_module
@@ -50,38 +51,41 @@ def test_new_tiers_are_scanned_with_the_right_title_filter(tmp_path: Path, monke
     assert any(w.startswith("workpei: 2 failed request(s)") for w in result.errors)
 
 
-def test_a_province_code_field_places_a_posting_in_canada() -> None:
-    """The Alberta board writes "Taber, AB" and bare "AB"; neither names a
-    place the Canada gate knew, so a third of the board was dropped."""
+# The Canada gate over province codes. Round-2 review 2026-09-27; the rule is
+# cost-asymmetric: a foreign posting let through costs one read, a Canadian one
+# dropped is lost for good, so doubt resolves to accept.
+CANADIAN = [
+    "Taber, AB", "AB", "Lethbridge County, AB", "Truro, NS, Canada", "Taber, AB, CA",
+    "Prince Albert, SK", "Swift Current, SK S9H 0A1", "Summerside, PE", "Summerside, PE, CA",
+    "Summerside, PE C1N 1A1", "Corner Brook, NL", "Gander, NL", "Corner Brook, NL, CA",
+    "Hay River, NT", "Dawson City, YT", "Rankin Inlet, NU", "Cobourg, ON, K9A 4J9",
+    "Truro, NS, B2N 1A1", "Toronto, ON, Canada, Remote", "Vancouver, BC, Canada, Hybrid",
+    "Taber, AB T1G 2C9", "London, ON", "St. John's, NL", "Moncton, NB, Canada",
+    "Whitehorse, YT", "Regina, SK", "Lethbridge County, AB T1J4L1, Canada",
+    "Toronto, CA", "Toronto, ON / New York, NY", "Toronto, ON, North America",
+    "Remote US/Canada",
+]
+FOREIGN = [
+    "Amsterdam, NL", "Amsterdam, NL, Netherlands", "Bratislava, SK", "Lima, PE",
+    "Darwin, NT, Australia", "Monterrey, NL, Mexico", "Tijuana, BC, Mexico",
+    "Munich, BC, Germany", "Vancouver, BC, United States", "Munich, BC, CA - United States",
+    "Waterloo, IA", "Waterloo, IA, United States", "Austin, TX", "Seattle, WA",
+    "Austin, TX, US", "Remote, on-site in Boston", "San Francisco, CA",
+]
+
+
+@pytest.mark.parametrize("location", CANADIAN)
+def test_a_canadian_location_passes_the_gate(location) -> None:
     from job_hunt.services.scan import _passes_canada_filter
 
-    for location in ("Taber, AB", "AB", "Lethbridge County, AB", "Truro, NS, Canada"):
-        assert _passes_canada_filter(location) is True
-    for location in ("Seattle, WA", "Austin, TX, US", "Remote, on-site in Boston"):
-        assert _passes_canada_filter(location) is False
+    assert _passes_canada_filter(location) is True
 
 
-def test_a_province_code_that_is_also_foreign_does_not_place_a_posting() -> None:
-    """Review 2026-09-27: the bare-code rule accepted these."""
+@pytest.mark.parametrize("location", FOREIGN)
+def test_a_foreign_location_is_stopped_at_the_gate(location) -> None:
     from job_hunt.services.scan import _passes_canada_filter
 
-    for location in ("Darwin, NT, Australia", "Monterrey, NL, Mexico", "Amsterdam, NL",
-                     "Lima, PE", "Bratislava, SK", "Munich, BC, Germany"):
-        assert _passes_canada_filter(location) is False, location
-    # A code followed by Canada, or a capital placed by name, still passes.
-    for location in ("Taber, AB, CA", "Moncton, NB, Canada", "Whitehorse, YT", "Regina, SK"):
-        assert _passes_canada_filter(location) is True, location
-
-
-def test_a_province_code_followed_by_a_postal_code_places_a_posting() -> None:
-    """Second review 2026-09-27: "Taber, AB T1G 2C9" did not match the rule and
-    Taber is in no place list, so the posting was dropped."""
-    from job_hunt.services.scan import _passes_canada_filter
-
-    assert _passes_canada_filter("Taber, AB T1G 2C9") is True
-    assert _passes_canada_filter("Lethbridge County, AB T1J4L1, Canada") is True
-    # A Canadian city name the blocked list shares with London, England.
-    assert _passes_canada_filter("London, ON") is True
+    assert _passes_canada_filter(location) is False
 
 
 def test_saskjobs_is_filtered_by_job_banks_noc_codes(tmp_path: Path, monkeypatch) -> None:

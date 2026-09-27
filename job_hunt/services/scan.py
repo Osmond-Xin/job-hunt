@@ -25,7 +25,7 @@ from job_hunt.services.getro_boards import scan_getro_boards_source
 from job_hunt.services.gov_boards import scan_gov_boards
 from job_hunt.services.hn_hiring import scan_hn_hiring_source
 from job_hunt.services.regional_boards import scan_regional_boards
-from job_hunt.services.immigration import UNAMBIGUOUS_PROVINCE_CODES
+from job_hunt.services.immigration import AMBIGUOUS_PROVINCE_CODES, UNAMBIGUOUS_PROVINCE_CODES
 from job_hunt.services.immigration import place_tokens as immigration_place_tokens
 from job_hunt.services.jobbank import scan_jobbank
 from job_hunt.services.posted_date import jobbank_date_to_iso
@@ -1278,12 +1278,60 @@ def _record_near_miss(job: ScannedJob) -> None:
 
 
 def _location_matches_canada(location: str) -> bool:
-    """Return true for locations that look viable for Canadian work authorization."""
-    # A province code standing as its own field: the Government of Alberta
-    # board writes "Taber, AB", "Slave Lake, AB" or just "AB", and 38 of its
-    # 130 postings were being discarded here (measured 2026-09-27).
-    if _PROVINCE_FIELD_RE.search(location or ""):
+    """Return true for locations that look viable for Canadian work authorization.
+
+    A location is read place by place ("Toronto, ON / New York, NY" is two).
+    A place whose own fields carry a province code or a US state code is
+    settled by those fields (``_coded_place_verdict``); the rest are read by
+    name, as they always were. Cost asymmetry decides the doubtful cases: a
+    foreign posting let through costs one read, a Canadian one dropped here
+    is never seen again.
+    """
+    places = [p for p in _PLACE_SPLIT_RE.split(location or "") if p.strip()]
+    uncoded: list[str] = []
+    for place in places:
+        verdict = _coded_place_verdict(place)
+        if verdict is True:
+            return True
+        if verdict is None:
+            uncoded.append(place)
+    # Every place was coded foreign: its city name must not re-admit it
+    # ("Vancouver, BC, United States", "Waterloo, IA").
+    if not uncoded:
+        return False
+    return _matches_canada_by_name(" / ".join(uncoded))
+
+
+def _coded_place_verdict(place: str) -> bool | None:
+    """True / False when the place's own fields settle it, None when they don't.
+
+    A province code standing as its own field — "Taber, AB", "Swift Current,
+    SK S9H 0A1", "Cobourg, ON, K9A 4J9" — places it in Canada unless the same
+    place names a foreign country ("Darwin, NT, Australia", "Munich, BC, CA -
+    United States"), or the code is one a foreign place shares and the city is
+    a known collision ("Amsterdam, NL", "Lima, PE"). A US state code as a
+    field ("Waterloo, IA") places it in the US. "CA" is not read as
+    California: "Toronto, CA" is how some boards write Canada.
+    """
+    fields = [f.strip() for f in place.split(",")]
+    province = next(
+        (i for i, f in enumerate(fields) if _PROVINCE_FIELD_RE.fullmatch(f)), None
+    )
+    if province is not None:
+        if _FOREIGN_COUNTRY_RE.search(place):
+            return False
+        code = fields[province][:2]
+        city = " ".join(fields[:province]).lower()
+        if code in AMBIGUOUS_PROVINCE_CODES and city in _FOREIGN_COLLISIONS.get(code, ()):
+            return False
         return True
+    if any(f in _US_STATE_CODES for f in fields[1:]):
+        return False
+    return None
+
+
+def _matches_canada_by_name(location: str) -> bool:
+    """The name-based reading, for places no code settles."""
     value = _compact_location(location)
     if not value:
         return False
@@ -1379,18 +1427,39 @@ def _location_matches_canada(location: str) -> bool:
     return not blocked
 
 
-# Upper case and comma-delimited on purpose: "on" and "ns" are words, and a
-# bare two-letter token elsewhere in a location is more often a US state.
-# The code must be the last field — optionally with a postal code ("Taber, AB
-# T1G 2C9") — or be followed only by Canada, so a named foreign country always
-# wins. The ambiguous codes (immigration.AMBIGUOUS_PROVINCE_CODES) are left out:
-# "Darwin, NT, Australia" and "Amsterdam, NL" must not pass; those provinces'
-# capitals are placed by name. This rule deliberately comes before the blocked
-# list, which names cities that exist in Ontario too ("London, ON").
+# One place of a multi-place location. " or " is left alone: it also appears
+# inside a single place ("Toronto or Remote").
+_PLACE_SPLIT_RE = re.compile(r"\s*(?:/|;|\|)\s*")
+# A whole comma field: a province code, optionally with its postal code.
+# Upper case on purpose: "on" and "ns" are words.
 _PROVINCE_FIELD_RE = re.compile(
-    r"(?:^|,)\s*(?:" + "|".join(sorted(UNAMBIGUOUS_PROVINCE_CODES)) + r")"
-    r"(?:\s+[A-Z]\d[A-Z]\s?\d[A-Z]\d)?\s*(?:,\s*(?:CA|CAN|Canada)\b[^,]*)?$"
+    r"(?:" + "|".join(sorted(UNAMBIGUOUS_PROVINCE_CODES | AMBIGUOUS_PROVINCE_CODES)) + r")"
+    r"(?:\s+[A-Z]\d[A-Z]\s?\d[A-Z]\d)?"
 )
+# Excludes CA, which some boards use for Canada.
+_US_STATE_CODES = frozenset(
+    "AL AK AZ AR CO CT DE FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV "
+    "NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY DC".split()
+)
+_FOREIGN_COUNTRY_RE = re.compile(
+    r"\b(?:united states|mexico|m[eé]xico|netherlands|australia|germany|"
+    r"slovakia|peru|united kingdom|england|france|india|ireland|spain|poland|japan|"
+    r"singapore|brazil|niue|mayotte)\b|(?-i:\b(?:US|USA|UK)\b)",
+    re.I,
+)
+# Cities that share an ambiguous province code with a foreign region. Checked
+# against the city field only, so "London, ON" can never be caught by it.
+# Deliberately short: a collision missing here costs one read, and a Canadian
+# town wrongly listed here would be lost for good.
+_FOREIGN_COLLISIONS = {
+    "NL": ("amsterdam", "rotterdam", "the hague", "utrecht", "eindhoven",
+           "monterrey", "san pedro garza garcia"),
+    "SK": ("bratislava", "kosice", "košice"),
+    "PE": ("lima", "arequipa", "cusco", "trujillo"),
+    "NT": ("darwin", "alice springs", "palmerston"),
+    "NU": ("alofi",),
+    "YT": ("mamoudzou",),
+}
 
 _EXPLICIT_CANADA_RE = re.compile(
     r"\b(canada|canadian|ontario|quebec|qu[eé]bec|alberta|manitoba|saskatchewan|yukon|nunavut|"

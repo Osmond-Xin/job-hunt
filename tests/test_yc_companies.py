@@ -74,6 +74,9 @@ def test_postings_are_read_from_the_escaped_page_props():
         ("Amsterdam, NL", ""),
         ("Bratislava, SK", ""),
         ("Austin, TX", None),
+        # Round 2: "City, CA" is deferred, not dropped — the gate reads the city.
+        ("Toronto, CA", ""),
+        ("San Francisco, CA", ""),
     ],
 )
 def test_a_location_is_placed_by_its_country_codes(location, expected):

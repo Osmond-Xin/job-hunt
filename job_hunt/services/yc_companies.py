@@ -110,7 +110,9 @@ def canadian_location(location: str) -> str | None:
             # places Canadian capitals by name.
             if parts[1] in UNAMBIGUOUS_PROVINCE_CODES:
                 return f"{place}, Canada"
-            if parts[1] in AMBIGUOUS_PROVINCE_CODES:
+            # "CA" here is Canada as often as California ("Toronto, CA"), so it
+            # is deferred too; the gate reads the city.
+            if parts[1] in AMBIGUOUS_PROVINCE_CODES or parts[1] == "CA":
                 uncoded = True
         else:
             uncoded = True
