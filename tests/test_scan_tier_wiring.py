@@ -75,7 +75,13 @@ CANADIAN = [
     "Caraquet, Nouveau-Brunswick", "Nouvelle-Écosse", "Cobourg, ON k9a 4j9",
     "Bedford / London", "Dartmouth; New York", "Remote (US/CA)", "US/CA", "CA/US", "   ",
     # Accepted on purpose: BC is Canadian evidence and a doubtful row costs one read.
-    "Vancouver, BC, United States", "Munich, BC, Germany",
+    "Vancouver, BC, United States", "Munich, BC, Germany", "Munich, BC, CA - United States",
+    "Mexico City, NL",
+    # Round 4: a code is a whole field, never the first word of one.
+    "Toronto, IN PERSON", "Vancouver, IN PERSON", "Toronto, IN OFFICE", "Toronto, OR Remote",
+    "Calgary, NE", "CA-ON-Whitby", "CA-BC-Burnaby", "CA-AB-Canmore", "CA-QC-Sherbrooke",
+    # Explicit Canadian evidence beats a collision city (only Baja overrides BC).
+    "Amsterdam, NL, Canada", "Darwin, NT, Toronto, ON",
 ]
 FOREIGN = [
     "Waterloo, IA", "Waterloo, IA 50701", "Vancouver, WA 98660", "Amsterdam, NL",
@@ -83,6 +89,11 @@ FOREIGN = [
     "Monterrey, NL, Mexico", "Tijuana, BC, Mexico", "Austin, TX", "Waterloo, IA, United States",
     "Seattle, WA", "Austin, TX, US", "Remote, on-site in Boston", "San Francisco, CA",
     "Lima (PE)", "Amsterdam (NL)",
+    # Round 4.
+    "San Francisco, CA (ON-SITE)", "Austin, TX (ON-SITE)", "New York, NY (ON-SITE)",
+    "London, UK (ON SITE)", "San Francisco, CA, ON SITE", "Austin, TX, ON SITE",
+    "(Remote) Amsterdam (NL)", "(Remote) Tijuana (BC)", "Tijuana, Mexico (BC)",
+    "Amsterdam (HQ), NL",
 ]
 
 

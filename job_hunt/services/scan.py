@@ -1293,47 +1293,59 @@ def _location_matches_canada(location: str) -> bool:
 
 
 def _place_is_canadian(place: str) -> bool:
-    """One place, in three steps.
+    """One place, in four steps.
 
-    1. Canadian evidence accepts, whatever else the place names: an
-       unambiguous province code field (AB BC MB NB NS ON QC, postal code or
-       trailing words allowed), a bracketed code ("Burnaby (BC) - Remote"), a
+    A code is only ever read from a whole field ("Taber, AB"), a code plus a
+    Canadian postal code ("Cobourg, ON k9a 4j9"), a closed bracket ("Burnaby
+    (BC)", "(BC/Colombie-Britannique)") or the ISO form "CA-ON-Whitby" —
+    never from the first word of a field, which read "ON-SITE" as Ontario
+    and "IN PERSON" as Indiana.
+
+    1. Baja California: BC with a Baja city ("Tijuana, BC") is Mexico.
+    2. Canadian evidence accepts, whatever else the place names: an
+       unambiguous province code (AB BC MB NB NS ON QC), a CA-<code>, a
        province named in English or French, a Canadian postal code, the word
        Canada, or a place that is only "CA" / "CAN" ("US/CA"). So "Toronto,
-       ON, Canada and US" and "Montreal, QC, Paris, France" pass — and so do
-       "Vancouver, BC, United States" and "Munich, BC, Germany", which is
-       accepted on purpose: a doubtful row costs one read. The one exception is
-       a city known to share a code with a foreign region ("Tijuana, BC" is
-       Baja California), which is not doubtful.
-    2. Otherwise a foreign signal outside the city field vetoes: a foreign
-       country ("Darwin, NT, Australia"), a US state code opening a field
-       ("Waterloo, IA 50701"), or a known collision city ("Amsterdam, NL").
-       The city field is exempt so "New Germany, NS" is never read as Germany.
-    3. Otherwise an ambiguous code (NL SK PE NT NU YT, bare or bracketed) is
-       enough ("Corner Brook, NL", "Swift Current (SK) - Hybrid"), and a place
-       with none is read by name, as it always was.
+       ON, Canada and US", "Amsterdam, NL, Canada" and "Darwin, NT, Toronto,
+       ON" pass — and so do "Vancouver, BC, United States" and "Munich, BC,
+       CA - United States", on purpose: a doubtful row costs one read.
+    3. Otherwise a foreign signal outside the city field vetoes: a foreign
+       country ("Darwin, NT, Australia"), a US state code as a whole field or
+       with its ZIP ("Waterloo, IA 50701"), or an ambiguous code with a known
+       collision city ("Amsterdam, NL"). The city field is exempt, so "New
+       Germany, NS" and "Mexico City, NL" are not read as foreign.
+    4. Otherwise an ambiguous code (NL SK PE NT NU YT) is enough ("Corner
+       Brook, NL", "Swift Current (SK) - Hybrid"), and a place with none is
+       read by name, as it always was.
     """
     fields = [f.strip() for f in place.split(",")]
-    city = fields[0].lower()
-    bracketed = _BRACKETED_CODE_RE.findall(place)
-    codes = [f.split()[0] for f in fields if f.split() and f.split()[0] in _ALL_PROVINCE_CODES]
-    codes += bracketed
-    bracket_city = place[: place.index("(")].strip().lower() if bracketed else city
-    for code in codes:
-        if (bracket_city if code in bracketed else city) in _FOREIGN_COLLISIONS.get(code, ()):
-            return False
-    if any(code in UNAMBIGUOUS_PROVINCE_CODES for code in codes):
-        return True
-    if _CANADIAN_EVIDENCE_RE.search(place) or place.strip(" ()").upper() in ("CA", "CAN"):
-        return True
-    rest = ", ".join(fields[1:])
-    if _FOREIGN_COUNTRY_RE.search(rest):
+    city = _collision_city(place)
+    codes = [m.group(1) for f in fields if (m := _CODE_FIELD_RE.fullmatch(f))]
+    codes += _BRACKETED_CODE_RE.findall(place)
+    if "BC" in codes and city in _FOREIGN_COLLISIONS["BC"]:
         return False
-    if any(f.split() and f.split()[0] in _US_STATE_CODES for f in fields[1:]):
+    if (
+        any(code in UNAMBIGUOUS_PROVINCE_CODES for code in codes)
+        or _ISO_CANADA_RE.search(place)
+        or _CANADIAN_EVIDENCE_RE.search(place)
+        or place.strip(" ()").upper() in ("CA", "CAN")
+    ):
+        return True
+    if _FOREIGN_COUNTRY_RE.search(", ".join(fields[1:])):
+        return False
+    if any(_US_STATE_FIELD_RE.fullmatch(f) for f in fields[1:]):
+        return False
+    if any(city in _FOREIGN_COLLISIONS.get(code, ()) for code in codes):
         return False
     if codes:
         return True
     return _matches_canada_by_name(place)
+
+
+def _collision_city(place: str) -> str:
+    """The city a collision list is checked against: the first field, with
+    bracketed qualifiers removed ("(Remote) Amsterdam (NL)", "Amsterdam (HQ)")."""
+    return re.sub(r"\([^)]*\)?", " ", place).split(",")[0].strip().lower()
 
 
 def _matches_canada_by_name(location: str) -> bool:
@@ -1437,8 +1449,15 @@ def _matches_canada_by_name(location: str) -> bool:
 # inside a single place ("Toronto or Remote").
 _PLACE_SPLIT_RE = re.compile(r"\s*(?:/|;|\|)\s*")
 _ALL_PROVINCE_CODES = UNAMBIGUOUS_PROVINCE_CODES | AMBIGUOUS_PROVINCE_CODES
-# "(BC)", "(BC/Colombie-Britannique)", "(SK) - Hybrid" — anywhere in the place.
-_BRACKETED_CODE_RE = re.compile(r"\((" + "|".join(sorted(_ALL_PROVINCE_CODES)) + r")\b")
+_CODE_ALT = "|".join(sorted(_ALL_PROVINCE_CODES))
+_POSTAL = r"[ABCEGHJ-NPRSTVXY]\d[ABCEGHJ-NPRSTV-Z]\s?\d[ABCEGHJ-NPRSTV-Z]\d"
+# A whole field: the code alone, or the code and a postal code (any case).
+_CODE_FIELD_RE = re.compile(r"(" + _CODE_ALT + r")(?:\s+(?i:" + _POSTAL + r"))?")
+# "(BC)", "(BC/Colombie-Britannique)"; also "(BC" at the end of a place,
+# which is what splitting "(BC/Colombie-Britannique)" on "/" leaves.
+_BRACKETED_CODE_RE = re.compile(r"\((" + _CODE_ALT + r")(?=[)/]|\s*$)")
+# ISO 3166-2, as Oracle and Taleo write it: "CA-ON-Whitby".
+_ISO_CANADA_RE = re.compile(r"\bCA-(?:" + _CODE_ALT + r")\b")
 _CANADIAN_EVIDENCE_RE = re.compile(
     r"\bcanada\b|"
     r"\b(?:alberta|british columbia|manitoba|new brunswick|newfoundland|nova scotia|ontario|"
@@ -1446,13 +1465,18 @@ _CANADIAN_EVIDENCE_RE = re.compile(
     r"colombie-britannique|nouveau-brunswick|terre-neuve|nouvelle-[eé]cosse|"
     r"[iî]le-du-prince-[eé]douard|territoires du nord-ouest)\b|"
     # Canadian postal code: no D F I O Q U, and never W or Z first.
-    r"\b[ABCEGHJ-NPRSTVXY]\d[ABCEGHJ-NPRSTV-Z]\s?\d[ABCEGHJ-NPRSTV-Z]\d\b",
+    r"\b" + _POSTAL + r"\b",
     re.I,
 )
-# Excludes CA, which some boards use for Canada.
+# Excludes CA, which some boards use for Canada, and NE, which is also a
+# Calgary quadrant ("Calgary, NE"); "Omaha, NE" still fails, by name.
 _US_STATE_CODES = frozenset(
-    "AL AK AZ AR CO CT DE FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV "
+    "AL AK AZ AR CO CT DE FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NV "
     "NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY DC".split()
+)
+# A whole field: the state code alone, or with its ZIP ("IA 50701").
+_US_STATE_FIELD_RE = re.compile(
+    r"(?:" + "|".join(sorted(_US_STATE_CODES)) + r")(?:\s+\d{5}(?:-\d{4})?)?"
 )
 _FOREIGN_COUNTRY_RE = re.compile(
     r"\b(?:united states|mexico|m[eé]xico|netherlands|australia|germany|"
