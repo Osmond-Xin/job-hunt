@@ -1273,6 +1273,11 @@ def _record_near_miss(job: ScannedJob) -> None:
 
 def _location_matches_canada(location: str) -> bool:
     """Return true for locations that look viable for Canadian work authorization."""
+    # A province code standing as its own field: the Government of Alberta
+    # board writes "Taber, AB", "Slave Lake, AB" or just "AB", and 38 of its
+    # 130 postings were being discarded here (measured 2026-09-27).
+    if _PROVINCE_FIELD_RE.search(location or ""):
+        return True
     value = _compact_location(location)
     if not value:
         return False
@@ -1367,6 +1372,10 @@ def _location_matches_canada(location: str) -> bool:
         return True
     return not blocked
 
+
+# Upper case and comma-delimited on purpose: "on" and "ns" are words, and a
+# bare two-letter token elsewhere in a location is more often a US state.
+_PROVINCE_FIELD_RE = re.compile(r"(?:^|,)\s*(?:AB|BC|MB|NB|NL|NS|NT|NU|ON|PE|QC|SK|YT)\s*(?:,|$)")
 
 _EXPLICIT_CANADA_RE = re.compile(
     r"\b(canada|canadian|ontario|quebec|qu[eé]bec|alberta|manitoba|saskatchewan|yukon|nunavut|"

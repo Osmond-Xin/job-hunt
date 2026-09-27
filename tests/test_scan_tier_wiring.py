@@ -50,6 +50,17 @@ def test_new_tiers_are_scanned_with_the_right_title_filter(tmp_path: Path, monke
     assert any(w.startswith("workpei: 2 failed request(s)") for w in result.errors)
 
 
+def test_a_province_code_field_places_a_posting_in_canada() -> None:
+    """The Alberta board writes "Taber, AB" and bare "AB"; neither names a
+    place the Canada gate knew, so a third of the board was dropped."""
+    from job_hunt.services.scan import _passes_canada_filter
+
+    for location in ("Taber, AB", "AB", "Lethbridge County, AB", "Truro, NS, Canada"):
+        assert _passes_canada_filter(location) is True
+    for location in ("Seattle, WA", "Austin, TX, US", "Remote, on-site in Boston"):
+        assert _passes_canada_filter(location) is False
+
+
 def test_saskjobs_is_filtered_by_job_banks_noc_codes(tmp_path: Path, monkeypatch) -> None:
     portals = tmp_path / "portals.yml"
     portals.write_text(
