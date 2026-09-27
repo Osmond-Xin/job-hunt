@@ -867,7 +867,10 @@ def _passes_canada_filter(location: str) -> bool:
     already Canada/location-scoped — otherwise the entire tier-2/3 discovery
     stream is silently dropped in default (Canada-only) mode.
     """
-    return not location or _location_matches_canada(location)
+    # Not a string, or only whitespace: unknown, which is accepted like "".
+    if not isinstance(location, str) or not location.strip():
+        return True
+    return _location_matches_canada(location)
 
 
 def scan_via_websearch(
@@ -1280,59 +1283,57 @@ def _record_near_miss(job: ScannedJob) -> None:
 def _location_matches_canada(location: str) -> bool:
     """Return true for locations that look viable for Canadian work authorization.
 
-    A location is read place by place ("Toronto, ON / New York, NY" is two).
-    A place whose own fields carry a province code or a US state code is
-    settled by those fields (``_coded_place_verdict``); the rest are read by
-    name, as they always were. Cost asymmetry decides the doubtful cases: a
-    foreign posting let through costs one read, a Canadian one dropped here
-    is never seen again.
+    Read place by place ("Toronto, ON / New York, NY" is two); any accepted
+    place accepts the posting. Cost asymmetry decides every doubtful case: a
+    foreign posting let through costs one read, a Canadian one dropped here is
+    never seen again.
     """
     places = [p for p in _PLACE_SPLIT_RE.split(location or "") if p.strip()]
-    uncoded: list[str] = []
-    for place in places:
-        verdict = _coded_place_verdict(place)
-        if verdict is True:
-            return True
-        if verdict is None:
-            uncoded.append(place)
-    # Every place was coded foreign: its city name must not re-admit it
-    # ("Vancouver, BC, United States", "Waterloo, IA").
-    if not uncoded:
-        return False
-    return _matches_canada_by_name(" / ".join(uncoded))
+    return any(_place_is_canadian(place) for place in places)
 
 
-def _coded_place_verdict(place: str) -> bool | None:
-    """True / False when the place's own fields settle it, None when they don't.
+def _place_is_canadian(place: str) -> bool:
+    """One place, in three steps.
 
-    A province code standing as its own field — "Taber, AB", "Swift Current,
-    SK S9H 0A1", "Cobourg, ON, K9A 4J9" — places it in Canada unless the same
-    place names a foreign country ("Darwin, NT, Australia", "Munich, BC, CA -
-    United States"), or the code is one a foreign place shares and the city is
-    a known collision ("Amsterdam, NL", "Lima, PE"). A US state code as a
-    field ("Waterloo, IA") places it in the US. "CA" is not read as
-    California: "Toronto, CA" is how some boards write Canada.
+    1. Canadian evidence accepts, whatever else the place names: an
+       unambiguous province code field (AB BC MB NB NS ON QC, postal code or
+       trailing words allowed), a bracketed code ("Burnaby (BC) - Remote"), a
+       province named in English or French, a Canadian postal code, the word
+       Canada, or a place that is only "CA" / "CAN" ("US/CA"). So "Toronto,
+       ON, Canada and US" and "Montreal, QC, Paris, France" pass — and so do
+       "Vancouver, BC, United States" and "Munich, BC, Germany", which is
+       accepted on purpose: a doubtful row costs one read. The one exception is
+       a city known to share a code with a foreign region ("Tijuana, BC" is
+       Baja California), which is not doubtful.
+    2. Otherwise a foreign signal outside the city field vetoes: a foreign
+       country ("Darwin, NT, Australia"), a US state code opening a field
+       ("Waterloo, IA 50701"), or a known collision city ("Amsterdam, NL").
+       The city field is exempt so "New Germany, NS" is never read as Germany.
+    3. Otherwise an ambiguous code (NL SK PE NT NU YT, bare or bracketed) is
+       enough ("Corner Brook, NL", "Swift Current (SK) - Hybrid"), and a place
+       with none is read by name, as it always was.
     """
     fields = [f.strip() for f in place.split(",")]
-    province = next(
-        (i for i, f in enumerate(fields) if _PROVINCE_FIELD_RE.fullmatch(f)), None
-    )
-    # Job Bank's form, "Burnaby (BC)": the code in brackets after the city.
-    # Read as "Burnaby, BC" — 214 of 580 Job Bank rows were dropped without it.
-    bracketed = _BRACKETED_PROVINCE_RE.search(place) if province is None else None
-    if province is not None or bracketed is not None:
-        if _FOREIGN_COUNTRY_RE.search(place):
+    city = fields[0].lower()
+    bracketed = _BRACKETED_CODE_RE.findall(place)
+    codes = [f.split()[0] for f in fields if f.split() and f.split()[0] in _ALL_PROVINCE_CODES]
+    codes += bracketed
+    bracket_city = place[: place.index("(")].strip().lower() if bracketed else city
+    for code in codes:
+        if (bracket_city if code in bracketed else city) in _FOREIGN_COLLISIONS.get(code, ()):
             return False
-        if bracketed is not None:
-            code, city = bracketed.group("code"), place[: bracketed.start()].strip().lower()
-        else:
-            code, city = fields[province][:2], " ".join(fields[:province]).lower()
-        if code in AMBIGUOUS_PROVINCE_CODES and city in _FOREIGN_COLLISIONS.get(code, ()):
-            return False
+    if any(code in UNAMBIGUOUS_PROVINCE_CODES for code in codes):
         return True
-    if any(f in _US_STATE_CODES for f in fields[1:]):
+    if _CANADIAN_EVIDENCE_RE.search(place) or place.strip(" ()").upper() in ("CA", "CAN"):
+        return True
+    rest = ", ".join(fields[1:])
+    if _FOREIGN_COUNTRY_RE.search(rest):
         return False
-    return None
+    if any(f.split() and f.split()[0] in _US_STATE_CODES for f in fields[1:]):
+        return False
+    if codes:
+        return True
+    return _matches_canada_by_name(place)
 
 
 def _matches_canada_by_name(location: str) -> bool:
@@ -1435,14 +1436,18 @@ def _matches_canada_by_name(location: str) -> bool:
 # One place of a multi-place location. " or " is left alone: it also appears
 # inside a single place ("Toronto or Remote").
 _PLACE_SPLIT_RE = re.compile(r"\s*(?:/|;|\|)\s*")
-# A whole comma field: a province code, optionally with its postal code.
-# Upper case on purpose: "on" and "ns" are words.
-_PROVINCE_FIELD_RE = re.compile(
-    r"(?:" + "|".join(sorted(UNAMBIGUOUS_PROVINCE_CODES | AMBIGUOUS_PROVINCE_CODES)) + r")"
-    r"(?:\s+[A-Z]\d[A-Z]\s?\d[A-Z]\d)?"
-)
-_BRACKETED_PROVINCE_RE = re.compile(
-    r"\((?P<code>" + "|".join(sorted(UNAMBIGUOUS_PROVINCE_CODES | AMBIGUOUS_PROVINCE_CODES)) + r")\)\s*$"
+_ALL_PROVINCE_CODES = UNAMBIGUOUS_PROVINCE_CODES | AMBIGUOUS_PROVINCE_CODES
+# "(BC)", "(BC/Colombie-Britannique)", "(SK) - Hybrid" — anywhere in the place.
+_BRACKETED_CODE_RE = re.compile(r"\((" + "|".join(sorted(_ALL_PROVINCE_CODES)) + r")\b")
+_CANADIAN_EVIDENCE_RE = re.compile(
+    r"\bcanada\b|"
+    r"\b(?:alberta|british columbia|manitoba|new brunswick|newfoundland|nova scotia|ontario|"
+    r"prince edward island|qu[eé]bec|saskatchewan|yukon|northwest territories|nunavut|"
+    r"colombie-britannique|nouveau-brunswick|terre-neuve|nouvelle-[eé]cosse|"
+    r"[iî]le-du-prince-[eé]douard|territoires du nord-ouest)\b|"
+    # Canadian postal code: no D F I O Q U, and never W or Z first.
+    r"\b[ABCEGHJ-NPRSTVXY]\d[ABCEGHJ-NPRSTV-Z]\s?\d[ABCEGHJ-NPRSTV-Z]\d\b",
+    re.I,
 )
 # Excludes CA, which some boards use for Canada.
 _US_STATE_CODES = frozenset(
@@ -1455,11 +1460,12 @@ _FOREIGN_COUNTRY_RE = re.compile(
     r"singapore|brazil|niue|mayotte)\b|(?-i:\b(?:US|USA|UK)\b)",
     re.I,
 )
-# Cities that share an ambiguous province code with a foreign region. Checked
-# against the city field only, so "London, ON" can never be caught by it.
-# Deliberately short: a collision missing here costs one read, and a Canadian
-# town wrongly listed here would be lost for good.
+# Cities that share a province code with a foreign region. Checked against the
+# city field only, so "London, ON" can never be caught by it. Deliberately
+# short: a collision missing here costs one read, and a Canadian town wrongly
+# listed here would be lost for good.
 _FOREIGN_COLLISIONS = {
+    "BC": ("tijuana", "mexicali", "ensenada", "tecate", "rosarito"),
     "NL": ("amsterdam", "rotterdam", "the hague", "utrecht", "eindhoven",
            "monterrey", "san pedro garza garcia"),
     "SK": ("bratislava", "kosice", "košice"),

@@ -66,13 +66,22 @@ CANADIAN = [
     "Remote US/Canada",
     # Job Bank writes the province in brackets (smoke run 2026-09-27).
     "Burnaby (BC)", "Etobicoke (ON)", "Gatineau (QC)", "Elmsdale (NS)", "Hay River (NT)",
+    # Round 3: Canadian evidence is not vetoed by foreign words beside it.
+    "New Germany, NS", "New Germany, NS, Canada", "Toronto, ON, Canada and US",
+    "Toronto, ON, Canada & US", "Remote (US and Canada), Toronto, ON",
+    "Toronto, ON, Boston, MA, United States", "Montreal, QC, Paris, France",
+    "Calgary, Alberta, NE", "Toronto, OR, Canada", "Burnaby (BC) - Remote", "Burnaby (BC), Remote",
+    "Swift Current (SK) - Hybrid", "Burnaby (BC/Colombie-Britannique)",
+    "Caraquet, Nouveau-Brunswick", "Nouvelle-Écosse", "Cobourg, ON k9a 4j9",
+    "Bedford / London", "Dartmouth; New York", "Remote (US/CA)", "US/CA", "CA/US", "   ",
+    # Accepted on purpose: BC is Canadian evidence and a doubtful row costs one read.
+    "Vancouver, BC, United States", "Munich, BC, Germany",
 ]
 FOREIGN = [
-    "Amsterdam, NL", "Amsterdam, NL, Netherlands", "Bratislava, SK", "Lima, PE",
-    "Darwin, NT, Australia", "Monterrey, NL, Mexico", "Tijuana, BC, Mexico",
-    "Munich, BC, Germany", "Vancouver, BC, United States", "Munich, BC, CA - United States",
-    "Waterloo, IA", "Waterloo, IA, United States", "Austin, TX", "Seattle, WA",
-    "Austin, TX, US", "Remote, on-site in Boston", "San Francisco, CA",
+    "Waterloo, IA", "Waterloo, IA 50701", "Vancouver, WA 98660", "Amsterdam, NL",
+    "Amsterdam, NL, Netherlands", "Bratislava, SK", "Lima, PE", "Darwin, NT, Australia",
+    "Monterrey, NL, Mexico", "Tijuana, BC, Mexico", "Austin, TX", "Waterloo, IA, United States",
+    "Seattle, WA", "Austin, TX, US", "Remote, on-site in Boston", "San Francisco, CA",
     "Lima (PE)", "Amsterdam (NL)",
 ]
 
@@ -89,6 +98,13 @@ def test_a_foreign_location_is_stopped_at_the_gate(location) -> None:
     from job_hunt.services.scan import _passes_canada_filter
 
     assert _passes_canada_filter(location) is False
+
+
+@pytest.mark.parametrize("location", [None, 42, ["Toronto"]])
+def test_a_location_that_is_not_text_is_unknown_and_accepted(location) -> None:
+    from job_hunt.services.scan import _passes_canada_filter
+
+    assert _passes_canada_filter(location) is True
 
 
 def test_saskjobs_is_filtered_by_job_banks_noc_codes(tmp_path: Path, monkeypatch) -> None:
