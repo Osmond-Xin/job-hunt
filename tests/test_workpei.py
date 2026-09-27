@@ -52,6 +52,20 @@ def test_a_filled_posting_is_dropped():
     assert parse_listing({**OWN_ROW, "meta": {"_filled": 1}}) is None
 
 
+def test_the_filled_flag_is_read_whatever_its_serialised_type():
+    """Review 2026-09-27: bool("0") is True, so a string flag would have
+    dropped every open posting."""
+    for flag in ("1", True, "true"):
+        assert parse_listing({**OWN_ROW, "meta": {"_filled": flag}}) is None
+    for flag in ("0", 0, False, "", None):
+        assert parse_listing({**OWN_ROW, "meta": {"_filled": flag}}) is not None
+
+
+def test_markup_in_a_rendered_title_is_stripped():
+    row = parse_listing({**OWN_ROW, "title": {"rendered": "<em>Data</em> Analyst &amp; Developer"}})
+    assert row["title"] == "Data Analyst & Developer"
+
+
 def test_the_sweep_stops_at_the_advertised_page_count():
     seen: list[dict[str, str]] = []
 

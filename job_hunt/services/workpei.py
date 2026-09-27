@@ -38,14 +38,22 @@ API = "https://workpei.ca/wp-json/wp/v2/job-listings"
 _FIELDS = "id,date,link,title,meta,class_list"
 _PUBLIC_SERVICE = "source-pei-public-service"
 _USER_AGENT = "Mozilla/5.0 (compatible; job-hunt/0.1; personal job search)"
+_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def _is_filled(value: Any) -> bool:
+    """``_filled`` is the integer 0 or 1 in the live payload; a WordPress
+    plugin can serialise it as "0" / "1" instead, and ``bool("0")`` is True."""
+    return str(value).strip().lower() in {"1", "true"}
 
 
 def parse_listing(item: dict[str, Any]) -> dict[str, str] | None:
     """A pipeline row from one REST item, or None for a filled posting."""
     meta = item.get("meta") or {}
-    if meta.get("_filled"):
+    if _is_filled(meta.get("_filled")):
         return None
-    title = html.unescape(str((item.get("title") or {}).get("rendered") or "")).strip()
+    rendered = str((item.get("title") or {}).get("rendered") or "")
+    title = html.unescape(_TAG_RE.sub(" ", rendered)).strip()
     company = str(meta.get("_company_name") or "").strip()
     if _PUBLIC_SERVICE in (item.get("class_list") or []):
         parts = [part.strip() for part in re.split(r"\s+[–-]\s+", title)]
