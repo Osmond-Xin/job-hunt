@@ -72,7 +72,7 @@ def _oracle_reader(employer: dict[str, Any]):
         payload = fetch_requisitions(
             client, base, site, offset=page * MAX_PAGE_SIZE, limit=MAX_PAGE_SIZE
         )
-        if payload is None:
+        if payload is None or not isinstance(payload.get("items"), list):
             return None
         rows = parse_requisitions(payload, base=base, site=site, company="")
         return rows, requisitions_total(payload)
@@ -93,8 +93,11 @@ def _jibe_reader(employer: dict[str, Any]):
             payload = response.json()
         except (httpx.HTTPError, ValueError):
             return None
+        # A 200 without the list is a changed API, not a board with no jobs.
+        if not isinstance(payload, dict) or not isinstance(payload.get("jobs"), list):
+            return None
         rows = []
-        for job in payload.get("jobs") or []:
+        for job in payload["jobs"]:
             data = job.get("data") or {}
             slug = str(data.get("slug") or data.get("req_id") or "").strip()
             if not slug:
@@ -112,6 +115,20 @@ def _jibe_reader(employer: dict[str, Any]):
         return rows, int(payload.get("totalCount") or 0)
 
     return read
+
+
+def _ukg_location(locations: list[dict[str, Any]]) -> str:
+    """The Canadian location when the posting lists one, else the first.
+
+    A posting may list several; keeping only the first dropped a
+    Boston-and-Toronto posting at the Canada gate.
+    """
+    addresses = [(loc or {}).get("Address") or {} for loc in locations]
+    canadian = [a for a in addresses if (a.get("Country") or {}).get("Code") in ("CAN", "CA")]
+    address = (canadian or addresses or [{}])[0]
+    place = [address.get("City"), (address.get("State") or {}).get("Name"),
+             (address.get("Country") or {}).get("Name")]
+    return ", ".join(str(part) for part in place if part)
 
 
 def _ukg_reader(employer: dict[str, Any]):
@@ -140,19 +157,18 @@ def _ukg_reader(employer: dict[str, Any]):
             payload = response.json()
         except (httpx.HTTPError, ValueError):
             return None
+        if not isinstance(payload, dict) or not isinstance(payload.get("opportunities"), list):
+            return None
         rows = []
-        for item in payload.get("opportunities") or []:
+        for item in payload["opportunities"]:
             job_id = str(item.get("Id") or "").strip()
             if not job_id:
                 continue
-            address = ((item.get("Locations") or [{}])[0] or {}).get("Address") or {}
-            place = [address.get("City"), (address.get("State") or {}).get("Name"),
-                     (address.get("Country") or {}).get("Name")]
             rows.append(
                 {
                     "url": f"{board}/OpportunityDetail?opportunityId={job_id}",
                     "title": str(item.get("Title") or "").strip(),
-                    "location": ", ".join(str(part) for part in place if part),
+                    "location": _ukg_location(item.get("Locations") or []),
                     "posted": str(item.get("PostedDate") or "")[:10],
                 }
             )
@@ -223,7 +239,8 @@ def scan_employer_boards_source(
     """Every configured employer's whole board, as one source.
 
     Each board is walked until its advertised total is reached, a page brings
-    nothing new, or ``max_pages`` runs out — the last is ``truncated``. An
+    nothing new, or ``max_pages`` runs out — the last is ``truncated``, and
+    ending below the advertised total any other way is ``incomplete``. An
     entry whose platform or URL cannot be read counts as an error, so a typo
     in portals.yml is not mistaken for an employer with no openings.
     """
@@ -244,6 +261,7 @@ def scan_employer_boards_source(
     errors = 0
     advertised = 0
     truncated = False
+    incomplete = False
     first = True
     try:
         for employer in employers:
@@ -283,6 +301,12 @@ def scan_employer_boards_source(
                     break
             else:
                 truncated = True
+                advertised += total
+                continue
+            # Ended on an empty or repeated page, or a failed one, below the
+            # board's own count: rows were missed.
+            if total and len(board_urls) < total:
+                incomplete = True
             advertised += total
     finally:
         if owns_client:
@@ -297,5 +321,6 @@ def scan_employer_boards_source(
             advertised=advertised or None,
             truncated=truncated,
             errors=errors,
+            incomplete=incomplete,
         ),
     )

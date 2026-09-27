@@ -232,6 +232,58 @@ def test_an_hrsmart_first_page_with_no_rows_is_an_error():
     assert result.postings == [] and result.health.errors == 1
 
 
+# --- review round 1, 2026-09-27 ----------------------------------------------
+
+
+def test_a_repeated_page_below_the_advertised_total_is_incomplete():
+    """250 advertised, 100 returned, then the same 100 again: the walk stops
+    on the repeat, but the missing 150 must be said, not read as healthy."""
+    page = {"totalCount": 250, "jobs": [
+        {"data": {"slug": str(i), "title": f"Analyst {i}"}} for i in range(100)]}
+    result = _scan(
+        _config({"name": "City of Thunder Bay", "platform": "jibe", "url": THUNDER_BAY_URL}),
+        lambda request: httpx.Response(200, json=page),
+    )
+    assert len(result.postings) == 100
+    assert result.health.incomplete and not result.health.truncated
+    assert any("ended short" in w and "250" in w for w in result.health.warnings())
+
+
+def test_a_complete_board_is_not_flagged_incomplete():
+    result = _scan(
+        _config({"name": "City of Thunder Bay", "platform": "jibe", "url": THUNDER_BAY_URL}),
+        lambda request: httpx.Response(200, json=JIBE_PAYLOAD),
+    )
+    assert not result.health.incomplete and result.health.warnings() == []
+
+
+def test_a_200_without_the_job_list_is_an_error_on_every_platform():
+    malformed = {"message": "maintenance"}
+    result = _scan(
+        _config(
+            {"name": "J.D. Irving", "platform": "oracle", "url": JDI_URL},
+            {"name": "City of Thunder Bay", "platform": "jibe", "url": THUNDER_BAY_URL},
+            {"name": "Yukon Hospitals", "platform": "ukg", "url": YUKON_URL},
+        ),
+        lambda request: httpx.Response(200, json=malformed),
+    )
+    assert result.postings == [] and result.health.errors == 3
+
+
+def test_a_ukg_posting_is_placed_by_its_canadian_location_when_it_lists_several():
+    boston = {"Address": {"City": "Boston", "State": {"Name": "Massachusetts"},
+                          "Country": {"Code": "USA", "Name": "United States"}}}
+    toronto = {"Address": {"City": "Toronto", "State": {"Name": "Ontario"},
+                           "Country": {"Code": "CAN", "Name": "Canada"}}}
+    payload = {"totalCount": 1, "opportunities": [
+        {**UKG_PAYLOAD["opportunities"][0], "Locations": [boston, toronto]}]}
+    result = _scan(
+        _config({"name": "Yukon Hospitals", "platform": "ukg", "url": YUKON_URL}),
+        lambda request: httpx.Response(200, json=payload),
+    )
+    assert result.postings[0].location == "Toronto, Ontario, Canada"
+
+
 def test_the_tier_keeps_the_positive_title_filter():
     """J.D. Irving's board is drivers, mechanics and store managers; only the
     title says which of its 736 postings is his work."""
