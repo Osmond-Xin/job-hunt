@@ -346,6 +346,55 @@ def test_a_ukg_canadian_location_is_recognised_however_the_country_is_written():
         assert _ukg_location([boston, toronto]).startswith("Toronto, Ontario")
 
 
+# --- 2026-09-27 source wiring -------------------------------------------------
+
+SF_PAGE = """<span class="paginationLabel">Results <b>1 &ndash; 2</b> of <b>2</b></span>
+<tr class="data-row"><td><span class="jobTitle hidden-phone">
+<a href="/job/Regina-Data-Analyst/606439117/" class="jobTitle-link">Data Analyst</a></span>
+<span class="jobLocation">REGINA, SK, CA</span></td></tr>
+<tr class="data-row"><td><span class="jobTitle hidden-phone">
+<a href="/job/Regina-Lineperson/606439118/" class="jobTitle-link">Powerline Technician</a></span>
+<span class="jobLocation">REGINA, SK, CA</span></td></tr>"""
+
+
+def test_a_successfactors_employer_is_read_to_its_advertised_total():
+    starts: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        starts.append(request.url.params["startrow"])
+        return httpx.Response(200, text=SF_PAGE)
+
+    result = _scan(_config({"name": "SaskPower", "platform": "successfactors",
+                            "url": "https://jobs.saskpower.com/"}), handler)
+    assert starts == ["0"]  # 2 of 2 read on the first page
+    assert [p.url for p in result.postings] == [
+        "https://jobs.saskpower.com/job/Regina-Data-Analyst/606439117/",
+        "https://jobs.saskpower.com/job/Regina-Lineperson/606439118/"]
+    assert result.postings[0].company == "SaskPower" and result.postings[0].location == "REGINA, SK, CA"
+    assert result.health.advertised == 2 and result.health.ok
+
+
+def test_a_successfactors_page_that_no_longer_parses_is_an_error():
+    result = _scan(_config({"name": "SaskTel", "platform": "successfactors",
+                            "url": "https://jobs.sasktel.com"}),
+                   lambda request: httpx.Response(200, text="<html>redesigned</html>"))
+    assert result.postings == [] and result.health.errors == 1
+
+
+def test_an_employer_can_carry_its_own_page_budget():
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        page = len(calls)
+        return httpx.Response(200, text="".join(BC_ROW.format(id=page * 100 + i) for i in range(25)))
+
+    result = _scan(_config({"name": "Island Health", "platform": "hrsmart",
+                            "url": "https://islandhealth.hua.hrsmart.com/", "max_pages": 4},
+                           max_pages=2), handler)
+    assert len(calls) == 4 and len(result.postings) == 100 and result.health.truncated
+
+
 def test_the_tier_keeps_the_positive_title_filter():
     """J.D. Irving's board is drivers, mechanics and store managers; only the
     title says which of its 736 postings is his work."""

@@ -221,11 +221,17 @@ def scan_workday(
                 rows = parse_workday_response(payload, tenant, host, site)
                 if not rows:
                     break
+                # Municipal tenants name the building, not the town ("City
+                # Hall", "Niagara Casinos"), which no location filter can
+                # place; `location_hint` is the town, appended to every row.
+                hint = str(employer.get("location_hint") or "").strip()
                 for row in rows:
                     if row["url"] in seen:
                         continue
                     seen.add(row["url"])
                     row["company"] = name
+                    if hint:
+                        row["location"] = f"{row['location']}, {hint}" if row["location"] else hint
                     out.append(row)
                     if entry is not None:
                         entry["collected"] += 1

@@ -1,4 +1,4 @@
-"""Tier 11: single-employer career sites on Oracle, iCIMS Jibe, UKG and hrSmart.
+"""Tier 11: single-employer career sites on Oracle, iCIMS Jibe, UKG, hrSmart and SuccessFactors.
 
 Each of these platforms serves every one of its customers through the same
 public JSON endpoint, so an employer is one ``portals.yml`` entry — a
@@ -23,6 +23,11 @@ public JSON endpoint, so an employer is one ``portals.yml`` entry — a
   so a row is read as its ``/hr/ats/Posting/view/<id>`` link plus whichever
   cell holds a ``City, PR, CA`` address. Government of Yukon (47 postings,
   mostly nurses and trades) and BC Public Service (84, 4 pages).
+- **successfactors** — SAP SuccessFactors career sites, read with the parser
+  the public-sector boards use (``gov_boards.parse_successfactors``); the
+  total is the page's "of <b>N</b>". For crown corporations — ICBC,
+  SaskPower, SaskTel — which are general employers and so keep the title
+  filter; the public-service SuccessFactors boards stay in ``gov_boards``.
 
 These are general employers, not occupation-scoped boards: J.D. Irving's
 first 200 postings on 2026-09-27 were drivers, mechanics, store managers and
@@ -43,6 +48,7 @@ from urllib.parse import urlparse
 import httpx
 
 from job_hunt.models.posting import JobPosting, SourceHealth, SourceResult, from_row
+from job_hunt.services.gov_boards import parse_successfactors
 from job_hunt.services.oracle_recruiting import (
     MAX_PAGE_SIZE,
     fetch_requisitions,
@@ -226,11 +232,39 @@ def _hrsmart_reader(employer: dict[str, Any]):
     return read
 
 
+_SF_TOTAL_RE = re.compile(r"of\s*<b>\s*([\d,]+)\s*</b>")
+
+
+def _successfactors_reader(employer: dict[str, Any]):
+    parsed = urlparse(str(employer.get("url") or ""))
+    if not parsed.netloc:
+        return None
+    base = f"https://{parsed.netloc}"
+    name = str(employer.get("name") or "")
+
+    def read(client: httpx.Client, page: int) -> Page:
+        try:
+            response = client.get(f"{base}/search/", params={"q": "", "startrow": page * 25})
+            response.raise_for_status()
+        except httpx.HTTPError:
+            return None
+        rows = parse_successfactors(response.text, base=base, company=name)
+        total = _SF_TOTAL_RE.search(response.text)
+        # A first page with neither rows nor a result count is markup the
+        # parser no longer reads, not an employer with no openings.
+        if page == 0 and not rows and not total:
+            return None
+        return rows, int(total.group(1).replace(",", "")) if total else 0
+
+    return read
+
+
 _READERS = {
     "oracle": _oracle_reader,
     "jibe": _jibe_reader,
     "ukg": _ukg_reader,
     "hrsmart": _hrsmart_reader,
+    "successfactors": _successfactors_reader,
 }
 
 
@@ -278,7 +312,9 @@ def scan_employer_boards_source(
             board_urls: set[str] = set()
             total = 0
             failed = False
-            for page in range(max_pages):
+            # Per-employer budget, as in workday_boards: Island Health is ~50
+            # hrSmart pages where J.D. Irving is 4 Oracle pages.
+            for page in range(max(1, int(employer.get("max_pages", max_pages)))):
                 if not first and delay > 0:
                     sleep(delay)
                 first = False
