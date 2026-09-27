@@ -435,6 +435,46 @@ def test_an_erecruit_feed_with_no_postings_is_an_error():
     assert result.health.errors == 1
 
 
+# Trimmed from Niagara Region's Candidate Gateway, 2026-09-27.
+PS_URL = ("https://careers.niagararegion.ca/psc/careers/EMPLOYEE/PSFT_HR/c/"
+          "HRS_HRAM_FL.HRS_CG_SEARCH_FL.GBL?FOCUS=Applicant&Siteid=1002")
+PS_FORM = ("<form name='win0' method='post' action='https://careers.niagararegion.ca/psc/careers/"
+           "EMPLOYEE/PSFT_HR/c/HRS_HRAM_FL.HRS_CG_SEARCH_FL.GBL'>"
+           "<input type='hidden' name='ICSID' id='ICSID' value='abc123' />"
+           "<input type='hidden' name='ICStateNum' id='ICStateNum' value='1' /></form>")
+PS_RESULTS = ("<div id='HRS_AGNT_RSLT_I$0'><ul>"
+              "<li id='HRS_AGNT_RSLT_I$0_row_0'><span id='SCH_JOB_TITLE$0'>Senior Business Specialist IT</span>"
+              "<span id='HRS_APP_JBSCH_I_HRS_JOB_OPENING_ID$0'>46277</span>"
+              "<span id='LOCATION$0'>Regional Headquarters</span><span id='SCH_OPENED$0'>09/25/2026</span></li>"
+              "</ul></div>")
+
+
+def test_a_peoplesoft_gateway_is_read_by_posting_its_form_back():
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, text=PS_FORM if request.method == "GET" else PS_RESULTS)
+
+    result = _scan(_config({"name": "Niagara Region", "platform": "peoplesoft", "url": PS_URL,
+                            "location_hint": "Niagara, ON"}), handler)
+    assert [r.method for r in requests] == ["GET", "POST"]
+    form = dict(pair.split("=", 1) for pair in requests[1].content.decode().split("&"))
+    assert form["ICAction"] == "NAV_PB%240" and form["ICSID"] == "abc123"
+    [posting] = result.postings
+    assert posting.title == "Senior Business Specialist IT"
+    assert posting.url.endswith("?Page=HRS_APP_JBPST_FL&Action=U&FOCUS=Applicant"
+                                "&SiteId=1002&JobOpeningId=46277&PostingSeq=1")
+    assert posting.location == "Regional Headquarters, Niagara, ON" and posting.posted == "2026-09-25"
+    assert result.health.ok
+
+
+def test_a_peoplesoft_page_without_its_results_grid_is_an_error():
+    result = _scan(_config({"name": "Niagara Region", "platform": "peoplesoft", "url": PS_URL}),
+                   lambda request: httpx.Response(200, text=PS_FORM if request.method == "GET" else "<html/>"))
+    assert result.health.errors == 1
+
+
 def test_the_tier_keeps_the_positive_title_filter():
     """J.D. Irving's board is drivers, mechanics and store managers; only the
     title says which of its 736 postings is his work."""

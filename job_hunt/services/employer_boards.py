@@ -29,6 +29,13 @@ public JSON endpoint, so an employer is one ``portals.yml`` entry — a
   it is read as that sequence rather than parsed as RSS. One feed, no paging.
   Niagara Health: 36 postings on 2026-09-27, locations like "NIAGARA FALLS
   SITE", hence ``location_hint``.
+- **peoplesoft** — Oracle PeopleSoft Candidate Gateway (Fluid). The search
+  page is a form: GET it, post its hidden fields back with
+  ``ICAction=NAV_PB$0``, and the response lists every opening at once as
+  ``SCH_JOB_TITLE$n`` / ``HRS_APP_JBSCH_I_HRS_JOB_OPENING_ID$n`` /
+  ``LOCATION$n`` / ``SCH_OPENED$n`` spans. ``url`` is the search page with
+  its ``Siteid``. Niagara Region: 17 openings on 2026-09-27, locations named
+  by facility ("Regional Headquarters"), hence ``location_hint``.
 - **successfactors** — SAP SuccessFactors career sites, read with the parser
   the public-sector boards use (``gov_boards.parse_successfactors``); the
   total is the page's "of <b>N</b>". For crown corporations — ICBC,
@@ -313,6 +320,71 @@ def _erecruit_reader(employer: dict[str, Any]):
     return read
 
 
+_PS_HIDDEN_RE = re.compile(r"<input type='hidden' name='([^']+)' id='[^']*' value='([^']*)'")
+_PS_FORM_RE = re.compile(r"<form[^>]*action='([^']+)'")
+
+
+def _ps_field(page_html: str, name: str) -> dict[str, str]:
+    return {
+        index: html.unescape(value).strip()
+        for index, value in re.findall(rf"id='{re.escape(name)}\$(\d+)'[^>]*>([^<]*)<", page_html)
+    }
+
+
+def parse_peoplesoft(page_html: str, search_url: str) -> list[dict[str, str]]:
+    site_match = re.search(r"[?&]Siteid=(\d+)", search_url, re.I)
+    site = site_match.group(1) if site_match else ""
+    base = search_url.split("?", 1)[0]
+    titles = _ps_field(page_html, "SCH_JOB_TITLE")
+    ids = _ps_field(page_html, "HRS_APP_JBSCH_I_HRS_JOB_OPENING_ID")
+    places = _ps_field(page_html, "LOCATION")
+    opened = _ps_field(page_html, "SCH_OPENED")
+    rows = []
+    for index, title in titles.items():
+        job_id = ids.get(index, "")
+        if not job_id:
+            continue
+        month, _, rest = opened.get(index, "").partition("/")
+        day, _, year = rest.partition("/")
+        rows.append(
+            {
+                "url": f"{base}?Page=HRS_APP_JBPST_FL&Action=U&FOCUS=Applicant"
+                       f"&SiteId={site}&JobOpeningId={job_id}&PostingSeq=1",
+                "title": title,
+                "location": places.get(index, ""),
+                "posted": f"{year}-{month}-{day}" if year and month and day else "",
+            }
+        )
+    return rows
+
+
+def _peoplesoft_reader(employer: dict[str, Any]):
+    url = str(employer.get("url") or "")
+    if "HRS_" not in url:
+        return None
+
+    def read(client: httpx.Client, page: int) -> Page:
+        if page:
+            return [], 0  # the gateway lists every opening in one response
+        try:
+            form_page = client.get(url)
+            form_page.raise_for_status()
+            form = dict(_PS_HIDDEN_RE.findall(form_page.text))
+            form["ICAction"] = "NAV_PB$0"
+            action = _PS_FORM_RE.search(form_page.text)
+            response = client.post(action.group(1) if action else str(form_page.url), data=form)
+            response.raise_for_status()
+        except httpx.HTTPError:
+            return None
+        rows = parse_peoplesoft(response.text, url)
+        # No count is published; a results grid with no rows is a changed page.
+        if not rows and "HRS_AGNT_RSLT_I" not in response.text:
+            return None
+        return rows, len(rows)
+
+    return read
+
+
 _READERS = {
     "oracle": _oracle_reader,
     "jibe": _jibe_reader,
@@ -320,6 +392,7 @@ _READERS = {
     "hrsmart": _hrsmart_reader,
     "successfactors": _successfactors_reader,
     "erecruit": _erecruit_reader,
+    "peoplesoft": _peoplesoft_reader,
 }
 
 
