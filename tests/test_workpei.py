@@ -1,0 +1,101 @@
+"""Tier 12: WorkPEI through the board's WordPress REST API.
+
+Items are trimmed from the live response of 2026-09-27, one of each kind:
+a row posted on WorkPEI itself and a syndicated PEI public-service row.
+"""
+
+from __future__ import annotations
+
+import httpx
+
+from job_hunt.services.workpei import API, parse_listing, scan_workpei_source
+
+OWN_ROW = {
+    "id": 467296,
+    "date": "2026-09-26T14:02:11",
+    "link": "https://workpei.ca/job/government-of-pei-summerside-4477-bilingual-administrative-assistant/",
+    "title": {"rendered": "Bilingual Administrative Assistant"},
+    "meta": {"_company_name": "Government of PEI", "_filled": 0},
+    "class_list": ["post-467296", "job_listing", "source-workpei"],
+}
+PUBLIC_SERVICE_ROW = {
+    "id": 459087,
+    "date": "2026-09-27T05:01:50",
+    "link": "https://atlas.workland.com/work/77612/172753-accessability-supports-coordinator",
+    "title": {"rendered": "172753 &#8211; AccessAbility Supports Coordinator &#8211; "
+                          "Department of Social Development &#8211; Permanent"},
+    "meta": {"_company_name": "", "_filled": 0},
+    "class_list": ["post-459087", "job_listing", "source-pei-public-service"],
+}
+
+
+def _client(handler):
+    return httpx.Client(transport=httpx.MockTransport(handler))
+
+
+def test_a_workpei_row_keeps_its_employer_and_date():
+    row = parse_listing(OWN_ROW)
+    assert row["title"] == "Bilingual Administrative Assistant"
+    assert row["company"] == "Government of PEI"
+    assert row["location"] == "Prince Edward Island"
+    assert row["posted"] == "2026-09-26"
+
+
+def test_a_public_service_row_is_split_into_role_and_employer():
+    row = parse_listing(PUBLIC_SERVICE_ROW)
+    assert row["title"] == "AccessAbility Supports Coordinator"
+    assert row["company"] == "Government of PEI"
+    assert row["url"].startswith("https://atlas.workland.com/")
+
+
+def test_a_filled_posting_is_dropped():
+    assert parse_listing({**OWN_ROW, "meta": {"_filled": 1}}) is None
+
+
+def test_the_sweep_stops_at_the_advertised_page_count():
+    seen: list[dict[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        params = dict(request.url.params)
+        seen.append(params)
+        body = [OWN_ROW] if params["page"] == "1" else [PUBLIC_SERVICE_ROW]
+        return httpx.Response(200, json=body, headers={"X-WP-Total": "2", "X-WP-TotalPages": "2"})
+
+    result = scan_workpei_source({"enabled": True, "delay_s": 0}, client=_client(handler), sleep=lambda _s: None)
+
+    assert [p["page"] for p in seen] == ["1", "2"]
+    assert seen[0]["per_page"] == "100" and "title" in seen[0]["_fields"]
+    assert [p.title for p in result.postings] == [
+        "Bilingual Administrative Assistant", "AccessAbility Supports Coordinator"]
+    assert result.health.advertised == 2 and not result.health.truncated and result.health.ok
+
+
+def test_more_pages_than_the_budget_is_reported():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=[{**OWN_ROW, "link": f"https://workpei.ca/job/{request.url.params['page']}"}],
+                              headers={"X-WP-Total": "271", "X-WP-TotalPages": "3"})
+
+    result = scan_workpei_source(
+        {"enabled": True, "delay_s": 0, "max_pages": 2}, client=_client(handler), sleep=lambda _s: None
+    )
+    assert len(result.postings) == 2
+    assert result.health.truncated
+    assert any("advertises 271" in w for w in result.health.warnings())
+
+
+def test_a_failed_request_is_an_error_not_an_empty_board():
+    result = scan_workpei_source(
+        {"enabled": True}, client=_client(lambda request: httpx.Response(500)), sleep=lambda _s: None
+    )
+    assert result.postings == [] and result.health.errors == 1
+
+
+def test_the_request_goes_to_the_documented_endpoint():
+    urls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        urls.append(str(request.url).split("?")[0])
+        return httpx.Response(200, json=[], headers={"X-WP-TotalPages": "1"})
+
+    scan_workpei_source({"enabled": True}, client=_client(handler), sleep=lambda _s: None)
+    assert urls == [API]
