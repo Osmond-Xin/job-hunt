@@ -284,6 +284,68 @@ def test_a_ukg_posting_is_placed_by_its_canadian_location_when_it_lists_several(
     assert result.postings[0].location == "Toronto, Ontario, Canada"
 
 
+# --- review round 2, 2026-09-27 ----------------------------------------------
+
+
+def test_a_later_page_without_a_total_keeps_the_first_one():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.params["page"] == "1":
+            return httpx.Response(200, json={"totalCount": 250, "jobs": [
+                {"data": {"slug": str(i), "title": "Analyst"}} for i in range(100)]})
+        return httpx.Response(200, json={"jobs": []})  # no totalCount
+
+    result = _scan(_config({"name": "City of Thunder Bay", "platform": "jibe", "url": THUNDER_BAY_URL}), handler)
+    assert result.health.advertised == 250 and result.health.incomplete
+
+
+def test_a_short_board_is_named_and_not_mixed_with_one_that_has_no_total():
+    """An hrSmart board (no total) next to a short Jibe board read "60
+    collected of 20 advertised"; the warning now names the short employer."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host.endswith("hrsmart.com"):
+            # Every page is the same 50 rows, so page 2 repeats and the walk ends.
+            return httpx.Response(200, text="".join(BC_ROW.format(id=i) for i in range(50)))
+        return httpx.Response(200, json={"totalCount": 20, "jobs": [
+            {"data": {"slug": str(i), "title": "Analyst"}} for i in range(10)]})
+
+    result = _scan(
+        _config(
+            {"name": "BC Public Service", "platform": "hrsmart",
+             "url": "https://bcpublicservice.hua.hrsmart.com/hr/ats/JobSearch/viewAll"},
+            {"name": "City of Thunder Bay", "platform": "jibe", "url": THUNDER_BAY_URL},
+        ),
+        handler,
+    )
+    [warning] = result.health.warnings()
+    assert "City of Thunder Bay 10 of 20" in warning and "BC Public Service" not in warning
+
+
+def test_an_oracle_item_without_its_requisition_list_is_an_error():
+    result = _scan(
+        _config({"name": "J.D. Irving", "platform": "oracle", "url": JDI_URL}),
+        lambda request: httpx.Response(200, json={"items": [{"message": "maintenance"}]}),
+    )
+    assert result.postings == [] and result.health.errors == 1
+
+
+def test_an_empty_oracle_search_is_a_quiet_board_not_an_error():
+    """Shape of a real zero-result search (NB, 2026-09-27)."""
+    result = _scan(
+        _config({"name": "J.D. Irving", "platform": "oracle", "url": JDI_URL}),
+        lambda request: httpx.Response(200, json={"items": [{"TotalJobsCount": 0, "requisitionList": []}]}),
+    )
+    assert result.health.ok and result.health.warnings() == []
+
+
+def test_a_ukg_canadian_location_is_recognised_however_the_country_is_written():
+    from job_hunt.services.employer_boards import _ukg_location
+
+    boston = {"Address": {"City": "Boston", "Country": {"Code": "USA", "Name": "United States"}}}
+    for country in ({"Code": "can"}, {"Code": "", "Name": "Canada"}):
+        toronto = {"Address": {"City": "Toronto", "State": {"Name": "Ontario"}, "Country": country}}
+        assert _ukg_location([boston, toronto]).startswith("Toronto, Ontario")
+
+
 def test_the_tier_keeps_the_positive_title_filter():
     """J.D. Irving's board is drivers, mechanics and store managers; only the
     title says which of its 736 postings is his work."""

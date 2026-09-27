@@ -133,4 +133,12 @@ def fetch_requisitions(
         payload = response.json()
     except (httpx.HTTPError, ValueError):
         return None
-    return payload if isinstance(payload, dict) else None
+    # Even an empty search answers with one item holding an empty
+    # `requisitionList` (checked 2026-09-27). Anything else — no items, or an
+    # item that is an error message — is a failed read, not a quiet board.
+    items = payload.get("items") if isinstance(payload, dict) else None
+    if not items or not isinstance(items, list) or not all(
+        isinstance(item, dict) and isinstance(item.get("requisitionList"), list) for item in items
+    ):
+        return None
+    return payload

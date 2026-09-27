@@ -72,7 +72,7 @@ def _oracle_reader(employer: dict[str, Any]):
         payload = fetch_requisitions(
             client, base, site, offset=page * MAX_PAGE_SIZE, limit=MAX_PAGE_SIZE
         )
-        if payload is None or not isinstance(payload.get("items"), list):
+        if payload is None:
             return None
         rows = parse_requisitions(payload, base=base, site=site, company="")
         return rows, requisitions_total(payload)
@@ -124,7 +124,11 @@ def _ukg_location(locations: list[dict[str, Any]]) -> str:
     Boston-and-Toronto posting at the Canada gate.
     """
     addresses = [(loc or {}).get("Address") or {} for loc in locations]
-    canadian = [a for a in addresses if (a.get("Country") or {}).get("Code") in ("CAN", "CA")]
+    canadian = [
+        a for a in addresses
+        if str((a.get("Country") or {}).get("Code") or "").upper() in ("CAN", "CA")
+        or str((a.get("Country") or {}).get("Name") or "").strip().lower() == "canada"
+    ]
     address = (canadian or addresses or [{}])[0]
     place = [address.get("City"), (address.get("State") or {}).get("Name"),
              (address.get("Country") or {}).get("Name")]
@@ -261,7 +265,7 @@ def scan_employer_boards_source(
     errors = 0
     advertised = 0
     truncated = False
-    incomplete = False
+    short: list[str] = []
     first = True
     try:
         for employer in employers:
@@ -273,6 +277,7 @@ def scan_employer_boards_source(
             name = str(employer.get("name") or "").strip()
             board_urls: set[str] = set()
             total = 0
+            failed = False
             for page in range(max_pages):
                 if not first and delay > 0:
                     sleep(delay)
@@ -280,8 +285,12 @@ def scan_employer_boards_source(
                 got = read(client, page)
                 if got is None:
                     errors += 1
+                    failed = True
                     break
-                rows, total = got
+                rows, page_total = got
+                # The first total a board gives is kept: a later page that
+                # omits it must not erase what is known.
+                total = total or page_total
                 fresh = [row for row in rows if row["url"] not in board_urls]
                 if not fresh:
                     break
@@ -303,10 +312,10 @@ def scan_employer_boards_source(
                 truncated = True
                 advertised += total
                 continue
-            # Ended on an empty or repeated page, or a failed one, below the
-            # board's own count: rows were missed.
-            if total and len(board_urls) < total:
-                incomplete = True
+            # Ended on an empty or repeated page below the board's own count:
+            # rows were missed. A failed read is already an error.
+            if total and not failed and len(board_urls) < total:
+                short.append(f"{name} {len(board_urls)} of {total}")
             advertised += total
     finally:
         if owns_client:
@@ -321,6 +330,9 @@ def scan_employer_boards_source(
             advertised=advertised or None,
             truncated=truncated,
             errors=errors,
-            incomplete=incomplete,
+            incomplete=bool(short),
+            # Per employer: a sum across boards mixes ones that advertise a
+            # total with ones (hrSmart) that do not.
+            incomplete_detail="; ".join(short),
         ),
     )

@@ -83,6 +83,9 @@ class SourceHealth:
     # the count the source advertised — distinct from `truncated`, where the
     # page budget stopped it and raising max_pages is the remedy.
     incomplete: bool = False
+    # Which part of a multi-board source fell short, when the source can say
+    # ("City of Thunder Bay 100 of 250"); replaces the source-wide counts.
+    incomplete_detail: str = ""
 
     def warnings(self) -> list[str]:
         """Turn this source's own numbers into operator-visible warnings.
@@ -105,10 +108,10 @@ class SourceHealth:
             )
         if self.incomplete:
             short = f" of {self.advertised} advertised" if self.advertised else ""
+            counts = self.incomplete_detail or f"{self.collected} collected{short}"
             out.append(
                 f"{self.source_id}: walk ended short of the source's own count "
-                f"({self.collected} collected{short}) — a page was empty, repeated or "
-                f"unreadable, so rows were missed"
+                f"({counts}) — a page was empty, repeated or unreadable, so rows were missed"
             )
         return out
 
