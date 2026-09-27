@@ -99,36 +99,73 @@ FOREIGN = [
 ]
 
 
-# Accepted by the CODE path, not by name: none of these cities is on an allow
-# list, so `_matches_canada_by_name` alone would drop every one — asserted
-# below, so a case that starts passing by name instead is noticed.
-CODE_PATH_CANADIAN = [
+# Every case below uses a city on no allow list, and asserts the name reading
+# alone would drop it, so each test exercises the path it is named for.
+def _accepted_only_by_code(location: str) -> bool:
+    from job_hunt.services.scan import _matches_canada_by_name, _passes_canada_filter
+
+    assert _matches_canada_by_name(location) is False, "case no longer exercises the code path"
+    return _passes_canada_filter(location)
+
+
+# Province code as its own comma field, with an optional postal code and note.
+CODE_FIELD = [
     "Burnaby, BC", "Burnaby, BC - Remote", "Burnaby, BC (Hybrid)", "Burnaby, BC - On-site",
     "Burnaby, BC – Remote", "Burnaby, BC — Remote", "Kanata, ON - Hybrid", "Kanata, ON (Hybrid)",
     "Vaughan, ON - Hybrid", "Laval, QC - Remote", "Gatineau, QC - Hybrid", "Red Deer, AB - Remote",
     "Taber, AB - On-site", "Taber, AB T1G 2C9 - Hybrid", "Truro, NS - Hybrid",
     "Corner Brook, NL (Remote)", "Corner Brook, NL - Remote", "Swift Current, SK - Hybrid",
-    "Swift Current, SK S9H 0A1", "Burnaby (BC) - Remote", "CA-BC-Burnaby",
+    "Swift Current, SK S9H 0A1",
+    # Round 6: "[" and "+" open a note too.
+    "Burnaby, BC [Remote]", "Kanata, ON [Hybrid]", "Burnaby, BC +2 more",
 ]
-# Rejected by the CODE path: a code with a glued dash or a bare word after it
-# is not a code, and US states follow the same rule as provinces.
-CODE_PATH_FOREIGN = [
-    "Burnaby, BC-SITE", "Kanata, ON SITE", "Kanata, ON Remote",
-    "Vancouver, WA (ON-SITE)", "Waterloo, IA (IN OFFICE)", "Waterloo, IA - Hybrid",
-    "Waterloo, IA 50701 - Remote",
-]
+# Round 6: the code closes the place after a spaced dash.
+CODE_AFTER_NOTE = ["Remote - BC", "Remote - ON", "Hybrid - AB", "On-site - SK", "Remote – NL"]
+# Round 6: city and code with no comma between them.
+CODE_TAIL = ["Burnaby BC", "Kanata ON", "Taber AB", "Corner Brook NL", "Burnaby BC - Remote"]
 
 
-@pytest.mark.parametrize("location", CODE_PATH_CANADIAN)
+@pytest.mark.parametrize("location", CODE_FIELD)
 def test_a_province_code_field_accepts_where_the_name_would_not(location) -> None:
-    from job_hunt.services.scan import _matches_canada_by_name, _passes_canada_filter
-
-    assert _matches_canada_by_name(location) is False, "case no longer exercises the code path"
-    assert _passes_canada_filter(location) is True
+    assert _accepted_only_by_code(location) is True
 
 
-@pytest.mark.parametrize("location", CODE_PATH_FOREIGN)
+@pytest.mark.parametrize("location", CODE_AFTER_NOTE)
+def test_a_province_code_after_a_note_accepts(location) -> None:
+    assert _accepted_only_by_code(location) is True
+
+
+@pytest.mark.parametrize("location", CODE_TAIL)
+def test_a_province_code_after_the_city_without_a_comma_accepts(location) -> None:
+    assert _accepted_only_by_code(location) is True
+
+
+@pytest.mark.parametrize("location", ["Burnaby (BC) - Remote", "Swift Current (SK)", "Burnaby (BC"])
+def test_a_bracketed_province_code_accepts(location) -> None:
+    assert _accepted_only_by_code(location) is True
+
+
+@pytest.mark.parametrize("location", ["CA-BC-Burnaby", "CA-NL-Gander"])
+def test_the_iso_form_accepts(location) -> None:
+    assert _accepted_only_by_code(location) is True
+
+
+# A dash glued to letters, or a bare word after it, is not a code.
+@pytest.mark.parametrize("location", ["Burnaby, BC-SITE", "Kanata, ON SITE", "Kanata, ON Remote"])
 def test_a_code_with_a_glued_or_bare_word_after_it_is_not_a_province(location) -> None:
+    from job_hunt.services.scan import _passes_canada_filter
+
+    assert _passes_canada_filter(location) is False
+
+
+# US state codes follow the same shapes as province codes and veto.
+@pytest.mark.parametrize(
+    "location",
+    ["Vancouver, WA (ON-SITE)", "Waterloo, IA (IN OFFICE)", "Waterloo, IA - Hybrid",
+     "Waterloo, IA 50701 - Remote", "Austin TX", "Waterloo IA - Hybrid", "Remote - TX",
+     "Omaha NE", "Hybrid - Tijuana, BC", "Tijuana BC"],
+)
+def test_a_us_state_or_collision_city_vetoes(location) -> None:
     from job_hunt.services.scan import _passes_canada_filter
 
     assert _passes_canada_filter(location) is False

@@ -1320,9 +1320,9 @@ def _place_is_canadian(place: str) -> bool:
     """
     fields = [f.strip() for f in place.split(",")]
     city = _collision_city(place)
-    codes = [m.group(1) for f in fields if (m := _CODE_FIELD_RE.fullmatch(f))]
+    codes = _codes_in(fields, _CODE_FIELD_RE, _CODE_TAIL_RE, _CODE_AFTER_NOTE_RE)
     codes += _BRACKETED_CODE_RE.findall(place)
-    if "BC" in codes and city in _FOREIGN_COLLISIONS["BC"]:
+    if "BC" in codes and _is_collision(city, "BC"):
         return False
     if (
         any(code in UNAMBIGUOUS_PROVINCE_CODES for code in codes)
@@ -1333,19 +1333,48 @@ def _place_is_canadian(place: str) -> bool:
         return True
     if _FOREIGN_COUNTRY_RE.search(", ".join(fields[1:])):
         return False
-    if any(_US_STATE_FIELD_RE.fullmatch(f) for f in fields[1:]):
+    # The city field is exempt from the whole-field form only: "Austin TX"
+    # and "Remote - TX" name their state inside it.
+    if _codes_in(fields[1:], _US_STATE_FIELD_RE, None, _US_STATE_AFTER_NOTE_RE) or _codes_in(
+        fields[:1], None, _US_STATE_TAIL_RE, _US_STATE_AFTER_NOTE_RE
+    ):
         return False
-    if any(city in _FOREIGN_COLLISIONS.get(code, ()) for code in codes):
+    if any(_is_collision(city, code) for code in codes):
         return False
     if codes:
         return True
     return _matches_canada_by_name(place)
 
 
+def _codes_in(fields: list[str], whole=None, tail=None, after_note=None) -> list[str]:
+    """Codes found in ``fields`` by any of the three shapes given.
+
+    ``whole``: the field is the code ("BC", "BC - Remote", "BC [Hybrid]").
+    ``tail``: the first field ends in the code, after the city with no comma
+    ("Burnaby BC", "Burnaby BC - Remote"); only the first field is searched.
+    ``after_note``: the code closes a field after a spaced dash ("Remote - BC").
+    """
+    found: list[str] = []
+    for index, field in enumerate(fields):
+        for pattern in (whole, tail if index == 0 else None, after_note):
+            match = pattern.fullmatch(field) if pattern is not None else None
+            if match:
+                found.append(match.group(1))
+                break
+    return found
+
+
 def _collision_city(place: str) -> str:
-    """The city a collision list is checked against: the first field, with
-    bracketed qualifiers removed ("(Remote) Amsterdam (NL)", "Amsterdam (HQ)")."""
+    """The first field, bracketed qualifiers removed ("(Remote) Amsterdam
+    (NL)", "Amsterdam (HQ)"), for the collision lookup."""
     return re.sub(r"\([^)]*\)?", " ", place).split(",")[0].strip().lower()
+
+
+def _is_collision(city: str, code: str) -> bool:
+    """A collision city named anywhere in the first field, as whole words, so
+    a leading note or a trailing code does not hide it ("Hybrid - Tijuana",
+    "Tijuana BC")."""
+    return any(re.search(rf"\b{re.escape(name)}\b", city) for name in _FOREIGN_COLLISIONS.get(code, ()))
 
 
 def _matches_canada_by_name(location: str) -> bool:
@@ -1451,15 +1480,30 @@ _PLACE_SPLIT_RE = re.compile(r"\s*(?:/|;|\|)\s*")
 _ALL_PROVINCE_CODES = UNAMBIGUOUS_PROVINCE_CODES | AMBIGUOUS_PROVINCE_CODES
 _CODE_ALT = "|".join(sorted(_ALL_PROVINCE_CODES))
 _POSTAL = r"[ABCEGHJ-NPRSTVXY]\d[ABCEGHJ-NPRSTV-Z]\s?\d[ABCEGHJ-NPRSTV-Z]\d"
-# What may follow a code in its field: a note opened by "(" or by a dash with
-# space on both sides ("BC (Hybrid)", "ON - Remote", "NL – Remote"). A dash
+# What may follow a code in its field: a note opened by "(", "[" or "+", or by
+# a dash with space on both sides ("BC (Hybrid)", "BC [Remote]", "BC +2 more",
+# "ON - Remote", "NL – Remote"). A dash
 # glued to letters ("ON-SITE") or a bare word ("ON SITE", "IN PERSON", "OR
 # Remote") is not a code. Shared by province and state codes so they agree.
-_CODE_SUFFIX = r"(?:\s*\(.*|\s+[-–—]\s+.*)?"
+_CODE_SUFFIX = r"(?:\s*[(\[+].*|\s+[-–—]\s+.*)?"
 # A code field: the code, optionally its postal code (any case), optionally a note.
 _CODE_FIELD_RE = re.compile(
     r"(" + _CODE_ALT + r")(?:\s+(?i:" + _POSTAL + r"))?" + _CODE_SUFFIX
 )
+# The city then the code, no comma: "Burnaby BC", "Taber AB T1G 2C9 - Hybrid".
+_CODE_TAIL_RE = re.compile(
+    r".*?\S\s+(" + _CODE_ALT + r")(?:\s+(?i:" + _POSTAL + r"))?" + _CODE_SUFFIX
+)
+# The code closing a field after a spaced dash: "Remote - BC", "Hybrid – AB".
+_CODE_AFTER_NOTE_RE = re.compile(r".*\S\s+[-–—]\s+(" + _CODE_ALT + r")")
+# Known edge cases, left alone on the cost-asymmetry rule (a foreign row let
+# through costs one read; a Canadian row dropped is lost for good):
+# - "Austin, TX, ON - SITE" is accepted: "ON - SITE" reads as Ontario + note.
+# - "Toronto, OR - Remote", "Vancouver, IN - Person" are rejected: OR / IN
+#   read as states. Letting an allow-listed city outrank a state would re-admit
+#   "Waterloo, IA - Hybrid", and capital "OR"/"IN" before a spaced dash is rare.
+# - Lower-case codes ("Burnaby, bc - Remote") are not codes: "on" and "in"
+#   are English words.
 # "(BC)", "(BC/Colombie-Britannique)"; also "(BC" at the end of a place,
 # which is what splitting "(BC/Colombie-Britannique)" on "/" leaves.
 _BRACKETED_CODE_RE = re.compile(r"\((" + _CODE_ALT + r")(?=[)/]|\s*$)")
@@ -1481,11 +1525,13 @@ _US_STATE_CODES = frozenset(
     "AL AK AZ AR CO CT DE FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NV "
     "NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY DC".split()
 )
-# A state field, by the same rule as a province field: the code, optionally
-# its ZIP ("IA 50701"), optionally a note ("WA (ON-SITE)", "IA - Hybrid").
-_US_STATE_FIELD_RE = re.compile(
-    r"(?:" + "|".join(sorted(_US_STATE_CODES)) + r")(?:\s+\d{5}(?:-\d{4})?)?" + _CODE_SUFFIX
-)
+# State fields, by the same three shapes as province fields: the code,
+# optionally its ZIP ("IA 50701"), optionally a note ("WA (ON-SITE)").
+_STATE_ALT = "|".join(sorted(_US_STATE_CODES))
+_ZIP = r"(?:\s+\d{5}(?:-\d{4})?)?"
+_US_STATE_FIELD_RE = re.compile(r"(" + _STATE_ALT + r")" + _ZIP + _CODE_SUFFIX)
+_US_STATE_TAIL_RE = re.compile(r".*?\S\s+(" + _STATE_ALT + r")" + _ZIP + _CODE_SUFFIX)
+_US_STATE_AFTER_NOTE_RE = re.compile(r".*\S\s+[-–—]\s+(" + _STATE_ALT + r")")
 _FOREIGN_COUNTRY_RE = re.compile(
     r"\b(?:united states|mexico|m[eé]xico|netherlands|australia|germany|"
     r"slovakia|peru|united kingdom|england|france|india|ireland|spain|poland|japan|"
