@@ -222,8 +222,13 @@ def scan_jobbank(
                 else None
             )
             for province in targets:
-                pair_urls: set[str] = set()
+                # Walked by raw article id, not by parsed row: a page whose
+                # articles all fail to parse must neither end the walk nor
+                # read as a repeat. Parse loss is counted separately.
+                pair_ids: set[str] = set()
+                parsed = 0
                 advertised = 0
+                failed = False
                 for page_no in range(1, max_pages + 1):
                     if not first and delay > 0:
                         sleep(delay)
@@ -232,23 +237,23 @@ def scan_jobbank(
                     if page == "":
                         if entry is not None:
                             entry["errors"] += 1
+                        failed = True
                         break
                     if page_no == 1:
                         advertised = jobbank_total(page)
                         if advertised and entry is not None:
                             entry["advertised"] = (entry["advertised"] or 0) + advertised
-                    rows = parse_jobbank_results(page)
-                    # A short page is judged by the articles on it, not by the
-                    # rows the parser accepted: one article in unexpected markup
-                    # must not read as the last page.
-                    articles = len(_ARTICLE_RE.findall(page))
-                    fresh = [row for row in rows if row["url"] not in pair_urls]
+                    ids = [posting_id for posting_id, _block in _ARTICLE_RE.findall(page)]
+                    fresh_ids = set(ids) - pair_ids
                     # A page past the end may repeat an earlier one rather than
                     # come back empty; nothing new is the end either way.
-                    if not fresh:
+                    if not fresh_ids:
                         break
-                    for row in fresh:
-                        pair_urls.add(row["url"])
+                    pair_ids |= fresh_ids
+                    for row in parse_jobbank_results(page):
+                        if row["id"] not in fresh_ids:
+                            continue
+                        parsed += 1
                         if row["url"] in seen:
                             continue
                         seen.add(row["url"])
@@ -256,17 +261,20 @@ def scan_jobbank(
                         out.append(row)
                         if entry is not None:
                             entry["collected"] += 1
-                    if articles < _PAGE_SIZE or (advertised and len(pair_urls) >= advertised):
+                    if len(ids) < _PAGE_SIZE or (advertised and len(pair_ids) >= advertised):
                         break
                 else:
                     # Every allowed page was full: the budget ended the walk.
                     if entry is not None:
                         entry["truncated"] = True
                     continue
+                if entry is None or failed:
+                    continue  # a failed request is already counted as an error
                 # The walk ended on its own. Short of the page's own count
                 # (exact on every pair measured 2026-09-27) means a page came
-                # back empty, repeated or partly unparseable.
-                if entry is not None and advertised and len(pair_urls) < advertised:
+                # back empty or repeated; articles that did not parse were
+                # seen and lost. Either way rows were missed.
+                if (advertised and len(pair_ids) < advertised) or parsed < len(pair_ids):
                     entry["incomplete"] += 1
         return out
     finally:

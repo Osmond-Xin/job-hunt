@@ -230,7 +230,8 @@ def test_an_unparseable_article_does_not_make_a_page_look_like_the_last() -> Non
 def test_a_premature_empty_page_is_reported_as_incomplete() -> None:
     from job_hunt.services.scan import _board_coverage_warnings
 
-    pages = {1: _page(range(0, 25), total=60)}  # page 2 comes back empty
+    # Page 2 loads but lists nothing (an empty body would be a failed request).
+    pages = {1: _page(range(0, 25), total=60), 2: '<div class="results-jobs"></div>'}
     stats: dict = {}
     scan_jobbank(
         {"enabled": True, "noc_codes": ["21222"], "provinces": ["ON"]},
@@ -255,6 +256,35 @@ def test_a_page_that_repeats_an_earlier_one_ends_the_walk() -> None:
     assert len(rows) == 25
     assert len(seen) == 2
     assert stats["21222"]["truncated"] is False
+
+
+def test_a_page_whose_articles_all_fail_to_parse_does_not_end_the_walk() -> None:
+    """Round 2: 25 unparseable articles gave no parsed rows, which read as a
+    repeat and stopped the walk before page 2."""
+    unparseable = "".join(f'<article id="article-{i}"><p>redesigned</p></article>' for i in range(25))
+    pages = {1: _page([], total=40) + unparseable, 2: _page(range(100, 115))}
+    seen: list[dict[str, str]] = []
+    stats: dict = {}
+    rows = scan_jobbank(
+        {"enabled": True, "noc_codes": ["21222"], "provinces": ["ON"]},
+        client=_client(_paged_handler(pages, seen)),
+        sleep=lambda s: None,
+        stats=stats,
+    )
+    assert len(seen) == 2 and len(rows) == 15
+    assert stats["21222"]["incomplete"] == 1  # 25 articles seen and lost
+
+
+def test_a_failed_request_is_an_error_and_not_also_incomplete() -> None:
+    pages = {1: _page(range(0, 25), total=60)}  # page 2: empty body, a failed read
+    stats: dict = {}
+    scan_jobbank(
+        {"enabled": True, "noc_codes": ["21222"], "provinces": ["ON"]},
+        client=_client(_paged_handler(pages, [])),
+        sleep=lambda s: None,
+        stats=stats,
+    )
+    assert stats["21222"]["errors"] == 1 and stats["21222"]["incomplete"] == 0
 
 
 def test_the_page_budget_running_out_is_recorded_and_warned() -> None:
