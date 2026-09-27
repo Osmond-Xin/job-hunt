@@ -1317,11 +1317,16 @@ def _coded_place_verdict(place: str) -> bool | None:
     province = next(
         (i for i, f in enumerate(fields) if _PROVINCE_FIELD_RE.fullmatch(f)), None
     )
-    if province is not None:
+    # Job Bank's form, "Burnaby (BC)": the code in brackets after the city.
+    # Read as "Burnaby, BC" — 214 of 580 Job Bank rows were dropped without it.
+    bracketed = _BRACKETED_PROVINCE_RE.search(place) if province is None else None
+    if province is not None or bracketed is not None:
         if _FOREIGN_COUNTRY_RE.search(place):
             return False
-        code = fields[province][:2]
-        city = " ".join(fields[:province]).lower()
+        if bracketed is not None:
+            code, city = bracketed.group("code"), place[: bracketed.start()].strip().lower()
+        else:
+            code, city = fields[province][:2], " ".join(fields[:province]).lower()
         if code in AMBIGUOUS_PROVINCE_CODES and city in _FOREIGN_COLLISIONS.get(code, ()):
             return False
         return True
@@ -1435,6 +1440,9 @@ _PLACE_SPLIT_RE = re.compile(r"\s*(?:/|;|\|)\s*")
 _PROVINCE_FIELD_RE = re.compile(
     r"(?:" + "|".join(sorted(UNAMBIGUOUS_PROVINCE_CODES | AMBIGUOUS_PROVINCE_CODES)) + r")"
     r"(?:\s+[A-Z]\d[A-Z]\s?\d[A-Z]\d)?"
+)
+_BRACKETED_PROVINCE_RE = re.compile(
+    r"\((?P<code>" + "|".join(sorted(UNAMBIGUOUS_PROVINCE_CODES | AMBIGUOUS_PROVINCE_CODES)) + r")\)\s*$"
 )
 # Excludes CA, which some boards use for Canada.
 _US_STATE_CODES = frozenset(

@@ -64,6 +64,8 @@ CANADIAN = [
     "Whitehorse, YT", "Regina, SK", "Lethbridge County, AB T1J4L1, Canada",
     "Toronto, CA", "Toronto, ON / New York, NY", "Toronto, ON, North America",
     "Remote US/Canada",
+    # Job Bank writes the province in brackets (smoke run 2026-09-27).
+    "Burnaby (BC)", "Etobicoke (ON)", "Gatineau (QC)", "Elmsdale (NS)", "Hay River (NT)",
 ]
 FOREIGN = [
     "Amsterdam, NL", "Amsterdam, NL, Netherlands", "Bratislava, SK", "Lima, PE",
@@ -71,6 +73,7 @@ FOREIGN = [
     "Munich, BC, Germany", "Vancouver, BC, United States", "Munich, BC, CA - United States",
     "Waterloo, IA", "Waterloo, IA, United States", "Austin, TX", "Seattle, WA",
     "Austin, TX, US", "Remote, on-site in Boston", "San Francisco, CA",
+    "Lima (PE)", "Amsterdam (NL)",
 ]
 
 
