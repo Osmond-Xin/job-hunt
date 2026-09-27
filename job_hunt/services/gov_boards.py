@@ -21,7 +21,14 @@ Structures differ, so each board gets its own parser:
   so this board returns JSON rather than markup. The old ``ere.gnb.ca`` site
   is now only an ASP.NET postback that redirects into the Oracle portal —
   neither curl nor a plain fetch reaches a posting through it, which is why
-  the API is used directly. NB sits in the AIP region.
+  the API is used directly. NB sits in the AIP region. The reader is shared
+  with every other Oracle tenant (``services/oracle_recruiting.py``).
+
+- **Config-only boards.** A board entry that carries ``oracle_url`` (any
+  Candidate Experience URL) or ``successfactors_url`` (the career site's
+  root) needs no code here: the Government of Nunavut (Oracle, NNP
+  territory) and the Government of Alberta (``jobpostings.alberta.ca``,
+  SuccessFactors) were added 2026-09-27 that way, with a ``company`` name.
 
 - **Manitoba** (``jobsearch.gov.mb.ca``) publishes one **RSS feed per job
   category**, so it is selected by category id instead of by keyword: 14 is
@@ -48,6 +55,13 @@ from urllib.parse import urljoin
 
 import httpx
 
+from job_hunt.services.oracle_recruiting import (
+    fetch_requisitions,
+    job_url,
+    parse_requisitions,
+    requisitions_total,
+    resolve_oracle_site,
+)
 from job_hunt.services.posted_date import relative_age_to_iso
 
 GNWT_BASE = "https://www.gov.nt.ca"
@@ -57,12 +71,11 @@ NSHA_BASE = "https://jobs.nshealth.ca"
 WRHA_BASE = "https://careers.wrha.mb.ca"
 NS_SEARCH = f"{NS_BASE}/search/"
 NB_HOST = "https://emgi.fa.ca3.oraclecloud.com"
-NB_API = f"{NB_HOST}/hcmRestApi/resources/latest/recruitingCEJobRequisitions"
 NB_SITE = "CX_1001"
-NB_JOB_URL = f"{NB_HOST}/hcmUI/CandidateExperience/en/sites/{NB_SITE}/job/{{job_id}}"
+NB_JOB_URL = job_url(NB_HOST, NB_SITE, "{job_id}")
 MB_FEED = "https://jobsearch.gov.mb.ca/rss/newJobPostingsFeed.rss"
 # Oracle caps a page at 200; 50 keeps each response small enough to be cheap.
-NB_PAGE_SIZE = 50
+ORACLE_PAGE_SIZE = 50
 
 _USER_AGENT = "Mozilla/5.0 (compatible; job-hunt/0.1; personal job search)"
 _TAG_RE = re.compile(r"<[^>]+>")
@@ -190,44 +203,15 @@ def _ns_location(page_html: str, from_index: int) -> str:
 
 
 def parse_nb_gov(payload: dict[str, Any] | None) -> list[dict[str, str]]:
-    """Extract job rows from an Oracle Cloud Recruiting search response.
-
-    The payload nests one search result per ``items`` entry, each carrying the
-    postings under ``requisitionList``; everything above that level is facet
-    and paging metadata.
-    """
-    rows: list[dict[str, str]] = []
-    for item in (payload or {}).get("items") or []:
-        for req in item.get("requisitionList") or []:
-            job_id = str(req.get("Id") or "").strip()
-            title = _text(str(req.get("Title") or ""))
-            if not job_id or not title:
-                continue
-            rows.append(
-                {
-                    "url": NB_JOB_URL.format(job_id=job_id),
-                    "title": title,
-                    "company": "Government of New Brunswick",
-                    "location": _text(str(req.get("PrimaryLocation") or "")),
-                    "salary": "",
-                    # The list endpoint always returns a null PostingEndDate;
-                    # the real closing date is only on the detail endpoint, so
-                    # this stays empty rather than pretending to be "until
-                    # filled". PostedDate, however, is populated here.
-                    "closes": _text(str(req.get("PostingEndDate") or "")),
-                    "posted": _text(str(req.get("PostedDate") or "")),
-                }
-            )
-    return rows
+    """Extract job rows from the New Brunswick Oracle search response."""
+    return parse_requisitions(
+        payload, base=NB_HOST, site=NB_SITE, company="Government of New Brunswick"
+    )
 
 
 def nb_total(payload: dict[str, Any] | None) -> int:
     """Result count the API reports for the query, or 0 when absent."""
-    for item in (payload or {}).get("items") or []:
-        count = item.get("TotalJobsCount")
-        if isinstance(count, int):
-            return count
-    return 0
+    return requisitions_total(payload)
 
 
 _MB_ITEM_RE = re.compile(r"<item>(.*?)</item>", re.S)
@@ -455,33 +439,39 @@ def scan_gov_boards(
 
             return fetch
 
-        def nb_fetch(http: httpx.Client, keyword: str | None, page: int):
-            # Oracle takes paging and the search term inside one `finder` string,
-            # not as separate query parameters.
-            finder = [f"siteNumber={NB_SITE}"]
-            if keyword:
-                finder.append(f"keyword={keyword}")
-            finder += [f"limit={NB_PAGE_SIZE}", f"offset={page * NB_PAGE_SIZE}",
-                       "sortBy=POSTING_DATES_DESC"]
-            try:
-                response = http.get(
-                    NB_API,
-                    params={
-                        "onlyData": "true",
-                        "expand": "requisitionList",
-                        "finder": "findReqs;" + ",".join(finder),
-                    },
+        def oracle_board(key: str, base: str, site: str, company: str):
+            def fetch(http: httpx.Client, keyword: str | None, page: int):
+                payload = fetch_requisitions(
+                    http, base, site, keyword=keyword,
+                    offset=page * ORACLE_PAGE_SIZE, limit=ORACLE_PAGE_SIZE,
                 )
-                if response.status_code != 200:
-                    errors["nb_gov"] = errors.get("nb_gov", 0) + 1
+                if payload is None:
+                    errors[key] = errors.get(key, 0) + 1
                     return []
-                payload = response.json()
                 if not keyword:
-                    advertised["nb_gov"] = nb_total(payload)
-                return parse_nb_gov(payload)
-            except (httpx.HTTPError, ValueError):
-                errors["nb_gov"] = errors.get("nb_gov", 0) + 1
-                return []
+                    advertised[key] = requisitions_total(payload)
+                return parse_requisitions(payload, base=base, site=site, company=company)
+
+            return fetch
+
+        def successfactors_board(key: str, base: str, company: str):
+            # SuccessFactors pages by result offset, 25 per page.
+            return html_board(
+                f"{base}/search/", "q", lambda page: {"startrow": page * 25},
+                functools.partial(parse_successfactors, base=base, company=company),
+                key=key,
+            )
+
+        def configured_spec(board_id: str, cfg: dict[str, Any]) -> dict[str, Any] | None:
+            """A board defined wholly in portals.yml by its platform URL."""
+            company = str(cfg.get("company") or board_id)
+            if cfg.get("oracle_url"):
+                target = resolve_oracle_site(str(cfg["oracle_url"]))
+                return {"fetch": oracle_board(board_id, *target, company)} if target else None
+            if cfg.get("successfactors_url"):
+                base = str(cfg["successfactors_url"]).rstrip("/")
+                return {"fetch": successfactors_board(board_id, base, company)}
+            return None
 
         def mb_fetch(http: httpx.Client, category: str | None, page: int):
             # One feed per category, no paging — a second page is always empty.
@@ -507,7 +497,11 @@ def scan_gov_boards(
                     key="ns_gov",
                 ),
             },
-            "nb_gov": {"fetch": nb_fetch},
+            "nb_gov": {
+                "fetch": oracle_board(
+                    "nb_gov", NB_HOST, NB_SITE, "Government of New Brunswick"
+                ),
+            },
             "mb_gov": {"fetch": mb_fetch, "selector_key": "categories"},
             # Health authorities on the same SuccessFactors platform as ns_gov.
             # These boards are dominated by clinical postings — WRHA advertises
@@ -538,6 +532,16 @@ def scan_gov_boards(
             cfg = boards.get(board_id) or {}
             if cfg.get("enabled", False):
                 collect(board_id, cfg, spec)
+        for board_id, cfg in boards.items():
+            if board_id in specs or not (cfg or {}).get("enabled", False):
+                continue
+            spec = configured_spec(board_id, cfg)
+            if spec is not None:
+                collect(board_id, cfg, spec)
+            elif stats is not None:
+                # An enabled board this module cannot read must not look empty.
+                stats[board_id] = {"collected": 0, "advertised": None,
+                                   "truncated": False, "errors": 1}
 
         # One screening call per board, after collection, so the model sees the
         # whole title list at once and the run costs one request per board.

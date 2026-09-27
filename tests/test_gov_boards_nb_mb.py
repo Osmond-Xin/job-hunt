@@ -290,6 +290,96 @@ def test_manitoba_carries_both_of_its_published_dates() -> None:
     assert row["posted"] == "2026-07-30"
 
 
+# --- boards defined wholly in portals.yml (2026-09-27) ---------------------
+# Nunavut runs the same Oracle stack as New Brunswick and Alberta the same
+# SuccessFactors stack as Nova Scotia; neither needed a parser of its own.
+
+ALBERTA_ROW = """<tr class="data-row"><td class="colTitle" headers="hdrTitle">
+<span class="jobTitle hidden-phone">
+<a href="/job/Taber-Field-Support-Technologist-%28Taber%29/603988117/" class="jobTitle-link">Field Support Technologist (Taber)</a>
+</span>
+<div class="jobdetail-phone visible-phone">
+<span class="jobTitle visible-phone">
+<a class="jobTitle-link" href="/job/Taber-Field-Support-Technologist-%28Taber%29/603988117/">Field Support Technologist (Taber)</a>
+</span>
+<span class="jobLocation visible-phone">
+<span class="jobLocation">
+Taber, AB
+</span></span></div></td></tr>"""
+
+
+def test_an_oracle_board_needs_only_its_career_site_url() -> None:
+    import httpx
+
+    seen: list[httpx.URL] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url)
+        return httpx.Response(200, json={"items": [{"TotalJobsCount": 1, "requisitionList": [
+            {"Id": "676", "Title": "Public Affairs Officer", "PrimaryLocation": "Iqaluit, NU, Canada",
+             "PostedDate": "2026-09-25", "PostingEndDate": "2026-10-17"}]}]})
+
+    stats: dict = {}
+    rows = scan_gov_boards(
+        {"enabled": True, "delay_s": 0, "boards": {"nu_gov": {
+            "enabled": True,
+            "company": "Government of Nunavut",
+            "oracle_url": "https://fa-exux-saasfaprod1.fa.ocs.oraclecloud.com"
+                          "/hcmUI/CandidateExperience/en/sites/CX_5/requisitions",
+        }}},
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        sleep=lambda _s: None,
+        stats=stats,
+    )
+
+    assert seen[0].host == "fa-exux-saasfaprod1.fa.ocs.oraclecloud.com"
+    assert "siteNumber=CX_5," in seen[0].params["finder"]
+    assert rows[0]["url"] == (
+        "https://fa-exux-saasfaprod1.fa.ocs.oraclecloud.com"
+        "/hcmUI/CandidateExperience/en/sites/CX_5/job/676"
+    )
+    assert rows[0]["company"] == "Government of Nunavut"
+    assert rows[0]["closes"] == "2026-10-17"
+    assert stats["nu_gov"]["advertised"] == 1 and stats["nu_gov"]["truncated"] is False
+
+
+def test_a_successfactors_board_needs_only_its_site_root() -> None:
+    import httpx
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = ALBERTA_ROW if request.url.params.get("startrow") is None else ""
+        return httpx.Response(200, text=body)
+
+    rows = scan_gov_boards(
+        {"enabled": True, "delay_s": 0, "boards": {"ab_gov": {
+            "enabled": True,
+            "company": "Government of Alberta",
+            "successfactors_url": "https://jobpostings.alberta.ca/",
+        }}},
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        sleep=lambda _s: None,
+    )
+
+    assert len(rows) == 1  # the phone copy of the row is the same posting
+    assert rows[0]["url"] == (
+        "https://jobpostings.alberta.ca/job/Taber-Field-Support-Technologist-%28Taber%29/603988117/"
+    )
+    assert rows[0]["company"] == "Government of Alberta"
+    assert rows[0]["location"] == "Taber, AB"
+
+
+def test_an_enabled_board_with_no_platform_url_is_reported_not_empty() -> None:
+    stats: dict = {}
+    rows = scan_gov_boards(
+        {"enabled": True, "boards": {"mystery": {"enabled": True}}},
+        client=object(),
+        sleep=lambda _s: None,
+        stats=stats,
+    )
+    assert rows == []
+    assert stats["mystery"]["errors"] == 1
+
+
 def test_new_brunswick_carries_the_posted_date_the_list_api_does_publish() -> None:
     """PostingEndDate is always null in the list response; PostedDate is not."""
     from job_hunt.services.gov_boards import parse_nb_gov
