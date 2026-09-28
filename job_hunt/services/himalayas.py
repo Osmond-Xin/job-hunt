@@ -116,7 +116,9 @@ def scan_himalayas_source(
                     seen.add(posting.url)
                     postings.append(posting)
                 # A repeated page repeats its losses too; count them once.
-                if len(query_urls) > before or not payload["jobs"]:
+                # (``not rows``: a page whose rows all fail validation must
+                # still count its loss.)
+                if len(query_urls) > before or not rows:
                     lost += page_lost
                 # Not a short page: non-final pages sometimes carry 19 rows
                 # (2026-09-27), so only an empty or repeated page, or a known

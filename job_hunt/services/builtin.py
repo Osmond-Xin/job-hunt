@@ -34,7 +34,8 @@ _USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/128.0 Safari/537.36"
 )
-_CARD = 'data-id="job-card"'
+# The card marker, either quote style; "job-card-title" does not match.
+_CARD_RE = re.compile(r"""data-id=['"]job-card['"]""")
 _EMPTY_MARKER = "No Results Found"
 _ANCHOR_RE = re.compile(r"<a\b([^>]*)>(.*?)</a>", re.S)
 _COMPANY_RE = re.compile(r'data-id="company-title"[^>]*>\s*(?:<span[^>]*>)?(.*?)<', re.S)
@@ -62,7 +63,7 @@ def _age(card: str) -> str:
 
 def parse_cards(page_html: str) -> list[dict[str, str]]:
     rows = []
-    for card in (page_html or "").split(_CARD)[1:]:
+    for card in _CARD_RE.split(page_html or "")[1:]:
         title = _title_link(card)
         # Validated like every other source: "javascript:void(0)" or an
         # empty title is a card lost to parsing, not a posting.
@@ -129,7 +130,7 @@ def scan_builtin_source(
                 except httpx.HTTPError:
                     errors += 1
                     break
-                raw = response.text.count(_CARD)
+                raw = len(_CARD_RE.findall(response.text))
                 if not raw and _EMPTY_MARKER not in response.text:
                     errors += 1  # a block page or changed markup, not the end
                     break

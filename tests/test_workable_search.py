@@ -123,3 +123,13 @@ def test_an_unhashable_id_does_not_crash_the_search():
     jobs = [{**_job(1), "id": ["x"]}, {**_job(2), "id": {"v": 1}}]
     result = _scan(lambda request: httpx.Response(200, json={"totalSize": 2, "jobs": jobs}))
     assert len(result.postings) == 2 and result.health.ok
+
+
+
+def test_a_page_of_only_malformed_rows_reports_loss_not_a_silent_zero():
+    """Round 10: every row failing validation left rows empty, the loss was
+    never added, and the source read as healthy with nothing collected."""
+    result = _scan(lambda request: httpx.Response(200, json={"totalSize": 3, "jobs": [
+        None, {**_job(1), "url": 123}, {**_job(2), "title": ""}]}))
+    assert result.postings == []
+    assert result.health.incomplete and any("3 row(s) could not be parsed" in w for w in result.health.warnings())

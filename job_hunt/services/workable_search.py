@@ -126,7 +126,9 @@ def scan_workable_search_source(
                 # so rows without ids still show progress.
                 ids.update(row["key"] or row["url"] for row in rows)
                 # A repeated page repeats its losses too; count them once.
-                if len(ids) > before or not jobs:
+                # (``not rows``, not ``not jobs``: a page whose rows all fail
+                # validation must still count its loss.)
+                if len(ids) > before or not rows:
                     lost += page_lost
                 for row in rows:
                     posting = from_row(row, source_id="workable_search", portal="workable")

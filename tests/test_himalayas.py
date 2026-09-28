@@ -89,3 +89,13 @@ def test_an_unknown_count_keeps_paging_and_bad_rows_are_loss():
     result = _scan(handler, max_pages=5)
     assert len(result.postings) == 40
     assert any("1 row(s) could not be parsed" in w for w in result.health.warnings())
+
+
+
+def test_a_page_of_only_malformed_rows_reports_loss_not_a_silent_zero():
+    """Round 10: every row failing validation left rows empty, the loss was
+    never added, and the source read as healthy with nothing collected."""
+    result = _scan(lambda request: httpx.Response(200, json={"totalCount": 3, "jobs": [
+        None, {**JOB, "applicationLink": 123, "guid": None}, {**JOB, "title": ""}]}))
+    assert result.postings == []
+    assert result.health.incomplete and any("3 row(s) could not be parsed" in w for w in result.health.warnings())

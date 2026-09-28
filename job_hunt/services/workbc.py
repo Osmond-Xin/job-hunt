@@ -133,13 +133,15 @@ def scan_workbc_source(
                 before = len(ids)
                 # Identity is the JobId when it is a usable id, else the
                 # validated URL; mirrors count as covered.
-                ids.update(row_key(job.get("JobId")) or f"#{index}-{page}"
+                ids.update(row_key(job.get("JobId")) or f"#mirror{index}"
                            for index, job in enumerate(jobs)
                            if isinstance(job, dict) and job.get("IsFederalJob"))
                 rows, page_lost = guard_rows(jobs, parse_job)
                 ids.update(row["key"] or row["url"] for row in rows)
                 # A repeated page repeats its losses too; count them once.
-                if len(ids) > before or not jobs:
+                # (``not rows``, not ``not jobs``: a page whose rows all fail
+                # validation must still count its loss.)
+                if len(ids) > before or not rows:
                     lost += page_lost
                 for row in rows:
                     posting = from_row(row, source_id="workbc", portal="workbc")

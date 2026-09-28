@@ -119,3 +119,12 @@ def test_a_card_with_a_script_link_or_no_title_is_loss_not_a_posting():
     result = _scan(lambda request: httpx.Response(200, text=bad))
     assert [p.url for p in result.postings] == ["https://www.builtinvancouver.org/job/y/2"]
     assert any("2 job card" in w for w in result.health.warnings())
+
+
+
+def test_single_quoted_card_markers_are_counted_and_split():
+    """Round 10: the card marker assumed double quotes."""
+    cards = "".join(f"<div data-id='job-card'><a data-id='job-card-title' href='/job/a/{i}'>Analyst {i}</a></div>"
+                    for i in range(3))
+    result = _scan(lambda request: httpx.Response(200, text=cards))
+    assert len(result.postings) == 3 and result.health.ok and not result.health.incomplete
