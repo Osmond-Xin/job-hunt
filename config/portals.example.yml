@@ -456,3 +456,12 @@ workable_search:
   delay_s: 1.0
   timeout_s: 30.0
   max_pages: 5
+
+# Tier 16 — Himalayas (job_hunt/services/himalayas.py), 2026-09-27. Remote roles
+# whose location restrictions include Canada, searched by profile role term
+# (`queries` overrides). 20 rows a page. Positive title filter.
+himalayas:
+  enabled: true
+  delay_s: 1.0
+  timeout_s: 30.0
+  max_pages: 3

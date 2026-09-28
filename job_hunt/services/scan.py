@@ -24,6 +24,7 @@ from job_hunt.services.cn_boards import scan_cn_boards_source
 from job_hunt.services.employer_boards import scan_employer_boards_source
 from job_hunt.services.getro_boards import scan_getro_boards_source
 from job_hunt.services.gov_boards import scan_gov_boards
+from job_hunt.services.himalayas import scan_himalayas_source
 from job_hunt.services.hn_hiring import scan_hn_hiring_source
 from job_hunt.services.regional_boards import scan_regional_boards
 from job_hunt.services.immigration import AMBIGUOUS_PROVINCE_CODES, UNAMBIGUOUS_PROVINCE_CODES
@@ -116,11 +117,12 @@ def scan_portals(
     Tier 13: YC companies hiring in Canada (``yc_companies``). Positive filter.
     Tier 14: WorkBC (``workbc``), searched by the profile's role terms. Positive filter.
     Tier 15: Workable's cross-employer search (``workable_search``). Positive filter.
+    Tier 16: Himalayas remote roles open to Canada (``himalayas``). Positive filter.
 
     Tier 1 also reads every company board the other tiers have surfaced
     (``services/discovered_companies.py``), not only the hand-written list.
 
-    Tiers 4-15 need no WebSearch provider and consume no search quota. They
+    Tiers 4-16 need no WebSearch provider and consume no search quota. They
     return structured employer / location fields, so they are strictly better
     per result than the tier-3 channels that cover the same boards.
     """
@@ -284,7 +286,8 @@ def scan_portals(
         # store staff. Tier 12: WorkPEI carries the whole island's job market.
         # Tier 13: YC companies post sales and design roles beside engineering.
         # Tier 14: WorkBC aggregates every kind of BC employer. Tier 15:
-        # Workable's search spans every employer on that ATS.
+        # Workable's search spans every employer on that ATS. Tier 16:
+        # Himalayas is remote roles of every kind.
         general_tiers = [
             _getro_scanned_jobs(config.get("getro_boards"), result.errors),
             _hn_hiring_scanned_jobs(config.get("hn_hiring"), result.errors),
@@ -306,6 +309,12 @@ def scan_portals(
                 "workable search",
                 lambda cfg: scan_workable_search_source(cfg, discovery_context().get("roles", [])),
                 config.get("workable_search"),
+                result.errors,
+            ),
+            _source_scanned_jobs(
+                "himalayas",
+                lambda cfg: scan_himalayas_source(cfg, discovery_context().get("roles", [])),
+                config.get("himalayas"),
                 result.errors,
             ),
         ]
