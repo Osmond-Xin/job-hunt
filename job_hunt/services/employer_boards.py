@@ -84,6 +84,12 @@ public JSON endpoint, so an employer is one ``portals.yml`` entry — a
   total is taken as its lower bound, ``(pages - 1) * 10 + 1`` — enough to end
   the walk after the last page and to report one that stops early. Alberta
   Health Services: 127 pages on 2026-09-27.
+- **peopleadmin** — PeopleAdmin's Atom feed (``<site>/postings/search.atom
+  ?page=N``): ``<entry>`` with ``<link href>``, ``<title>`` and
+  ``<published>``. No count is published and no location either, hence
+  ``location_hint``; the walk stops on a page with nothing new. On
+  2026-09-27: Sask Polytech 71, U Regina 63, CNC 48, U Lethbridge 26,
+  Lethbridge Polytechnic 11.
 - **successfactors** — SAP SuccessFactors career sites, read with the parser
   the public-sector boards use (``gov_boards.parse_successfactors``); the
   total is the page's "of <b>N</b>". For crown corporations — ICBC,
@@ -822,6 +828,47 @@ def _selectminds_reader(employer: dict[str, Any]):
     return read
 
 
+_ATOM_ENTRY_RE = re.compile(r"<entry>(.*?)</entry>", re.S)
+
+
+def parse_peopleadmin(feed: str) -> list[dict[str, str]]:
+    rows = []
+    for entry in _ATOM_ENTRY_RE.findall(feed or ""):
+        link = re.search(r'<link[^>]*href="([^"]+)"', entry)
+        title = re.search(r"<title>(.*?)</title>", entry, re.S)
+        published = re.search(r"<published>(\d{4}-\d{2}-\d{2})", entry)
+        if not link or not title:
+            continue
+        rows.append(
+            {
+                "url": html.unescape(link.group(1)),
+                "title": html.unescape(_TAG_RE.sub(" ", title.group(1))).strip(),
+                "location": "",
+                "posted": published.group(1) if published else "",
+            }
+        )
+    return rows
+
+
+def _peopleadmin_reader(employer: dict[str, Any]):
+    parsed = urlparse(str(employer.get("url") or ""))
+    if not parsed.netloc:
+        return None
+    feed = f"https://{parsed.netloc}/postings/search.atom"
+
+    def read(client: httpx.Client, page: int) -> Page:
+        try:
+            response = client.get(feed, params={"page": page + 1})
+            response.raise_for_status()
+        except httpx.HTTPError:
+            return None
+        if page == 0 and "<feed" not in response.text:
+            return None  # not a PeopleAdmin feed
+        return parse_peopleadmin(response.text), 0
+
+    return read
+
+
 _READERS = {
     "oracle": _oracle_reader,
     "jibe": _jibe_reader,
@@ -837,6 +884,7 @@ _READERS = {
     "avanti": _avanti_reader,
     "aspnet_jobsearch": _aspnet_jobsearch_reader,
     "selectminds": _selectminds_reader,
+    "peopleadmin": _peopleadmin_reader,
 }
 
 

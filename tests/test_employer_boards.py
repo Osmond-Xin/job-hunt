@@ -727,6 +727,37 @@ def test_a_selectminds_walk_that_stops_before_its_last_page_is_incomplete():
     assert result.health.incomplete
 
 
+# Trimmed from cnc.peopleadmin.ca/postings/search.atom, 2026-09-27.
+def _atom(ids):
+    entries = "".join(
+        f'<entry><id>https://cnc.peopleadmin.ca/postings/{i}</id><published>2026-09-24T14:39:25-07:00</published>'
+        f'<link rel="alternate" type="text/html" href="https://cnc.peopleadmin.ca/postings/{i}"/>'
+        f"<title>Data Analyst &amp; Reporting {i}</title></entry>" for i in ids)
+    return f'<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom">{entries}</feed>'
+
+
+def test_a_peopleadmin_feed_is_paged_until_a_page_brings_nothing_new():
+    pages: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        pages.append(request.url.params["page"])
+        return httpx.Response(200, text=_atom(range(3)) if request.url.params["page"] == "1" else _atom([]))
+
+    result = _scan(_config({"name": "College of New Caledonia", "platform": "peopleadmin",
+                            "url": "https://cnc.peopleadmin.ca/", "location_hint": "Prince George, BC"}), handler)
+    assert pages == ["1", "2"]
+    first = result.postings[0]
+    assert first.url == "https://cnc.peopleadmin.ca/postings/0" and first.title == "Data Analyst & Reporting 0"
+    assert first.posted == "2026-09-24" and first.location == "Prince George, BC"
+    assert len(result.postings) == 3 and result.health.ok
+
+
+def test_a_peopleadmin_url_that_is_not_a_feed_is_an_error():
+    result = _scan(_config({"name": "CNC", "platform": "peopleadmin", "url": "https://cnc.peopleadmin.ca/"}),
+                   lambda request: httpx.Response(200, text="<html>login</html>"))
+    assert result.health.errors == 1
+
+
 def test_the_tier_keeps_the_positive_title_filter():
     """J.D. Irving's board is drivers, mechanics and store managers; only the
     title says which of its 736 postings is his work."""
