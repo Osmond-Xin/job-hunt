@@ -107,3 +107,15 @@ def test_title_link_in_any_attribute_order_company_span_with_class_and_ages():
         ("https://www.builtinvancouver.org/job/analyst/9", "Acme"),
         ("https://www.builtinvancouver.org/job/dev/8", "")]
     assert rows[0]["posted"] and rows[1]["posted"]
+
+
+
+def test_a_card_with_a_script_link_or_no_title_is_loss_not_a_posting():
+    """Round 9: href="javascript:void(0)" became a posting; an empty title
+    vanished without being counted."""
+    bad = ('<div data-id="job-card"><a data-id="job-card-title" href="javascript:void(0)">Analyst</a></div>'
+           '<div data-id="job-card"><a data-id="job-card-title" href="/job/x/1"></a></div>'
+           "<div data-id=\"job-card\"><a data-id='job-card-title' href='/job/y/2'>Developer</a></div>")
+    result = _scan(lambda request: httpx.Response(200, text=bad))
+    assert [p.url for p in result.postings] == ["https://www.builtinvancouver.org/job/y/2"]
+    assert any("2 job card" in w for w in result.health.warnings())

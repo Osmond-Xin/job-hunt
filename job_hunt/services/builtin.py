@@ -21,12 +21,12 @@ import html
 import re
 import time
 from typing import Any, Callable
-from urllib.parse import urljoin
 
 import httpx
 
 from job_hunt.models.posting import JobPosting, SourceHealth, SourceResult, from_row
 from job_hunt.services.posted_date import relative_age_to_iso
+from job_hunt.services.row_guard import absolute_url
 
 BASE = "https://www.builtinvancouver.org"
 _PAGE_SIZE = 25
@@ -47,8 +47,8 @@ _TAG_RE = re.compile(r"<[^>]+>")
 def _title_link(card: str) -> tuple[str, str] | None:
     """(href, title) of the card's title link, whatever its attribute order."""
     for attrs, text in _ANCHOR_RE.findall(card):
-        if 'data-id="job-card-title"' in attrs:
-            href = re.search(r'href="([^"]+)"', attrs)
+        if re.search(r"""data-id=['"]job-card-title['"]""", attrs):
+            href = re.search(r"""href=['"]([^'"]+)['"]""", attrs)
             return (href.group(1) if href else ""), text
     return None
 
@@ -64,14 +64,18 @@ def parse_cards(page_html: str) -> list[dict[str, str]]:
     rows = []
     for card in (page_html or "").split(_CARD)[1:]:
         title = _title_link(card)
-        if not title or not title[0]:
+        # Validated like every other source: "javascript:void(0)" or an
+        # empty title is a card lost to parsing, not a posting.
+        url = absolute_url(html.unescape(title[0]), BASE) if title else ""
+        name = html.unescape(_TAG_RE.sub(" ", title[1])).strip() if title else ""
+        if not url or not name:
             continue
         company = _COMPANY_RE.search(card)
         place = _LOCATION_RE.search(card)
         rows.append(
             {
-                "url": urljoin(BASE, html.unescape(title[0])),
-                "title": html.unescape(_TAG_RE.sub(" ", title[1])).strip(),
+                "url": url,
+                "title": name,
                 "company": html.unescape(company.group(1)).strip() if company else "",
                 "location": html.unescape(place.group(1)).strip() if place else "",
                 "posted": _age(card),
