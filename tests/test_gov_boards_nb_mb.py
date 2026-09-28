@@ -392,6 +392,31 @@ def test_a_repeated_last_page_ends_the_walk_without_a_truncation_warning() -> No
     assert stats["cmhc"]["truncated"] is False
 
 
+def test_a_keywords_first_page_overlapping_an_earlier_keyword_does_not_stop_it() -> None:
+    """Review 2026-09-27: repeats were judged against the board-wide URL set,
+    so keyword B's page 1, fully overlapping keyword A, ended B before page 2."""
+    import httpx
+
+    def page_of(ids):
+        return "".join(ALBERTA_ROW.replace("603988117", str(i)) for i in ids)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        q, start = request.url.params.get("q"), int(request.url.params.get("startrow", 0))
+        if q == "a":
+            return httpx.Response(200, text=page_of(range(25)) if start == 0 else "")
+        pages = {0: page_of(range(25)), 25: page_of(range(100, 110))}  # B page 1 == A page 1
+        return httpx.Response(200, text=pages.get(start, ""))
+
+    rows = scan_gov_boards(
+        {"enabled": True, "delay_s": 0, "boards": {"cmhc": {
+            "enabled": True, "company": "CMHC", "keywords": ["a", "b"], "max_pages": 4,
+            "successfactors_url": "https://careers.cmhc-schl.gc.ca"}}},
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        sleep=lambda _s: None,
+    )
+    assert len(rows) == 35  # B's distinct page 2 was read
+
+
 def test_an_enabled_board_with_no_platform_url_is_reported_not_empty() -> None:
     stats: dict = {}
     rows = scan_gov_boards(
