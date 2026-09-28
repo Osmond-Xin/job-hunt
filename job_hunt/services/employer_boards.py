@@ -306,7 +306,9 @@ def _hrsmart_reader(employer: dict[str, Any]):
     return read
 
 
-_SF_TOTAL_RE = re.compile(r"of\s*<b>\s*([\d,]+)\s*</b>")
+# "Results 1 – 25 of <b>130</b>" (classic theme) or "Showing 1 to 20 of 604
+# Jobs" (tile theme, Canada Post).
+_SF_TOTAL_RE = re.compile(r"of\s*(?:<b>\s*([\d,]+)\s*</b>|([\d,]+)\s+Jobs)")
 
 
 def _successfactors_reader(employer: dict[str, Any]):
@@ -315,10 +317,14 @@ def _successfactors_reader(employer: dict[str, Any]):
         return None
     base = f"https://{parsed.netloc}"
     name = str(employer.get("name") or "")
+    # ``startrow`` is an offset, and the page size is the theme's: 25 on the
+    # classic theme, 20 on the tile theme. Stepping by the wrong size skips
+    # rows, so the step is taken from the first page.
+    step = {"rows": 25}
 
     def read(client: httpx.Client, page: int) -> Page:
         try:
-            response = client.get(f"{base}/search/", params={"q": "", "startrow": page * 25})
+            response = client.get(f"{base}/search/", params={"q": "", "startrow": page * step["rows"]})
             response.raise_for_status()
         except httpx.HTTPError:
             return None
@@ -328,7 +334,10 @@ def _successfactors_reader(employer: dict[str, Any]):
         # parser no longer reads, not an employer with no openings.
         if page == 0 and not rows and not total:
             return None
-        return rows, int(total.group(1).replace(",", "")) if total else 0
+        if page == 0 and rows:
+            step["rows"] = len(rows)
+        count = (total.group(1) or total.group(2)) if total else ""
+        return rows, int(count.replace(",", "")) if count else 0
 
     return read
 

@@ -90,9 +90,11 @@ _GNWT_TOTAL_RE = re.compile(r"Displaying\s+[\d,]+\s*-\s*[\d,]+\s+of\s+([\d,]+)")
 # the path may carry a site segment before ``/job/`` (Nova Scotia Health serves
 # ``/nsha/job/...`` while the provincial board serves ``/job/...``), and the
 # anchor emits ``href`` and ``class`` in either order depending on the theme.
+# The newer tile theme (Canada Post, 2026-09-27) adds classes after
+# ``jobTitle-link`` and attributes between it and ``href``.
 _NS_ROW_RE = re.compile(
-    r'<a (?:href="(?P<url>/(?:[^"/]+/)?job/[^"]+)"[^>]*class="jobTitle-link"'
-    r'|class="jobTitle-link"[^>]*href="(?P<url2>/(?:[^"/]+/)?job/[^"]+)")[^>]*>'
+    r'<a (?:href="(?P<url>/(?:[^"/]+/)?job/[^"]+)"[^>]*class="jobTitle-link[" ]'
+    r'|class="jobTitle-link[" ][^>]*href="(?P<url2>/(?:[^"/]+/)?job/[^"]+)")[^>]*>'
     r"(?P<title>.*?)</a>",
     re.S,
 )

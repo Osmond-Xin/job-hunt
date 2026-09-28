@@ -320,6 +320,12 @@ employer_boards:
     - name: SaskTel
       platform: successfactors
       url: https://jobs.sasktel.com
+    - name: Canada Post
+      platform: successfactors
+      url: https://jobs.canadapost.ca
+      # 604 postings at 20 a page (tile theme, 2026-09-27); mostly delivery
+      # and plant roles.
+      max_pages: 40
     - name: Niagara Health
       platform: erecruit
       url: https://careers.niagarahealth.on.ca/erecruit

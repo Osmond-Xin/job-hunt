@@ -374,6 +374,32 @@ def test_a_successfactors_employer_is_read_to_its_advertised_total():
     assert result.health.advertised == 2 and result.health.ok
 
 
+def _tile_page(ids, total):
+    tiles = "".join(
+        f'<div class="tiletitle"><span class="col-md-12 section-title title" role="heading">'
+        f'<a class="jobTitle-link fontcoloraab578f85c90eae3" data-focus-tile=".job-id-{i}" '
+        f'aria-describedby="jobSearchTileHelpText-{i}" href="/job/Toronto-Data-Analyst/{i}/">Data Analyst {i}</a>'
+        f"</span></div>" for i in ids)
+    return f'<span class="results-label">Showing 1 to 20 of {total} Jobs</span>{tiles}'
+
+
+def test_a_successfactors_tile_theme_is_read_at_its_own_page_size():
+    """Canada Post, 2026-09-27: extra classes on the title link, 20 rows a
+    page, and "Showing 1 to 20 of N Jobs" for the count."""
+    starts: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        start = int(request.url.params["startrow"])
+        starts.append(str(start))
+        return httpx.Response(200, text=_tile_page(range(start, min(start + 20, 30)), 30))
+
+    result = _scan(_config({"name": "Canada Post", "platform": "successfactors",
+                            "url": "https://jobs.canadapost.ca"}), handler)
+    assert starts == ["0", "20"]  # stepped by 20, so no row is skipped
+    assert len(result.postings) == 30 and result.health.advertised == 30
+    assert not result.health.incomplete
+
+
 def test_a_successfactors_page_that_no_longer_parses_is_an_error():
     result = _scan(_config({"name": "SaskTel", "platform": "successfactors",
                             "url": "https://jobs.sasktel.com"}),
