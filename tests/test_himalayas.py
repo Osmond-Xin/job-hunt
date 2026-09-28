@@ -50,6 +50,17 @@ def test_a_role_search_is_paged_by_page_number_to_the_count():
     assert not result.health.truncated and not result.health.incomplete
 
 
+def test_a_page_one_row_short_does_not_end_the_search():
+    """Live pages sometimes carry 19 rows, not 20, before the last one."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        page = int(request.url.params["page"])
+        jobs = [_job(page * 100 + i) for i in range(19)] if page < 3 else []
+        return httpx.Response(200, json={"totalCount": 57, "jobs": jobs})
+
+    result = _scan(handler, max_pages=5)
+    assert len(result.postings) == 38 and not result.health.truncated
+
+
 def test_the_budget_running_out_is_truncation():
     def handler(request: httpx.Request) -> httpx.Response:
         page = int(request.url.params["page"])

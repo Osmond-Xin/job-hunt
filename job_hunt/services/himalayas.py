@@ -25,7 +25,6 @@ import httpx
 from job_hunt.models.posting import JobPosting, SourceHealth, SourceResult, from_row
 
 API = "https://himalayas.app/jobs/api/search"
-_PAGE_SIZE = 20
 _USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/128.0 Safari/537.36"
@@ -83,7 +82,7 @@ def scan_himalayas_source(
     try:
         for query in queries:
             total = 0
-            listed = 0
+            query_urls: set[str] = set()
             ended = "budget"
             for page in range(1, max_pages + 1):
                 if not first and delay > 0:
@@ -103,22 +102,30 @@ def scan_himalayas_source(
                     break
                 total = total or int(payload.get("totalCount") or 0)
                 jobs = payload["jobs"]
-                listed += len(jobs)
+                before = len(query_urls)
                 for job in jobs:
                     row = parse_job(job) if isinstance(job, dict) else None
                     posting = from_row(row, source_id="himalayas", portal="himalayas") if row else None
-                    if posting is None or posting.url in seen:
+                    if posting is None:
+                        continue
+                    query_urls.add(posting.url)
+                    if posting.url in seen:
                         continue
                     seen.add(posting.url)
                     postings.append(posting)
-                if len(jobs) < _PAGE_SIZE or listed >= total:
+                listed = len(query_urls)
+                fresh = listed - before
+                # Not a short page: non-final pages sometimes carry 19 rows
+                # (2026-09-27), so only an empty or repeated page, or the
+                # count, ends a search.
+                if not fresh or listed >= total:
                     ended = "done"
                     break
             advertised += total
             if ended == "budget":
                 truncated = True
-            elif ended == "done" and total and listed < total:
-                short.append(f"{query} {listed} of {total}")
+            elif ended == "done" and total and len(query_urls) < total:
+                short.append(f"{query} {len(query_urls)} of {total}")
     finally:
         if owns_client:
             client.close()
