@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 
 import httpx
+import pytest
 
 from job_hunt.services.employer_boards import scan_employer_boards_source
 
@@ -828,3 +829,189 @@ def test_the_tier_keeps_the_positive_title_filter():
     _accept_jobs(jobs, result, positives=["analyst"], negatives=[], include_non_canada=False,
                  known_urls=set(), known_company_roles=set(), apply=False, count_fetched=True)
     assert [job.url for job in result.jobs] == ["https://x/1"]
+
+
+# --- review of the new-sources batch, 2026-09-27 ------------------------------
+
+
+def test_an_aspnet_count_with_a_thousands_comma_is_read_whole():
+    """H2: "of 1,371" read as 1 and ended the walk after page 0."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        page = _aspx_page(range(100), 1, 1371).replace("of&nbsp; 1371", "of&nbsp; 1,371")
+        if request.method == "POST":
+            page = _aspx_page(range(100, 150), 101, 1371, next_link=False).replace("of&nbsp; 1371", "of&nbsp; 1,371")
+        return httpx.Response(200, text=page)
+
+    result = _scan(_config({"name": "Interior Health", "platform": "aspnet_jobsearch",
+                            "url": "https://jobs.interiorhealth.ca"}), handler)
+    assert result.health.advertised == 1371 and len(result.postings) == 150
+    assert any("150 of 1371" in w for w in result.health.warnings())
+
+
+def test_a_peoplesoft_grid_whose_rows_do_not_parse_is_loss_and_an_empty_grid_is_not():
+    """H3/M8: a results grid with row containers but no parsed rows was a
+    healthy zero. The grid is the positive marker; its rows are the raw count."""
+    unparsed = "<div id='HRS_AGNT_RSLT_I$0'><li id='HRS_AGNT_RSLT_I$0_row_0'><span>redesigned</span></li></div>"
+    empty = "<div id='HRS_AGNT_RSLT_I$0'><ul></ul></div>"
+
+    def scan(results):
+        return _scan(_config({"name": "Niagara Region", "platform": "peoplesoft", "url": PS_URL}),
+                     lambda request: httpx.Response(200, text=PS_FORM if request.method == "GET" else results))
+
+    assert scan(unparsed).health.incomplete
+    assert scan(empty).health.ok and not scan(empty).health.incomplete
+
+
+def test_peoplesoft_reads_double_quoted_attributes_and_pads_its_date():
+    form = PS_FORM.replace("'", '"')
+    results = PS_RESULTS.replace("'", '"').replace("09/25/2026", "9/5/2026")
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, text=form if request.method == "GET" else results)
+
+    result = _scan(_config({"name": "Niagara Region", "platform": "peoplesoft", "url": PS_URL}), handler)
+    assert "ICSID=abc123" in requests[1].content.decode()
+    [posting] = result.postings
+    assert posting.posted == "2026-09-05"
+
+
+@pytest.mark.parametrize(
+    "platform, url, payload",
+    [
+        ("adp", ADP_URL, {"jobRequisitions": [None, ADP_REQ], "meta": {"totalNumber": "2"}}),
+        ("cornerstone", CSOD_URL, {"data": {"totalCount": "2", "requisitions": [None, CSOD_REQ]}}),
+        ("avanti", "https://welland.myavanti.ca/careers", {"items": [None, AVANTI_ITEMS["items"][0]]}),
+        ("employmenthero", EH_URL, {"data": {"total_items": "2", "items": [None, EH_ITEM]}}),
+    ],
+)
+def test_a_null_element_is_counted_as_lost_not_raised(platform, url, payload):
+    """H6: a null list element raised outside the handlers and aborted the scan."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        if platform == "cornerstone" and request.method == "GET":
+            return httpx.Response(200, text=CSOD_HOME)
+        return httpx.Response(200, json=payload)
+
+    result = _scan(_config({"name": "X", "platform": platform, "url": url}), handler)
+    assert len(result.postings) == 1
+    assert result.health.incomplete and any("could not be parsed" in w for w in result.health.warnings())
+
+
+def test_a_reader_that_raises_ends_its_board_only():
+    """The rows already read from other boards stay."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "careers.thunderbay.ca":
+            return httpx.Response(200, json=JIBE_PAYLOAD)
+        return httpx.Response(200, json={"jobRequisitions": [], "meta": []})  # meta not a dict
+
+    import job_hunt.services.employer_boards as mod
+
+    original = mod._adp_reader
+    mod._READERS["adp"] = lambda employer: (lambda client, page: 1 / 0)
+    try:
+        result = _scan(_config(
+            {"name": "Niagara Parks", "platform": "adp", "url": ADP_URL},
+            {"name": "City of Thunder Bay", "platform": "jibe", "url": THUNDER_BAY_URL},
+        ), handler)
+    finally:
+        mod._READERS["adp"] = original
+    assert [p.company for p in result.postings] == ["City of Thunder Bay"]
+    assert result.health.errors == 1
+
+
+def test_adp_falls_back_to_other_ids_when_external_job_id_is_absent():
+    req = {**ADP_REQ, "customFieldGroup": {"stringFields": []}, "itemID": "9201225320075_1"}
+    result = _scan(_config({"name": "Niagara Parks", "platform": "adp", "url": ADP_URL}),
+                   lambda request: httpx.Response(200, json={"jobRequisitions": [req], "meta": {"totalNumber": 1}}))
+    assert result.postings[0].url.endswith("&jobId=9201225320075_1")
+
+
+def test_a_later_peopleadmin_page_that_is_not_the_feed_is_an_error():
+    """M5: a login page on page 2 read as the end of the board."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=_atom(range(3)) if request.url.params["page"] == "1" else "<html>login</html>")
+
+    result = _scan(_config({"name": "CNC", "platform": "peopleadmin", "url": "https://cnc.peopleadmin.ca/"}), handler)
+    assert len(result.postings) == 3 and result.health.errors == 1
+
+
+def test_peopleadmin_takes_the_html_link_and_counts_entries_it_cannot_read():
+    entry = ('<entry><link rel="self" href="https://cnc.peopleadmin.ca/postings/1.atom"/>'
+             '<link rel="alternate" type="text/html" href="/postings/1"/><title>Analyst</title></entry>'
+             "<entry><title>no link</title></entry>")
+    feed = f'<feed xmlns="http://www.w3.org/2005/Atom">{entry}</feed>'
+    result = _scan(_config({"name": "CNC", "platform": "peopleadmin", "url": "https://cnc.peopleadmin.ca/"}),
+                   lambda request: httpx.Response(200, text=feed if request.url.params["page"] == "1" else _atom([])))
+    assert [p.url for p in result.postings] == ["https://cnc.peopleadmin.ca/postings/1"]
+    assert result.health.incomplete
+
+
+def test_a_tbe_link_with_extra_classes_or_other_attribute_order_is_read():
+    """M8: class="viewJobLink new" parsed to zero rows from a populated page."""
+    page = ('<div class="oracletaleocwsv2-head">'
+            '<a class="viewJobLink new" href="https://tre.tbe.taleo.net/tre01/ats/careers/v2/viewRequisition?org=COSC&amp;cws=37&amp;rid=1">Analyst</a>'
+            '<a href="https://tre.tbe.taleo.net/tre01/ats/careers/v2/viewRequisition?org=COSC&amp;cws=37&amp;rid=2" data-x="1" class="viewJobLink">Developer</a></div>')
+    reordered = "https://tre.tbe.taleo.net/tre01/ats/careers/v2/searchResults?cws=37&org=COSC"
+    result = _scan(_config({"name": "St. Catharines", "platform": "tbe", "url": reordered}),
+                   lambda request: httpx.Response(200, text=page))
+    assert [p.title for p in result.postings] == ["Analyst", "Developer"]
+    assert result.health.ok and not result.health.incomplete
+
+
+def test_a_tbe_page_as_long_as_max_rows_is_reported_short():
+    """M6: a 500-row response was assumed to be the whole board."""
+    links = "".join(
+        f'<a href="https://tre.tbe.taleo.net/tre01/ats/careers/v2/viewRequisition?org=COSC&amp;cws=37&amp;rid={i}" '
+        f'class="viewJobLink">Job {i}</a>' for i in range(500))
+    result = _scan(_config({"name": "Big", "platform": "tbe", "url": TBE_URL}),
+                   lambda request: httpx.Response(200, text=f'<div class="oracletaleocwsv2">{links}</div>'))
+    assert len(result.postings) == 500 and result.health.incomplete
+
+
+def test_selectminds_resolves_relative_links():
+    """M7."""
+    page = _sm_page(range(2), pages=1).replace("https://careers.albertahealthservices.ca/jobs/", "/jobs/")
+    result = _scan(_config({"name": "AHS", "platform": "selectminds", "url": "https://careers.albertahealthservices.ca"}),
+                   lambda request: httpx.Response(200, text=page))
+    assert result.postings[0].url == "https://careers.albertahealthservices.ca/jobs/data-analyst-0"
+
+
+def test_an_employment_hero_board_is_paged_to_its_total():
+    """L4."""
+    pages: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        index = request.url.params["page_index"]
+        pages.append(index)
+        items = [{**EH_ITEM, "application_url": f"https://jobs.employmenthero.com/jobs/{index}-{i}"} for i in range(10 if index == "1" else 2)]
+        return httpx.Response(200, json={"data": {"total_items": 12, "items": items}})
+
+    result = _scan(_config({"name": "Amii", "platform": "employmenthero", "url": EH_URL}), handler)
+    assert pages == ["1", "2"] and len(result.postings) == 12 and not result.health.incomplete
+
+
+def test_a_cornerstone_date_with_a_time_part_is_read():
+    """L5."""
+    req = {**CSOD_REQ, "postingEffectiveDate": "9/5/2026 10:00:00 AM"}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(200, text=CSOD_HOME)
+        return httpx.Response(200, json={"data": {"totalCount": 1, "requisitions": [req]}})
+
+    result = _scan(_config({"name": "Mohawk", "platform": "cornerstone", "url": CSOD_URL}), handler)
+    assert result.postings[0].posted == "2026-09-05"
+
+
+def test_an_erecruit_url_that_already_names_the_feed_is_not_doubled():
+    """L5."""
+    paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        paths.append(request.url.path)
+        return httpx.Response(200, text=ERECRUIT_FEED)
+
+    _scan(_config({"name": "Niagara Health", "platform": "erecruit",
+                   "url": "https://careers.niagarahealth.on.ca/erecruit/RSS.aspx"}), handler)
+    assert paths == ["/erecruit/RSS.aspx"]

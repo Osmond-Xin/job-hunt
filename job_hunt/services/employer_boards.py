@@ -117,12 +117,13 @@ import re
 import time
 from email.utils import parsedate_to_datetime
 from typing import Any, Callable
-from urllib.parse import quote, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urljoin, urlparse
 
 import httpx
 
 from job_hunt.models.posting import JobPosting, SourceHealth, SourceResult, from_row
 from job_hunt.services.gov_boards import parse_successfactors
+from job_hunt.services.row_guard import guard_rows, safe_total
 from job_hunt.services.oracle_recruiting import (
     MAX_PAGE_SIZE,
     fetch_requisitions,
@@ -138,8 +139,11 @@ _USER_AGENT = (
 _PAGE_SIZE = 100
 _UKG_BOARD_RE = re.compile(r"^(https://[^/]+/[^/]+/JobBoard/[0-9a-fA-F-]{36})")
 
-# A page reader returns (rows, advertised total), or None when the request failed.
-Page = tuple[list[dict[str, str]], int] | None
+# A page reader returns (rows, advertised total or None when unknown, rows
+# lost to parsing), or None when the request failed. Readers never raise on a
+# malformed row: it is counted as lost (``row_guard``), and the walk below
+# reports loss as incomplete coverage.
+Page = tuple[list[dict[str, str]], int | None, int] | None
 
 
 def _oracle_reader(employer: dict[str, Any]):
@@ -155,7 +159,9 @@ def _oracle_reader(employer: dict[str, Any]):
         if payload is None:
             return None
         rows = parse_requisitions(payload, base=base, site=site, company="")
-        return rows, requisitions_total(payload)
+        raw = sum(len(item.get("requisitionList") or []) for item in payload["items"])
+        total = next((safe_total(item.get("TotalJobsCount")) for item in payload["items"]), None)
+        return rows, total, raw - len(rows)
 
     return read
 
@@ -165,6 +171,16 @@ def _jibe_reader(employer: dict[str, Any]):
     if not parsed.netloc:
         return None
     base = f"{parsed.scheme or 'https'}://{parsed.netloc}"
+
+    def parse(job: dict[str, Any]) -> dict[str, str]:
+        data = job["data"]
+        slug = str(data.get("slug") or data.get("req_id") or "").strip()
+        return {
+            "url": f"{base}/jobs/{slug}" if slug else "",
+            "title": str(data.get("title") or "").strip(),
+            "location": ", ".join(str(data[k]) for k in ("city", "state", "country") if data.get(k)),
+            "posted": str(data.get("posted_date") or "")[:10],
+        }
 
     def read(client: httpx.Client, page: int) -> Page:
         try:
@@ -176,42 +192,32 @@ def _jibe_reader(employer: dict[str, Any]):
         # A 200 without the list is a changed API, not a board with no jobs.
         if not isinstance(payload, dict) or not isinstance(payload.get("jobs"), list):
             return None
-        rows = []
-        for job in payload["jobs"]:
-            data = job.get("data") or {}
-            slug = str(data.get("slug") or data.get("req_id") or "").strip()
-            if not slug:
-                continue
-            rows.append(
-                {
-                    "url": f"{base}/jobs/{slug}",
-                    "title": str(data.get("title") or "").strip(),
-                    "location": ", ".join(
-                        str(data[k]) for k in ("city", "state", "country") if data.get(k)
-                    ),
-                    "posted": str(data.get("posted_date") or "")[:10],
-                }
-            )
-        return rows, int(payload.get("totalCount") or 0)
+        rows, lost = guard_rows(payload["jobs"], parse)
+        return rows, safe_total(payload.get("totalCount")), lost
 
     return read
 
 
-def _ukg_location(locations: list[dict[str, Any]]) -> str:
+def _ukg_location(locations: Any) -> str:
     """The Canadian location when the posting lists one, else the first.
 
     A posting may list several; keeping only the first dropped a
     Boston-and-Toronto posting at the Canada gate.
     """
-    addresses = [(loc or {}).get("Address") or {} for loc in locations]
-    canadian = [
-        a for a in addresses
-        if str((a.get("Country") or {}).get("Code") or "").upper() in ("CAN", "CA")
-        or str((a.get("Country") or {}).get("Name") or "").strip().lower() == "canada"
+    addresses = [
+        loc.get("Address") for loc in (locations if isinstance(locations, list) else [])
+        if isinstance(loc, dict) and isinstance(loc.get("Address"), dict)
     ]
+
+    def country(address: dict[str, Any], key: str) -> str:
+        value = address.get("Country")
+        return str(value.get(key) or "") if isinstance(value, dict) else ""
+
+    canadian = [a for a in addresses
+                if country(a, "Code").upper() in ("CAN", "CA") or country(a, "Name").strip().lower() == "canada"]
     address = (canadian or addresses or [{}])[0]
-    place = [address.get("City"), (address.get("State") or {}).get("Name"),
-             (address.get("Country") or {}).get("Name")]
+    state = address.get("State") if isinstance(address.get("State"), dict) else {}
+    place = [address.get("City"), state.get("Name"), country(address, "Name")]
     return ", ".join(str(part) for part in place if part)
 
 
@@ -220,6 +226,15 @@ def _ukg_reader(employer: dict[str, Any]):
     if not match:
         return None
     board = match.group(1)
+
+    def parse(item: dict[str, Any]) -> dict[str, str]:
+        job_id = str(item.get("Id") or "").strip()
+        return {
+            "url": f"{board}/OpportunityDetail?opportunityId={job_id}" if job_id else "",
+            "title": str(item.get("Title") or "").strip(),
+            "location": _ukg_location(item.get("Locations")),
+            "posted": str(item.get("PostedDate") or "")[:10],
+        }
 
     def read(client: httpx.Client, page: int) -> Page:
         body = {
@@ -243,20 +258,8 @@ def _ukg_reader(employer: dict[str, Any]):
             return None
         if not isinstance(payload, dict) or not isinstance(payload.get("opportunities"), list):
             return None
-        rows = []
-        for item in payload["opportunities"]:
-            job_id = str(item.get("Id") or "").strip()
-            if not job_id:
-                continue
-            rows.append(
-                {
-                    "url": f"{board}/OpportunityDetail?opportunityId={job_id}",
-                    "title": str(item.get("Title") or "").strip(),
-                    "location": _ukg_location(item.get("Locations") or []),
-                    "posted": str(item.get("PostedDate") or "")[:10],
-                }
-            )
-        return rows, int(payload.get("totalCount") or 0)
+        rows, lost = guard_rows(payload["opportunities"], parse)
+        return rows, safe_total(payload.get("totalCount")), lost
 
     return read
 
@@ -301,7 +304,7 @@ def _hrsmart_reader(employer: dict[str, Any]):
             return None
         rows = parse_hrsmart(response.text, site)
         # A first page with no rows is markup the parser no longer reads.
-        return (rows, 0) if rows or page else None
+        return (rows, None, 0) if rows or page else None
 
     return read
 
@@ -336,8 +339,7 @@ def _successfactors_reader(employer: dict[str, Any]):
             return None
         if page == 0 and rows:
             step["rows"] = len(rows)
-        count = (total.group(1) or total.group(2)) if total else ""
-        return rows, int(count.replace(",", "")) if count else 0
+        return rows, safe_total((total.group(1) or total.group(2)) if total else None), 0
 
     return read
 
@@ -372,11 +374,13 @@ def _erecruit_reader(employer: dict[str, Any]):
     parsed = urlparse(str(employer.get("url") or ""))
     if not parsed.netloc:
         return None
-    feed_url = f"https://{parsed.netloc}{parsed.path.rstrip('/')}/RSS.aspx"
+    path = parsed.path.rstrip("/")
+    # The site root or the feed itself may be configured.
+    feed_url = f"https://{parsed.netloc}{path if path.lower().endswith('/rss.aspx') else path + '/RSS.aspx'}"
 
     def read(client: httpx.Client, page: int) -> Page:
         if page:
-            return [], 0  # one feed, no paging
+            return [], None, 0  # one feed, no paging
         try:
             response = client.get(feed_url)
             response.raise_for_status()
@@ -384,19 +388,23 @@ def _erecruit_reader(employer: dict[str, Any]):
             return None
         rows = parse_erecruit(response.text)
         # A hospital always has postings; none parsed is a changed feed.
-        return (rows, len(rows)) if rows else None
+        if not rows:
+            return None
+        return rows, None, len(_ERECRUIT_ITEM_RE.findall(response.text)) - len(rows)
 
     return read
 
 
-_PS_HIDDEN_RE = re.compile(r"<input type='hidden' name='([^']+)' id='[^']*' value='([^']*)'")
-_PS_FORM_RE = re.compile(r"<form[^>]*action='([^']+)'")
+_PS_HIDDEN_RE = re.compile(r"""<input type=['"]hidden['"] name=['"]([^'"]+)['"] id=['"][^'"]*['"] value=['"]([^'"]*)['"]""")
+_PS_FORM_RE = re.compile(r"""<form[^>]*action=['"]([^'"]+)['"]""")
+_PS_GRID = "HRS_AGNT_RSLT_I$0"
+_PS_ROW_RE = re.compile(r"""id=['"]HRS_AGNT_RSLT_I\$0_row_(\d+)['"]""")
 
 
 def _ps_field(page_html: str, name: str) -> dict[str, str]:
     return {
         index: html.unescape(value).strip()
-        for index, value in re.findall(rf"id='{re.escape(name)}\$(\d+)'[^>]*>([^<]*)<", page_html)
+        for index, value in re.findall(rf"""id=['"]{re.escape(name)}\$(\d+)['"][^>]*>([^<]*)<""", page_html)
     }
 
 
@@ -421,7 +429,8 @@ def parse_peoplesoft(page_html: str, search_url: str) -> list[dict[str, str]]:
                        f"&SiteId={site}&JobOpeningId={job_id}&PostingSeq=1",
                 "title": title,
                 "location": places.get(index, ""),
-                "posted": f"{year}-{month}-{day}" if year and month and day else "",
+                "posted": f"{year}-{int(month):02d}-{int(day):02d}"
+                if year.isdigit() and month.isdigit() and day.isdigit() else "",
             }
         )
     return rows
@@ -434,7 +443,7 @@ def _peoplesoft_reader(employer: dict[str, Any]):
 
     def read(client: httpx.Client, page: int) -> Page:
         if page:
-            return [], 0  # the gateway lists every opening in one response
+            return [], None, 0  # the gateway lists every opening in one response
         try:
             form_page = client.get(url)
             form_page.raise_for_status()
@@ -445,11 +454,14 @@ def _peoplesoft_reader(employer: dict[str, Any]):
             response.raise_for_status()
         except httpx.HTTPError:
             return None
-        rows = parse_peoplesoft(response.text, url)
-        # No count is published; a results grid with no rows is a changed page.
-        if not rows and "HRS_AGNT_RSLT_I" not in response.text:
+        # The results grid is the positive marker: without it this is not a
+        # results page. With it, its row containers are the raw count — zero
+        # is a genuinely empty board, more than were parsed is loss.
+        if _PS_GRID not in response.text:
             return None
-        return rows, len(rows)
+        rows = parse_peoplesoft(response.text, url)
+        raw = len(set(_PS_ROW_RE.findall(response.text)))
+        return rows, None, max(0, raw - len(rows))
 
     return read
 
@@ -516,10 +528,10 @@ def _taleo_reader(employer: dict[str, Any]):
                 joined = response.text
         except httpx.HTTPError:
             return None
-        total = form.get("listRequisition.nbElements", "")
-        if page == 0 and not total.isdigit():
+        total = safe_total(form.get("listRequisition.nbElements"))
+        if page == 0 and total is None:
             return None  # not a classic career section, or its markup changed
-        return parse_taleo(joined, base), int(total or 0)
+        return parse_taleo(joined, base), total, 0
 
     return read
 
@@ -529,29 +541,30 @@ _ADP_POSTING = "https://workforcenow.adp.com/mascsr/default/mdf/recruitment/recr
 _ADP_PAGE_SIZE = 20
 
 
+def _adp_row(req: dict[str, Any], cid: str) -> dict[str, str]:
+    fields = [f for f in ((req.get("customFieldGroup") or {}).get("stringFields") or []) if isinstance(f, dict)]
+    job = next((f.get("stringValue") for f in fields
+                if (f.get("nameCode") or {}).get("codeValue") == "ExternalJobID" and f.get("stringValue")), "")
+    # ExternalJobID is what recruitment.html takes; the others are fallbacks
+    # for a tenant that does not fill it.
+    job = job or req.get("clientRequisitionID") or req.get("itemID") or ""
+    address = next(
+        (loc["address"] for loc in req.get("requisitionLocations") or []
+         if isinstance(loc, dict) and isinstance(loc.get("address"), dict)
+         and str(loc["address"].get("cityName") or "").strip()),
+        {},
+    )
+    region = (address.get("countrySubdivisionLevel1") or {}).get("codeValue") or ""
+    return {
+        "url": _ADP_POSTING.format(cid=cid, job=quote(str(job))) if job else "",
+        "title": str(req.get("requisitionTitle") or "").strip(),
+        "location": ", ".join(p for p in (str(address.get("cityName") or "").strip(), region) if p),
+        "posted": str(req.get("postDate") or "")[:10],
+    }
+
+
 def parse_adp(payload: dict[str, Any], cid: str) -> list[dict[str, str]]:
-    rows = []
-    for req in payload.get("jobRequisitions") or []:
-        fields = (req.get("customFieldGroup") or {}).get("stringFields") or []
-        job = next((f.get("stringValue") for f in fields
-                    if (f.get("nameCode") or {}).get("codeValue") == "ExternalJobID"), "")
-        if not job:
-            continue
-        address = next(
-            (loc.get("address") or {} for loc in req.get("requisitionLocations") or []
-             if ((loc.get("address") or {}).get("cityName") or "").strip()),
-            {},
-        )
-        region = (address.get("countrySubdivisionLevel1") or {}).get("codeValue") or ""
-        rows.append(
-            {
-                "url": _ADP_POSTING.format(cid=cid, job=job),
-                "title": str(req.get("requisitionTitle") or "").strip(),
-                "location": ", ".join(p for p in (address.get("cityName", "").strip(), region) if p),
-                "posted": str(req.get("postDate") or "")[:10],
-            }
-        )
-    return rows
+    return guard_rows(payload.get("jobRequisitions"), lambda req: _adp_row(req, cid))[0]
 
 
 def _adp_reader(employer: dict[str, Any]):
@@ -573,37 +586,54 @@ def _adp_reader(employer: dict[str, Any]):
             return None
         if not isinstance(payload, dict) or not isinstance(payload.get("jobRequisitions"), list):
             return None
-        return parse_adp(payload, cid), int((payload.get("meta") or {}).get("totalNumber") or 0)
+        rows, lost = guard_rows(payload["jobRequisitions"], lambda req: _adp_row(req, cid))
+        meta = payload.get("meta") if isinstance(payload.get("meta"), dict) else {}
+        return rows, safe_total(meta.get("totalNumber")), lost
 
     return read
 
 
 _TBE_MAX_ROWS = 500
-_TBE_LINK_RE = re.compile(r'<a href="([^"]*viewRequisition\?[^"]*rid=\d+)"[^>]*class="viewJobLink"[^>]*>(.*?)</a>', re.S)
+_TBE_ANCHOR_RE = re.compile(r"<a\b[^>]*>(.*?)</a>", re.S)
+
+
+def _tbe_anchors(page_html: str) -> list[tuple[str, str]]:
+    """(href, title) of every job link, whatever the attribute order or
+    extra classes ("viewJobLink new")."""
+    found = []
+    for match in _TBE_ANCHOR_RE.finditer(page_html or ""):
+        tag = match.group(0)[: match.group(0).find(">") + 1]
+        if not re.search(r'class="[^"]*\bviewJobLink\b', tag):
+            continue
+        href = re.search(r'href="([^"]+)"', tag)
+        found.append((html.unescape(href.group(1)) if href else "", match.group(1)))
+    return found
 
 
 def parse_tbe(page_html: str) -> list[dict[str, str]]:
     rows, seen = [], set()
-    for href, title in _TBE_LINK_RE.findall(page_html or ""):
-        url = html.unescape(href)
-        if url in seen:
+    for href, title in _tbe_anchors(page_html):
+        if "viewRequisition" not in href or href in seen:
             continue
-        seen.add(url)
-        rows.append({"url": url, "title": html.unescape(_TAG_RE.sub(" ", title)).strip(),
+        seen.add(href)
+        rows.append({"url": href, "title": html.unescape(_TAG_RE.sub(" ", title)).strip(),
                      "location": "", "posted": ""})
     return rows
 
 
 def _tbe_reader(employer: dict[str, Any]):
     url = str(employer.get("url") or "")
-    match = re.match(r"(https://[^/]+/[^/]+/ats/careers/v2/)searchResults\?.*?org=([^&]+).*?cws=(\d+)", url)
-    if not match:
+    parsed = urlparse(url)
+    query = parse_qs(parsed.query)
+    match = re.match(r"(/[^/]+/ats/careers/v2/)searchResults$", parsed.path)
+    org, cws = (query.get("org") or [""])[0], (query.get("cws") or [""])[0]
+    if not match or not org or not cws.isdigit():
         return None
-    base, org, cws = match.groups()
+    base = f"https://{parsed.netloc}{match.group(1)}"
 
     def read(client: httpx.Client, page: int) -> Page:
         if page:
-            return [], 0  # maxRows lists every requisition in one response
+            return [], None, 0  # maxRows lists every requisition in one response
         try:
             response = client.get(f"{base}searchResults",
                                   params={"org": org, "cws": cws, "act": "search", "maxRows": _TBE_MAX_ROWS})
@@ -613,7 +643,11 @@ def _tbe_reader(employer: dict[str, Any]):
         if "oracletaleocwsv2" not in response.text:
             return None  # not the careers page, or its markup changed
         rows = parse_tbe(response.text)
-        return rows, len(rows)
+        raw = len({href for href, _ in _tbe_anchors(response.text)})
+        # A page as long as maxRows may not be the whole board: the total is
+        # then "at least one more", so the sweep is reported short.
+        total = len(rows) + 1 if len(rows) >= _TBE_MAX_ROWS else None
+        return rows, total, raw - len(rows)
 
     return read
 
@@ -623,24 +657,30 @@ _CSOD_PAGE_SIZE = 25
 _CSOD_CONTEXT_RE = re.compile(r"csod\.context=(\{.*?\});", re.S)
 
 
+def _us_date(value: Any) -> str:
+    """"9/25/2026" or "9/25/2026 10:00 AM" -> "2026-09-25"; "" otherwise."""
+    month, _, rest = str(value or "").strip().split(" ", 1)[0].partition("/")
+    day, _, year = rest.partition("/")
+    if not (year.isdigit() and month.isdigit() and day.isdigit()):
+        return ""
+    return f"{year}-{int(month):02d}-{int(day):02d}"
+
+
+def _cornerstone_row(req: dict[str, Any], site_url: str) -> dict[str, str]:
+    req_id = req.get("requisitionId")
+    places = [p for p in (req.get("locations") or []) if isinstance(p, dict)]
+    place = places[0] if places else {}
+    return {
+        "url": site_url.format(req=req_id) if req_id is not None else "",
+        "title": str(req.get("displayJobTitle") or "").strip(),
+        "location": ", ".join(str(place[k]) for k in ("city", "state", "country") if place.get(k)),
+        "posted": _us_date(req.get("postingEffectiveDate")),
+    }
+
+
 def parse_cornerstone(payload: dict[str, Any], site_url: str) -> list[dict[str, str]]:
-    rows = []
-    for req in (payload.get("data") or {}).get("requisitions") or []:
-        req_id = req.get("requisitionId")
-        if req_id is None:
-            continue
-        place = (req.get("locations") or [{}])[0] or {}
-        month, _, rest = str(req.get("postingEffectiveDate") or "").partition("/")
-        day, _, year = rest.partition("/")
-        rows.append(
-            {
-                "url": site_url.format(req=req_id),
-                "title": str(req.get("displayJobTitle") or "").strip(),
-                "location": ", ".join(str(place[k]) for k in ("city", "state", "country") if place.get(k)),
-                "posted": f"{year}-{int(month):02d}-{int(day):02d}" if year and month.isdigit() and day.isdigit() else "",
-            }
-        )
-    return rows
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+    return guard_rows(data.get("requisitions"), lambda req: _cornerstone_row(req, site_url))[0]
 
 
 def _cornerstone_reader(employer: dict[str, Any]):
@@ -672,37 +712,35 @@ def _cornerstone_reader(employer: dict[str, Any]):
             )
             response.raise_for_status()
             payload = response.json()
-        except (httpx.HTTPError, ValueError):
+        except (httpx.HTTPError, ValueError, AttributeError):
             return None
         data = payload.get("data") if isinstance(payload, dict) else None
         if not isinstance(data, dict) or not isinstance(data.get("requisitions"), list):
             return None
-        rows = parse_cornerstone(payload, f"{home}/requisition/{{req}}?c={corp}")
-        return rows, int(data.get("totalCount") or 0)
+        site_url = f"{home}/requisition/{{req}}?c={corp}"
+        rows, lost = guard_rows(data["requisitions"], lambda req: _cornerstone_row(req, site_url))
+        return rows, safe_total(data.get("totalCount")), lost
 
     return read
 
 
+def _avanti_row(item: dict[str, Any], base: str) -> dict[str, str]:
+    job = str(item.get("Job") or "").strip()
+    try:
+        closes = dt.datetime.strptime(str(item.get("ClosingDate") or "").strip(), "%b %d, %Y").date().isoformat()
+    except ValueError:
+        closes = ""
+    return {
+        "url": f"{base}/careers/Job/Details/{quote(job)}" if job else "",
+        "title": str(item.get("Title") or "").strip(),
+        "location": str(item.get("Location") or "").strip(),
+        "posted": "",
+        "closes": closes,
+    }
+
+
 def parse_avanti(payload: dict[str, Any], base: str) -> list[dict[str, str]]:
-    rows = []
-    for item in payload.get("items") or []:
-        job = str(item.get("Job") or "").strip()
-        if not job:
-            continue
-        try:
-            closes = dt.datetime.strptime(str(item.get("ClosingDate") or "").strip(), "%b %d, %Y").date().isoformat()
-        except ValueError:
-            closes = ""
-        rows.append(
-            {
-                "url": f"{base}/careers/Job/Details/{quote(job)}",
-                "title": str(item.get("Title") or "").strip(),
-                "location": str(item.get("Location") or "").strip(),
-                "posted": "",
-                "closes": closes,
-            }
-        )
-    return rows
+    return guard_rows(payload.get("items"), lambda item: _avanti_row(item, base))[0]
 
 
 def _avanti_reader(employer: dict[str, Any]):
@@ -713,7 +751,7 @@ def _avanti_reader(employer: dict[str, Any]):
 
     def read(client: httpx.Client, page: int) -> Page:
         if page:
-            return [], 0  # one response lists every opening
+            return [], None, 0  # one response lists every opening
         try:
             response = client.post(f"{base}/careers/Job/Jobs", headers={"X-Requested-With": "XMLHttpRequest"})
             response.raise_for_status()
@@ -722,15 +760,18 @@ def _avanti_reader(employer: dict[str, Any]):
             return None
         if not isinstance(payload, dict) or not isinstance(payload.get("items"), list):
             return None
-        rows = parse_avanti(payload, base)
-        return rows, len(rows)
+        rows, lost = guard_rows(payload["items"], lambda item: _avanti_row(item, base))
+        return rows, None, lost
 
     return read
 
 
 _ASPX_HIDDEN_RE = re.compile(r'<input type="hidden" name="([^"]+)" id="[^"]*" value="([^"]*)"')
 _ASPX_NEXT_RE = re.compile(r"__doPostBack\(&#39;([^&]*pagListTop[^&]*)&#39;,&#39;&#39;\)\">Next<")
-_ASPX_TOTAL_RE = re.compile(r"Records&nbsp;\s*\d+\s*&nbsp;-&nbsp;\s*\d+\s*&nbsp;of&nbsp;\s*(\d+)")
+# Commas in every group: a four-digit count prints "1,371" on some boards.
+_ASPX_TOTAL_RE = re.compile(
+    r"Records&nbsp;\s*[\d,]+\s*&nbsp;-&nbsp;\s*[\d,]+\s*&nbsp;of&nbsp;\s*([\d,]+)"
+)
 _ASPX_ROW_RE = re.compile(r'<tr id="rowItem".*?</tr>', re.S)
 
 
@@ -768,7 +809,7 @@ def _aspnet_jobsearch_reader(employer: dict[str, Any]):
             else:
                 target = state.get("next")
                 if not target:
-                    return [], state.get("total", 0)  # the last page had no Next link
+                    return [], state.get("total"), 0  # the last page had no Next link
                 response = client.post(
                     search, data={**state["form"], "__EVENTTARGET": target, "__EVENTARGUMENT": ""}
                 )
@@ -781,28 +822,30 @@ def _aspnet_jobsearch_reader(employer: dict[str, Any]):
         state["form"] = dict(_ASPX_HIDDEN_RE.findall(response.text))
         next_link = _ASPX_NEXT_RE.search(response.text)
         state["next"] = next_link.group(1) if next_link else ""
-        state["total"] = int(total.group(1)) if total else state.get("total", 0)
-        return parse_aspnet_jobsearch(response.text, base), state["total"]
+        if total:
+            state["total"] = safe_total(total.group(1))
+        rows = parse_aspnet_jobsearch(response.text, base)
+        return rows, state.get("total"), len(_ASPX_ROW_RE.findall(response.text)) - len(rows)
 
     return read
 
 
+_SM_BLOCK_RE = re.compile(r'(?=<div id="job_list_\d+")')
 _SM_ROW_RE = re.compile(r'id="job_list_\d+".*?<a href="([^"]+)" class="job_link[^"]*">(.*?)</a>'
                         r'(?:.*?<span class="location">(.*?)</span>)?', re.S)
-_SM_PAGES_RE = re.compile(r'id="jPaginateNumPages"[^>]*>\s*([\d.]+)')
+_SM_PAGES_RE = re.compile(r'id="jPaginateNumPages"[^>]*>\s*([\d.,]+)')
 _SM_PAGE_SIZE = 10
 
 
-def parse_selectminds(page_html: str) -> list[dict[str, str]]:
-    blocks = re.split(r'(?=<div id="job_list_\d+")', page_html or "")
+def parse_selectminds(page_html: str, root: str = "") -> list[dict[str, str]]:
     rows = []
-    for block in blocks:
+    for block in _SM_BLOCK_RE.split(page_html or ""):
         match = _SM_ROW_RE.search(block)
         if not match:
             continue
         rows.append(
             {
-                "url": html.unescape(match.group(1)),
+                "url": urljoin(root, html.unescape(match.group(1))) if root else html.unescape(match.group(1)),
                 "title": html.unescape(_TAG_RE.sub(" ", match.group(2))).strip(),
                 "location": re.sub(r"\s+", " ", html.unescape(match.group(3) or "")).strip(),
                 "posted": "",
@@ -820,7 +863,7 @@ def _selectminds_reader(employer: dict[str, Any]):
 
     def read(client: httpx.Client, page: int) -> Page:
         if page and page >= state.get("pages", 0):
-            return [], state.get("total", 0)  # past the published page count
+            return [], state.get("total"), 0  # past the published page count
         try:
             if page == 0:
                 response = client.get(f"{root}/jobs/search")
@@ -831,30 +874,42 @@ def _selectminds_reader(employer: dict[str, Any]):
         except httpx.HTTPError:
             return None
         if page == 0:
-            pages = _SM_PAGES_RE.search(response.text)
-            if not pages:
+            pages = safe_total(m.group(1)) if (m := _SM_PAGES_RE.search(response.text)) else None
+            if pages is None:
                 return None  # not a Selectminds search page, or its markup changed
-            state["pages"] = int(float(pages.group(1)))
-            state["total"] = max(0, (state["pages"] - 1) * _SM_PAGE_SIZE + 1) if state["pages"] else 0
-        return parse_selectminds(response.text), state["total"]
+            state["pages"] = pages
+            state["total"] = (pages - 1) * _SM_PAGE_SIZE + 1 if pages else 0
+        rows = parse_selectminds(response.text, root)
+        raw = len(re.findall(r'<div id="job_list_\d+"', response.text))
+        return rows, state["total"], raw - len(rows)
 
     return read
 
 
 _ATOM_ENTRY_RE = re.compile(r"<entry>(.*?)</entry>", re.S)
+_ATOM_LINK_RE = re.compile(r"<link\b[^>]*>")
 
 
-def parse_peopleadmin(feed: str) -> list[dict[str, str]]:
+def _atom_link(entry: str) -> str:
+    """The entry's HTML page: rel="alternate" type="text/html", else the first link."""
+    links = _ATOM_LINK_RE.findall(entry)
+    chosen = next((tag for tag in links if 'rel="alternate"' in tag and 'type="text/html"' in tag),
+                  links[0] if links else "")
+    href = re.search(r'href="([^"]+)"', chosen)
+    return html.unescape(href.group(1)) if href else ""
+
+
+def parse_peopleadmin(feed: str, site: str = "") -> list[dict[str, str]]:
     rows = []
     for entry in _ATOM_ENTRY_RE.findall(feed or ""):
-        link = re.search(r'<link[^>]*href="([^"]+)"', entry)
+        link = _atom_link(entry)
         title = re.search(r"<title>(.*?)</title>", entry, re.S)
         published = re.search(r"<published>(\d{4}-\d{2}-\d{2})", entry)
         if not link or not title:
             continue
         rows.append(
             {
-                "url": html.unescape(link.group(1)),
+                "url": urljoin(site, link) if site else link,
                 "title": html.unescape(_TAG_RE.sub(" ", title.group(1))).strip(),
                 "location": "",
                 "posted": published.group(1) if published else "",
@@ -867,7 +922,8 @@ def _peopleadmin_reader(employer: dict[str, Any]):
     parsed = urlparse(str(employer.get("url") or ""))
     if not parsed.netloc:
         return None
-    feed = f"https://{parsed.netloc}/postings/search.atom"
+    site = f"https://{parsed.netloc}"
+    feed = f"{site}/postings/search.atom"
 
     def read(client: httpx.Client, page: int) -> Page:
         try:
@@ -875,14 +931,25 @@ def _peopleadmin_reader(employer: dict[str, Any]):
             response.raise_for_status()
         except httpx.HTTPError:
             return None
-        if page == 0 and "<feed" not in response.text:
-            return None  # not a PeopleAdmin feed
-        return parse_peopleadmin(response.text), 0
+        # Every page must be the feed: a login page or error page past page 1
+        # is a failed read, not the end of the board.
+        if "<feed" not in response.text:
+            return None
+        rows = parse_peopleadmin(response.text, site)
+        return rows, None, len(_ATOM_ENTRY_RE.findall(response.text)) - len(rows)
 
     return read
 
 
 _EH_ORG_RE = re.compile(r"^(https://[^/]+/ats/api/v1/embedded/widget/organisations/[0-9a-fA-F-]{36})")
+
+
+def _employmenthero_row(item: dict[str, Any]) -> dict[str, str]:
+    place = str(item.get("vendor_location_name") or "").strip()
+    if item.get("remote"):
+        place = f"Remote, {place}" if place else "Remote"
+    return {"url": item.get("application_url") or "", "title": str(item.get("title") or "").strip(),
+            "location": place, "posted": str(item.get("created_at") or "")[:10]}
 
 
 def _employmenthero_reader(employer: dict[str, Any]):
@@ -900,17 +967,8 @@ def _employmenthero_reader(employer: dict[str, Any]):
             return None
         if not isinstance(data, dict) or not isinstance(data.get("items"), list):
             return None
-        rows = []
-        for item in data["items"]:
-            url = str(item.get("application_url") or "").strip()
-            if not url:
-                continue
-            place = str(item.get("vendor_location_name") or "").strip()
-            if item.get("remote"):
-                place = f"Remote, {place}" if place else "Remote"
-            rows.append({"url": url, "title": str(item.get("title") or "").strip(),
-                         "location": place, "posted": str(item.get("created_at") or "")[:10]})
-        return rows, int(data.get("total_items") or 0)
+        rows, lost = guard_rows(data["items"], _employmenthero_row)
+        return rows, safe_total(data.get("total_items")), lost
 
     return read
 
@@ -945,9 +1003,11 @@ def scan_employer_boards_source(
 
     Each board is walked until its advertised total is reached, a page brings
     nothing new, or ``max_pages`` runs out — the last is ``truncated``, and
-    ending below the advertised total any other way is ``incomplete``. An
-    entry whose platform or URL cannot be read counts as an error, so a typo
-    in portals.yml is not mistaken for an employer with no openings.
+    ending below the advertised total any other way is ``incomplete``, as is
+    any row a reader could not parse. An entry whose platform or URL cannot be
+    read counts as an error, so a typo in portals.yml is not mistaken for an
+    employer with no openings; so does a reader that raises, which ends that
+    board only — the rows already read from it and from every other board stay.
     """
     if not config or not config.get("enabled", False):
         return SourceResult(postings=[], health=SourceHealth(source_id="employer_boards", ok=True))
@@ -979,23 +1039,30 @@ def scan_employer_boards_source(
             # For boards that name a site, not a town ("NIAGARA FALLS SITE").
             hint = str(employer.get("location_hint") or "").strip()
             board_urls: set[str] = set()
-            total = 0
+            total: int | None = None
+            lost = 0
             failed = False
+            budget_ran_out = False
             # Per-employer budget, as in workday_boards: Island Health is ~50
             # hrSmart pages where J.D. Irving is 4 Oracle pages.
             for page in range(max(1, int(employer.get("max_pages", max_pages)))):
                 if not first and delay > 0:
                     sleep(delay)
                 first = False
-                got = read(client, page)
+                try:
+                    got = read(client, page)
+                except Exception:  # noqa: BLE001 - one broken board must not take the others with it
+                    got = None
                 if got is None:
                     errors += 1
                     failed = True
                     break
-                rows, page_total = got
+                rows, page_total, page_lost = got
+                lost += page_lost
                 # The first total a board gives is kept: a later page that
                 # omits it must not erase what is known.
-                total = total or page_total
+                if total is None:
+                    total = page_total
                 fresh = [row for row in rows if row["url"] not in board_urls]
                 if not fresh:
                     break
@@ -1013,17 +1080,17 @@ def scan_employer_boards_source(
                     if posting is not None:
                         seen.add(row["url"])
                         postings.append(posting)
-                if total and len(board_urls) >= total:
+                if total is not None and len(board_urls) >= total:
                     break
             else:
-                truncated = True
-                advertised += total
-                continue
+                budget_ran_out = truncated = True
+            advertised += total or 0
+            if lost:
+                short.append(f"{name}: {lost} row(s) could not be parsed")
             # Ended on an empty or repeated page below the board's own count:
             # rows were missed. A failed read is already an error.
-            if total and not failed and len(board_urls) < total:
+            elif not failed and not budget_ran_out and total is not None and len(board_urls) < total:
                 short.append(f"{name} {len(board_urls)} of {total}")
-            advertised += total
     finally:
         if owns_client:
             client.close()
