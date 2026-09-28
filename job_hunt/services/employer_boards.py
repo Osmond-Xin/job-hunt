@@ -76,6 +76,14 @@ public JSON endpoint, so an employer is one ``portals.yml`` entry — a
   ``__EVENTTARGET`` set to its "Next" link. Rows link ``/ViewJobPosting/<id>``;
   the count is "Records 1 - 100 of N". Interior Health 1,371 and Northern
   Health 626 postings on 2026-09-27.
+- **selectminds** — Oracle Selectminds (Taleo's candidate site;
+  ``albertahs.taleo.net`` redirects to one). ``GET <site>/jobs/search``
+  redirects to a fresh ``/jobs/search/<id>``, later pages are
+  ``/jobs/search/<id>/pageN``, 10 rows a page as ``job_list_<n>`` blocks. The
+  page count is published (``jPaginateNumPages``), not the row count, so the
+  total is taken as its lower bound, ``(pages - 1) * 10 + 1`` — enough to end
+  the walk after the last page and to report one that stops early. Alberta
+  Health Services: 127 pages on 2026-09-27.
 - **successfactors** — SAP SuccessFactors career sites, read with the parser
   the public-sector boards use (``gov_boards.parse_successfactors``); the
   total is the page's "of <b>N</b>". For crown corporations — ICBC,
@@ -760,6 +768,60 @@ def _aspnet_jobsearch_reader(employer: dict[str, Any]):
     return read
 
 
+_SM_ROW_RE = re.compile(r'id="job_list_\d+".*?<a href="([^"]+)" class="job_link[^"]*">(.*?)</a>'
+                        r'(?:.*?<span class="location">(.*?)</span>)?', re.S)
+_SM_PAGES_RE = re.compile(r'id="jPaginateNumPages"[^>]*>\s*([\d.]+)')
+_SM_PAGE_SIZE = 10
+
+
+def parse_selectminds(page_html: str) -> list[dict[str, str]]:
+    blocks = re.split(r'(?=<div id="job_list_\d+")', page_html or "")
+    rows = []
+    for block in blocks:
+        match = _SM_ROW_RE.search(block)
+        if not match:
+            continue
+        rows.append(
+            {
+                "url": html.unescape(match.group(1)),
+                "title": html.unescape(_TAG_RE.sub(" ", match.group(2))).strip(),
+                "location": re.sub(r"\s+", " ", html.unescape(match.group(3) or "")).strip(),
+                "posted": "",
+            }
+        )
+    return rows
+
+
+def _selectminds_reader(employer: dict[str, Any]):
+    parsed = urlparse(str(employer.get("url") or ""))
+    if not parsed.netloc:
+        return None
+    root = f"https://{parsed.netloc}"
+    state: dict[str, Any] = {}
+
+    def read(client: httpx.Client, page: int) -> Page:
+        if page and page >= state.get("pages", 0):
+            return [], state.get("total", 0)  # past the published page count
+        try:
+            if page == 0:
+                response = client.get(f"{root}/jobs/search")
+                state["search"] = str(response.url).rstrip("/")
+            else:
+                response = client.get(f"{state['search']}/page{page + 1}")
+            response.raise_for_status()
+        except httpx.HTTPError:
+            return None
+        if page == 0:
+            pages = _SM_PAGES_RE.search(response.text)
+            if not pages:
+                return None  # not a Selectminds search page, or its markup changed
+            state["pages"] = int(float(pages.group(1)))
+            state["total"] = max(0, (state["pages"] - 1) * _SM_PAGE_SIZE + 1) if state["pages"] else 0
+        return parse_selectminds(response.text), state["total"]
+
+    return read
+
+
 _READERS = {
     "oracle": _oracle_reader,
     "jibe": _jibe_reader,
@@ -774,6 +836,7 @@ _READERS = {
     "cornerstone": _cornerstone_reader,
     "avanti": _avanti_reader,
     "aspnet_jobsearch": _aspnet_jobsearch_reader,
+    "selectminds": _selectminds_reader,
 }
 
 

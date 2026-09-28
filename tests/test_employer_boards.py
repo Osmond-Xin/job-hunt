@@ -685,6 +685,48 @@ def test_an_aspnet_page_without_its_record_count_is_an_error():
     assert result.health.errors == 1
 
 
+# Trimmed from careers.albertahealthservices.ca, 2026-09-27.
+def _sm_page(ids, pages=2):
+    rows = "".join(
+        f'<div id="job_list_{i}" class="job_list_row"><div class="jlr_title">'
+        f'<p><a href="https://careers.albertahealthservices.ca/jobs/data-analyst-{i}" class="job_link font_bold">'
+        f'Data Analyst {i}</a></p><p class="jlr_cat_loc"><span class="location"> North Zone, Valleyview </span></p>'
+        f"</div></div>" for i in ids)
+    return f'{rows}<div id="jPaginateNumPages" class="ghost">{pages}.0</div>'
+
+
+def test_a_selectminds_search_is_walked_to_its_published_page_count():
+    urls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        urls.append(str(request.url))
+        if request.url.path == "/jobs/search":
+            return httpx.Response(302, headers={"Location": "https://careers.albertahealthservices.ca/jobs/search/147"})
+        if request.url.path.endswith("/page2"):
+            return httpx.Response(200, text=_sm_page(range(10, 13)))
+        return httpx.Response(200, text=_sm_page(range(10)))
+
+    client = httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=True)
+    result = scan_employer_boards_source(
+        _config({"name": "Alberta Health Services", "platform": "selectminds",
+                 "url": "https://careers.albertahealthservices.ca", "location_hint": "Alberta"}),
+        client=client, sleep=lambda _s: None)
+    assert urls[-1] == "https://careers.albertahealthservices.ca/jobs/search/147/page2"
+    assert len(result.postings) == 13 and result.health.ok and not result.health.incomplete
+    assert result.postings[0].location == "North Zone, Valleyview, Alberta"
+
+
+def test_a_selectminds_walk_that_stops_before_its_last_page_is_incomplete():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/page2"):
+            return httpx.Response(200, text=_sm_page([], pages=5))
+        return httpx.Response(200, text=_sm_page(range(10), pages=5))
+
+    result = _scan(_config({"name": "AHS", "platform": "selectminds",
+                            "url": "https://careers.albertahealthservices.ca"}), handler)
+    assert result.health.incomplete
+
+
 def test_the_tier_keeps_the_positive_title_filter():
     """J.D. Irving's board is drivers, mechanics and store managers; only the
     title says which of its 736 postings is his work."""

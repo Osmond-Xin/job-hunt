@@ -270,8 +270,8 @@ gov_boards:
 
 # Tier 11 — single-employer career sites (job_hunt/services/employer_boards.py).
 # `platform` is oracle | jibe | ukg | hrsmart | successfactors | erecruit |
-# peoplesoft | taleo | adp | tbe | cornerstone | avanti | aspnet_jobsearch, and
-# `url` the employer's career-site URL. `max_pages` and `location_hint` may be
+# peoplesoft | taleo | adp | tbe | cornerstone | avanti | aspnet_jobsearch |
+# selectminds, and `url` the employer's career-site URL. `max_pages` and `location_hint` may be
 # set per employer.
 # General employers, so these rows face the positive title filter.
 employer_boards:
@@ -364,6 +364,13 @@ employer_boards:
       url: https://jobs.northernhealth.ca
       location_hint: "BC"
       max_pages: 10     # 626 postings
+    - name: Alberta Health Services
+      platform: selectminds
+      url: https://careers.albertahealthservices.ca
+      # albertahs.taleo.net redirects here. 127 pages of 10 (2026-09-27);
+      # "North Zone, Valleyview" needs the province.
+      location_hint: "Alberta"
+      max_pages: 140
 
 # Tier 12 — WorkPEI (job_hunt/services/workpei.py), over its WordPress REST API.
 # General board: positive title filter.
