@@ -25,7 +25,7 @@ from typing import Any, Callable
 import httpx
 
 from job_hunt.models.posting import JobPosting, SourceHealth, SourceResult, from_row
-from job_hunt.services.row_guard import guard_rows, safe_total
+from job_hunt.services.row_guard import guard_rows, row_key, safe_total
 
 _SITE = "https://jobs.workable.com"
 API = f"{_SITE}/api/v1/jobs"
@@ -46,6 +46,7 @@ def parse_job(job: dict[str, Any]) -> dict[str, str]:
         location = f"Remote, {location}" if location else "Remote"
     company = job.get("company") if isinstance(job.get("company"), dict) else {}
     return {
+        "key": row_key(job.get("id")),
         "url": job.get("url") or "",
         "title": str(job.get("title") or "").strip(),
         "company": str(company.get("title") or "").strip(),
@@ -92,6 +93,7 @@ def scan_workable_search_source(
     try:
         for query in queries:
             token: str | None = None
+            tokens: set[str] = set()
             total: int | None = None
             ids: set[Any] = set()
             lost = 0
@@ -119,9 +121,13 @@ def scan_workable_search_source(
                     total = safe_total(payload.get("totalSize"))
                 jobs = payload["jobs"]
                 before = len(ids)
-                ids.update(job.get("id") for job in jobs if isinstance(job, dict) and job.get("id"))
                 rows, page_lost = guard_rows(jobs, parse_job, base=_SITE)
-                lost += page_lost
+                # Identity is the id when it is a usable one, else the URL,
+                # so rows without ids still show progress.
+                ids.update(row["key"] or row["url"] for row in rows)
+                # A repeated page repeats its losses too; count them once.
+                if len(ids) > before or not jobs:
+                    lost += page_lost
                 for row in rows:
                     posting = from_row(row, source_id="workable_search", portal="workable")
                     if posting is None or posting.url in seen:
@@ -129,6 +135,10 @@ def scan_workable_search_source(
                     seen.add(posting.url)
                     postings.append(posting)
                 token = payload.get("nextPageToken") if isinstance(payload.get("nextPageToken"), str) else None
+                # A token seen before is a cycle, not a next page.
+                if token in tokens:
+                    token = None
+                tokens.add(token or "")
                 if not token or not jobs or len(ids) == before:
                     ended = "done"
                     break

@@ -75,3 +75,11 @@ def guard_rows(
             continue
         rows.append({**row, "url": url})
     return rows, lost
+
+
+def row_key(value: Any) -> str:
+    """A source's own id as an identity key, or "" when it is not an int or
+    string (a list or dict id is not hashable and not trustworthy)."""
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        return ""
+    return str(value).strip()

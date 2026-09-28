@@ -97,3 +97,29 @@ def test_repeats_nulls_bad_links_and_odd_locations_are_counted_not_raised():
     assert sorted(p.url for p in result.postings) == [
         "https://jobs.workable.com/view/1", "https://jobs.workable.com/view/3", "https://jobs.workable.com/view/4"]
     assert any("2 row(s) could not be parsed" in w for w in result.health.warnings())
+
+
+
+# --- review round 9, 2026-09-27 ------------------------------------------------
+
+
+def test_rows_without_ids_still_show_progress_and_a_token_cycle_ends_the_search():
+    """Round 9: no ids + no total + a next token stopped after one request."""
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        token = request.url.params.get("pageToken", "")
+        calls.append(token)
+        page = {"": 0, "t1": 1, "t2": 2}[token]
+        jobs = [{**_job(page * 20 + i), "id": None} for i in range(20)]
+        # t2 hands back t1: a cycle.
+        return httpx.Response(200, json={"nextPageToken": {"": "t1", "t1": "t2", "t2": "t1"}[token], "jobs": jobs})
+
+    result = _scan(handler, max_pages=10)
+    assert calls == ["", "t1", "t2"] and len(result.postings) == 60 and result.health.ok
+
+
+def test_an_unhashable_id_does_not_crash_the_search():
+    jobs = [{**_job(1), "id": ["x"]}, {**_job(2), "id": {"v": 1}}]
+    result = _scan(lambda request: httpx.Response(200, json={"totalSize": 2, "jobs": jobs}))
+    assert len(result.postings) == 2 and result.health.ok

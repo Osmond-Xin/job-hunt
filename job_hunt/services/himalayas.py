@@ -105,7 +105,6 @@ def scan_himalayas_source(
                 if total is None:
                     total = safe_total(payload.get("totalCount"))
                 rows, page_lost = guard_rows(payload["jobs"], parse_job)
-                lost += page_lost
                 before = len(query_urls)
                 for row in rows:
                     posting = from_row(row, source_id="himalayas", portal="himalayas")
@@ -116,6 +115,9 @@ def scan_himalayas_source(
                         continue
                     seen.add(posting.url)
                     postings.append(posting)
+                # A repeated page repeats its losses too; count them once.
+                if len(query_urls) > before or not payload["jobs"]:
+                    lost += page_lost
                 # Not a short page: non-final pages sometimes carry 19 rows
                 # (2026-09-27), so only an empty or repeated page, or a known
                 # count, ends a search.

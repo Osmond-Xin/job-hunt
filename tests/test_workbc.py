@@ -129,3 +129,27 @@ def test_a_malformed_or_failed_response_is_an_error():
 def test_enabled_without_role_terms_says_so():
     result = scan_workbc_source({"enabled": True}, [])
     assert not result.health.ok and "no role terms" in result.health.note
+
+
+
+# --- review round 9, 2026-09-27 ------------------------------------------------
+
+
+def test_a_known_count_is_read_past_a_short_middle_page():
+    """Round 9: pages of 40, 100 and 10 for a count of 150 stopped after 40."""
+    sizes = {1: 40, 2: 100, 3: 10}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        page = json.loads(request.content)["Page"]
+        start = sum(sizes[p] for p in range(1, page))
+        return httpx.Response(200, json={"count": 150, "result": [_job(start + i) for i in range(sizes.get(page, 0))]})
+
+    result = _scan(handler, max_pages=5)
+    assert len(result.postings) == 150 and not result.health.incomplete
+
+
+def test_an_unhashable_job_id_does_not_crash_the_search():
+    """Round 9: JobId={"value": 1} raised in ids.update()."""
+    jobs = [{**_job(1), "JobId": {"value": 1}}, {**_job(2), "JobId": ["x"]}]
+    result = _scan(lambda request: httpx.Response(200, json={"count": 2, "result": jobs}))
+    assert len(result.postings) == 2 and result.health.ok and not result.health.incomplete

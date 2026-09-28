@@ -31,7 +31,7 @@ from typing import Any, Callable
 import httpx
 
 from job_hunt.models.posting import JobPosting, SourceHealth, SourceResult, from_row
-from job_hunt.services.row_guard import SKIP, guard_rows, safe_total
+from job_hunt.services.row_guard import SKIP, guard_rows, row_key, safe_total
 
 API = "https://workbc-jb.a55eb5-prod.stratus.cloud.gov.bc.ca/api/Search/JobSearch"
 _PAGE_SIZE = 100
@@ -51,6 +51,7 @@ def parse_job(job: dict[str, Any]) -> Any:
                 if isinstance(s, dict) and s.get("Url")), "")
     city = str(job.get("City") or "").strip()
     return {
+        "key": row_key(job.get("JobId")),
         "url": url,
         "title": str(job.get("Title") or "").strip(),
         "company": str(job.get("EmployerName") or "").strip(),
@@ -130,18 +131,30 @@ def scan_workbc_source(
                     total = safe_total(payload.get("count"))
                 jobs = payload["result"]
                 before = len(ids)
-                ids.update(job.get("JobId") for job in jobs if isinstance(job, dict) and job.get("JobId"))
+                # Identity is the JobId when it is a usable id, else the
+                # validated URL; mirrors count as covered.
+                ids.update(row_key(job.get("JobId")) or f"#{index}-{page}"
+                           for index, job in enumerate(jobs)
+                           if isinstance(job, dict) and job.get("IsFederalJob"))
                 rows, page_lost = guard_rows(jobs, parse_job)
-                lost += page_lost
+                ids.update(row["key"] or row["url"] for row in rows)
+                # A repeated page repeats its losses too; count them once.
+                if len(ids) > before or not jobs:
+                    lost += page_lost
                 for row in rows:
                     posting = from_row(row, source_id="workbc", portal="workbc")
                     if posting is None or posting.url in seen:
                         continue
                     seen.add(posting.url)
                     postings.append(posting)
-                # A short or repeated page is the last one, whatever the count
-                # says; the count, when known, ends the search early.
-                if len(jobs) < _PAGE_SIZE or len(ids) == before or (total is not None and len(ids) >= total):
+                # An empty or repeated page, or reaching a known count, ends
+                # the search. A short page ends it only when the count is
+                # unknown: with a known count not yet reached, a short page
+                # mid-walk is read past (pages of 40, 100, 10 for 150).
+                if not jobs or len(ids) == before or (total is not None and len(ids) >= total):
+                    ended = "done"
+                    break
+                if total is None and len(jobs) < _PAGE_SIZE:
                     ended = "done"
                     break
             advertised += total or 0
