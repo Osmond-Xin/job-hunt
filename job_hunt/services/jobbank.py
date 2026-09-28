@@ -19,6 +19,10 @@ Query parameters (verified 2026-08-06 against the live site)
 - ``fn21``  NOC 2021 unit-group code. This is the *working* keyword filter.
 - ``fprov`` two-letter province/territory code. Verified filtering.
 - ``sort=D`` newest first.
+- ``page=N`` (1-based) pages through the result set, 25 rows a page.
+  Verified 2026-09-27: page 2 of Ontario / 21222 returned 25 posting ids
+  disjoint from page 1's. Until then only page 1 was ever read, so a pair
+  the page advertised as 353 results (``id="results-count"``) yielded 25.
 
 Two parameters that look right and are silently ignored — do not reintroduce
 them:
@@ -46,6 +50,10 @@ import httpx
 _BASE = "https://www.jobbank.gc.ca"
 _SEARCH_URL = f"{_BASE}/jobsearch/jobsearch"
 _USER_AGENT = "Mozilla/5.0 (compatible; job-hunt/0.1; personal job search)"
+_PAGE_SIZE = 25
+
+_PROVINCE_RE = re.compile(r"\((?:AB|BC|MB|NB|NL|NS|NT|NU|ON|PE|QC|SK|YT)\)")
+_TOTAL_RE = re.compile(r'id="results-count"[^>]*>\s*([\d,]+)')
 
 _ARTICLE_RE = re.compile(r'<article\b[^>]*\bid="article-(\d+)"(.*?)</article>', re.S)
 _HREF_RE = re.compile(r'href="(/jobsearch/jobposting/[^"]+)"')
@@ -122,8 +130,19 @@ def _location(block: str) -> str:
     raw = raw.removeprefix("Location").strip()
     # "Undetermined location" rows carry a long explanatory sentence.
     if raw.lower().startswith("undetermined location"):
-        return "Undetermined location"
+        raw = "Undetermined location"
+    # Job Bank lists only Canadian jobs. A row with no "(PR)" code —
+    # "Undetermined location", "Various locations" — is still Canadian, and
+    # without saying so the scan's Canada gate drops it (7 of 580, 2026-09-27).
+    if not _PROVINCE_RE.search(raw):
+        raw = f"{raw}, Canada" if raw else "Canada"
     return raw
+
+
+def jobbank_total(page_html: str) -> int:
+    """Result count the page advertises for its query, or 0 when absent."""
+    match = _TOTAL_RE.search(page_html or "")
+    return int(match.group(1).replace(",", "")) if match else 0
 
 
 def fetch_jobbank_page(
@@ -131,11 +150,14 @@ def fetch_jobbank_page(
     province: str | None = None,
     *,
     client: httpx.Client,
+    page: int = 1,
 ) -> str:
     """Fetch one search-results page. Returns "" on any transport failure."""
     params: dict[str, str] = {"fn21": str(noc_code), "sort": "D"}
     if province:
         params["fprov"] = province
+    if page > 1:
+        params["page"] = str(page)
     try:
         response = client.get(_SEARCH_URL, params=params)
     except httpx.HTTPError:
@@ -164,6 +186,11 @@ def scan_jobbank(
     highest-volume tier (9 NOC codes x 13 provinces = 117 requests per
     run), so a quiet failure here is the biggest undercount risk of the
     five. Keyed by NOC code, same as ``row["noc"]`` below.
+
+    Each pair is walked newest-first until a page is short, brings nothing
+    new, or the pair's advertised count is reached — or until ``max_pages``
+    runs out, which is recorded as ``truncated`` so the coverage warnings say
+    so. ``advertised`` is the sum of the pairs' ``results-count``.
     """
     if not config or not config.get("enabled", False):
         return []
@@ -177,6 +204,7 @@ def scan_jobbank(
     targets: list[str | None] = list(provinces) if provinces else [None]
     delay = float(config.get("delay_s", 2.0))
     timeout = float(config.get("timeout_s", 45.0))
+    max_pages = max(1, int(config.get("max_pages", 8)))
 
     owns_client = client is None
     if client is None:
@@ -190,22 +218,70 @@ def scan_jobbank(
         out: list[dict[str, str]] = []
         first = True
         for code in codes:
-            entry = stats.setdefault(code, {"collected": 0, "errors": 0}) if stats is not None else None
+            entry = (
+                stats.setdefault(
+                    code,
+                    {"collected": 0, "errors": 0, "advertised": None, "truncated": False,
+                     "incomplete": 0},
+                )
+                if stats is not None
+                else None
+            )
             for province in targets:
-                if not first and delay > 0:
-                    sleep(delay)
-                first = False
-                page = fetch_jobbank_page(code, province, client=client)
-                if page == "" and entry is not None:
-                    entry["errors"] += 1
-                for row in parse_jobbank_results(page):
-                    if row["url"] in seen:
-                        continue
-                    seen.add(row["url"])
-                    row["noc"] = code
-                    out.append(row)
+                # Walked by raw article id, not by parsed row: a page whose
+                # articles all fail to parse must neither end the walk nor
+                # read as a repeat. Parse loss is counted separately.
+                pair_ids: set[str] = set()
+                parsed = 0
+                advertised = 0
+                failed = False
+                for page_no in range(1, max_pages + 1):
+                    if not first and delay > 0:
+                        sleep(delay)
+                    first = False
+                    page = fetch_jobbank_page(code, province, client=client, page=page_no)
+                    if page == "":
+                        if entry is not None:
+                            entry["errors"] += 1
+                        failed = True
+                        break
+                    if page_no == 1:
+                        advertised = jobbank_total(page)
+                        if advertised and entry is not None:
+                            entry["advertised"] = (entry["advertised"] or 0) + advertised
+                    ids = [posting_id for posting_id, _block in _ARTICLE_RE.findall(page)]
+                    fresh_ids = set(ids) - pair_ids
+                    # A page past the end may repeat an earlier one rather than
+                    # come back empty; nothing new is the end either way.
+                    if not fresh_ids:
+                        break
+                    pair_ids |= fresh_ids
+                    for row in parse_jobbank_results(page):
+                        if row["id"] not in fresh_ids:
+                            continue
+                        parsed += 1
+                        if row["url"] in seen:
+                            continue
+                        seen.add(row["url"])
+                        row["noc"] = code
+                        out.append(row)
+                        if entry is not None:
+                            entry["collected"] += 1
+                    if len(ids) < _PAGE_SIZE or (advertised and len(pair_ids) >= advertised):
+                        break
+                else:
+                    # Every allowed page was full: the budget ended the walk.
                     if entry is not None:
-                        entry["collected"] += 1
+                        entry["truncated"] = True
+                    continue
+                if entry is None or failed:
+                    continue  # a failed request is already counted as an error
+                # The walk ended on its own. Short of the page's own count
+                # (exact on every pair measured 2026-09-27) means a page came
+                # back empty or repeated; articles that did not parse were
+                # seen and lost. Either way rows were missed.
+                if (advertised and len(pair_ids) < advertised) or parsed < len(pair_ids):
+                    entry["incomplete"] += 1
         return out
     finally:
         if owns_client:

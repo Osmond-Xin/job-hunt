@@ -290,6 +290,145 @@ def test_manitoba_carries_both_of_its_published_dates() -> None:
     assert row["posted"] == "2026-07-30"
 
 
+# --- boards defined wholly in portals.yml (2026-09-27) ---------------------
+# Nunavut runs the same Oracle stack as New Brunswick and Alberta the same
+# SuccessFactors stack as Nova Scotia; neither needed a parser of its own.
+
+ALBERTA_ROW = """<tr class="data-row"><td class="colTitle" headers="hdrTitle">
+<span class="jobTitle hidden-phone">
+<a href="/job/Taber-Field-Support-Technologist-%28Taber%29/603988117/" class="jobTitle-link">Field Support Technologist (Taber)</a>
+</span>
+<div class="jobdetail-phone visible-phone">
+<span class="jobTitle visible-phone">
+<a class="jobTitle-link" href="/job/Taber-Field-Support-Technologist-%28Taber%29/603988117/">Field Support Technologist (Taber)</a>
+</span>
+<span class="jobLocation visible-phone">
+<span class="jobLocation">
+Taber, AB
+</span></span></div></td></tr>"""
+
+
+def test_an_oracle_board_needs_only_its_career_site_url() -> None:
+    import httpx
+
+    seen: list[httpx.URL] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url)
+        return httpx.Response(200, json={"items": [{"TotalJobsCount": 1, "requisitionList": [
+            {"Id": "676", "Title": "Public Affairs Officer", "PrimaryLocation": "Iqaluit, NU, Canada",
+             "PostedDate": "2026-09-25", "PostingEndDate": "2026-10-17"}]}]})
+
+    stats: dict = {}
+    rows = scan_gov_boards(
+        {"enabled": True, "delay_s": 0, "boards": {"nu_gov": {
+            "enabled": True,
+            "company": "Government of Nunavut",
+            "oracle_url": "https://fa-exux-saasfaprod1.fa.ocs.oraclecloud.com"
+                          "/hcmUI/CandidateExperience/en/sites/CX_5/requisitions",
+        }}},
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        sleep=lambda _s: None,
+        stats=stats,
+    )
+
+    assert seen[0].host == "fa-exux-saasfaprod1.fa.ocs.oraclecloud.com"
+    assert "siteNumber=CX_5," in seen[0].params["finder"]
+    assert rows[0]["url"] == (
+        "https://fa-exux-saasfaprod1.fa.ocs.oraclecloud.com"
+        "/hcmUI/CandidateExperience/en/sites/CX_5/job/676"
+    )
+    assert rows[0]["company"] == "Government of Nunavut"
+    assert rows[0]["closes"] == "2026-10-17"
+    assert stats["nu_gov"]["advertised"] == 1 and stats["nu_gov"]["truncated"] is False
+
+
+def test_a_successfactors_board_needs_only_its_site_root() -> None:
+    import httpx
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = ALBERTA_ROW if request.url.params.get("startrow") is None else ""
+        return httpx.Response(200, text=body)
+
+    rows = scan_gov_boards(
+        {"enabled": True, "delay_s": 0, "boards": {"ab_gov": {
+            "enabled": True,
+            "company": "Government of Alberta",
+            "successfactors_url": "https://jobpostings.alberta.ca/",
+        }}},
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        sleep=lambda _s: None,
+    )
+
+    assert len(rows) == 1  # the phone copy of the row is the same posting
+    assert rows[0]["url"] == (
+        "https://jobpostings.alberta.ca/job/Taber-Field-Support-Technologist-%28Taber%29/603988117/"
+    )
+    assert rows[0]["company"] == "Government of Alberta"
+    assert rows[0]["location"] == "Taber, AB"
+
+
+def test_a_repeated_last_page_ends_the_walk_without_a_truncation_warning() -> None:
+    """SuccessFactors serves its last page again past the end (CMHC,
+    2026-09-27); reading on until the budget ran out reported truncation."""
+    import httpx
+
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.params.get("startrow", "0"))
+        return httpx.Response(200, text=ALBERTA_ROW)  # every page is the same
+
+    stats: dict = {}
+    rows = scan_gov_boards(
+        {"enabled": True, "delay_s": 0, "boards": {"cmhc": {
+            "enabled": True, "company": "CMHC",
+            "successfactors_url": "https://careers.cmhc-schl.gc.ca", "max_pages": 4}}},
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        sleep=lambda _s: None,
+        stats=stats,
+    )
+    assert len(rows) == 1 and calls == ["0", "25"]
+    assert stats["cmhc"]["truncated"] is False
+
+
+def test_a_keywords_first_page_overlapping_an_earlier_keyword_does_not_stop_it() -> None:
+    """Review 2026-09-27: repeats were judged against the board-wide URL set,
+    so keyword B's page 1, fully overlapping keyword A, ended B before page 2."""
+    import httpx
+
+    def page_of(ids):
+        return "".join(ALBERTA_ROW.replace("603988117", str(i)) for i in ids)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        q, start = request.url.params.get("q"), int(request.url.params.get("startrow", 0))
+        if q == "a":
+            return httpx.Response(200, text=page_of(range(25)) if start == 0 else "")
+        pages = {0: page_of(range(25)), 25: page_of(range(100, 110))}  # B page 1 == A page 1
+        return httpx.Response(200, text=pages.get(start, ""))
+
+    rows = scan_gov_boards(
+        {"enabled": True, "delay_s": 0, "boards": {"cmhc": {
+            "enabled": True, "company": "CMHC", "keywords": ["a", "b"], "max_pages": 4,
+            "successfactors_url": "https://careers.cmhc-schl.gc.ca"}}},
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        sleep=lambda _s: None,
+    )
+    assert len(rows) == 35  # B's distinct page 2 was read
+
+
+def test_an_enabled_board_with_no_platform_url_is_reported_not_empty() -> None:
+    stats: dict = {}
+    rows = scan_gov_boards(
+        {"enabled": True, "boards": {"mystery": {"enabled": True}}},
+        client=object(),
+        sleep=lambda _s: None,
+        stats=stats,
+    )
+    assert rows == []
+    assert stats["mystery"]["errors"] == 1
+
+
 def test_new_brunswick_carries_the_posted_date_the_list_api_does_publish() -> None:
     """PostingEndDate is always null in the list response; PostedDate is not."""
     from job_hunt.services.gov_boards import parse_nb_gov

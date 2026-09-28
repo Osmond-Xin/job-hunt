@@ -73,7 +73,19 @@ def test_strips_jsessionid_and_tracking_query() -> None:
 
 def test_collapses_undetermined_location_tooltip() -> None:
     rows = parse_jobbank_results(RESULTS_HTML)
-    assert rows[1]["location"] == "Undetermined location"
+    assert rows[1]["location"] == "Undetermined location, Canada"
+
+
+def test_a_location_without_a_province_code_is_stamped_canadian() -> None:
+    """Job Bank lists only Canadian jobs; the Canada gate dropped these."""
+    from job_hunt.services.scan import _passes_canada_filter
+
+    various = RESULTS_HTML.replace("Halifax (NS)", "Various locations")
+    rows = parse_jobbank_results(various)
+    assert rows[0]["location"] == "Various locations, Canada"
+    assert rows[1]["location"] == "Undetermined location, Canada"
+    assert parse_jobbank_results(RESULTS_HTML)[0]["location"] == "Halifax (NS)"
+    assert all(_passes_canada_filter(row["location"]) for row in rows)
 
 
 def test_parse_tolerates_empty_and_garbage() -> None:
@@ -164,6 +176,146 @@ def test_scan_paces_requests_between_pages() -> None:
 
     # No pause before the first request; one between each subsequent pair.
     assert slept == [2.5, 2.5]
+
+
+# --- pagination -------------------------------------------------------------
+# Only page 1 was ever read: Ontario / 21222 advertised 353 results on
+# 2026-09-27 and the sweep returned 25 of them.
+
+
+def _page(ids, total: int | None = None) -> str:
+    count = f'<h2><span class="found" id="results-count">{total}</span> results</h2>' if total else ""
+    articles = "".join(
+        f'<article id="article-{i}"><a href="/jobsearch/jobposting/{i}">'
+        f'<span class="noctitle">developer {i}</span></a></article>'
+        for i in ids
+    )
+    return count + articles
+
+
+def _paged_handler(pages: dict[int, str], seen: list[dict[str, str]]):
+    def handler(request: httpx.Request) -> httpx.Response:
+        params = dict(request.url.params)
+        seen.append(params)
+        return httpx.Response(200, text=pages.get(int(params.get("page", 1)), ""), request=request)
+
+    return handler
+
+
+def test_scan_walks_later_pages_until_the_advertised_count() -> None:
+    pages = {1: _page(range(0, 25), total=40), 2: _page(range(25, 40))}
+    seen: list[dict[str, str]] = []
+    stats: dict = {}
+    rows = scan_jobbank(
+        {"enabled": True, "noc_codes": ["21222"], "provinces": ["ON"]},
+        client=_client(_paged_handler(pages, seen)),
+        sleep=lambda s: None,
+        stats=stats,
+    )
+
+    assert len(rows) == 40
+    assert "page" not in seen[0] and seen[1]["page"] == "2"
+    assert len(seen) == 2  # a short page is the last one
+    assert stats["21222"] == {
+        "collected": 40, "errors": 0, "advertised": 40, "truncated": False, "incomplete": 0}
+
+
+def test_an_unparseable_article_does_not_make_a_page_look_like_the_last() -> None:
+    """Review 2026-09-27: the short-page test counted parsed rows, so one
+    article in unexpected markup ended the walk with nothing reported."""
+    broken = '<article id="article-999"><p>redesigned</p></article>'
+    pages = {1: _page(range(0, 24), total=49) + broken, 2: _page(range(24, 48))}
+    seen: list[dict[str, str]] = []
+    stats: dict = {}
+    rows = scan_jobbank(
+        {"enabled": True, "noc_codes": ["21222"], "provinces": ["ON"]},
+        client=_client(_paged_handler(pages, seen)),
+        sleep=lambda s: None,
+        stats=stats,
+    )
+    assert len(seen) == 2  # page 1 still had 25 articles, so page 2 was read
+    assert len(rows) == 48
+    # One posting never parsed: the pair fell short of its own count.
+    assert stats["21222"]["incomplete"] == 1
+
+
+def test_a_premature_empty_page_is_reported_as_incomplete() -> None:
+    from job_hunt.services.scan import _board_coverage_warnings
+
+    # Page 2 loads but lists nothing (an empty body would be a failed request).
+    pages = {1: _page(range(0, 25), total=60), 2: '<div class="results-jobs"></div>'}
+    stats: dict = {}
+    scan_jobbank(
+        {"enabled": True, "noc_codes": ["21222"], "provinces": ["ON"]},
+        client=_client(_paged_handler(pages, [])),
+        sleep=lambda s: None,
+        stats=stats,
+    )
+    assert stats["21222"]["incomplete"] == 1 and stats["21222"]["truncated"] is False
+    assert "ended short of the board's own count" in "\n".join(_board_coverage_warnings(stats))
+
+
+def test_a_page_that_repeats_an_earlier_one_ends_the_walk() -> None:
+    same = _page(range(0, 25))
+    seen: list[dict[str, str]] = []
+    stats: dict = {}
+    rows = scan_jobbank(
+        {"enabled": True, "noc_codes": ["21222"], "provinces": ["ON"], "max_pages": 5},
+        client=_client(_paged_handler({1: same, 2: same, 3: same}, seen)),
+        sleep=lambda s: None,
+        stats=stats,
+    )
+    assert len(rows) == 25
+    assert len(seen) == 2
+    assert stats["21222"]["truncated"] is False
+
+
+def test_a_page_whose_articles_all_fail_to_parse_does_not_end_the_walk() -> None:
+    """Round 2: 25 unparseable articles gave no parsed rows, which read as a
+    repeat and stopped the walk before page 2."""
+    unparseable = "".join(f'<article id="article-{i}"><p>redesigned</p></article>' for i in range(25))
+    pages = {1: _page([], total=40) + unparseable, 2: _page(range(100, 115))}
+    seen: list[dict[str, str]] = []
+    stats: dict = {}
+    rows = scan_jobbank(
+        {"enabled": True, "noc_codes": ["21222"], "provinces": ["ON"]},
+        client=_client(_paged_handler(pages, seen)),
+        sleep=lambda s: None,
+        stats=stats,
+    )
+    assert len(seen) == 2 and len(rows) == 15
+    assert stats["21222"]["incomplete"] == 1  # 25 articles seen and lost
+
+
+def test_a_failed_request_is_an_error_and_not_also_incomplete() -> None:
+    pages = {1: _page(range(0, 25), total=60)}  # page 2: empty body, a failed read
+    stats: dict = {}
+    scan_jobbank(
+        {"enabled": True, "noc_codes": ["21222"], "provinces": ["ON"]},
+        client=_client(_paged_handler(pages, [])),
+        sleep=lambda s: None,
+        stats=stats,
+    )
+    assert stats["21222"]["errors"] == 1 and stats["21222"]["incomplete"] == 0
+
+
+def test_the_page_budget_running_out_is_recorded_and_warned() -> None:
+    from job_hunt.services.scan import _board_coverage_warnings
+
+    pages = {n: _page(range((n - 1) * 25, n * 25), total=353) for n in range(1, 16)}
+    seen: list[dict[str, str]] = []
+    stats: dict = {}
+    rows = scan_jobbank(
+        {"enabled": True, "noc_codes": ["21222"], "provinces": ["ON"], "max_pages": 3},
+        client=_client(_paged_handler(pages, seen)),
+        sleep=lambda s: None,
+        stats=stats,
+    )
+
+    assert len(rows) == 75 and len(seen) == 3
+    assert stats["21222"]["truncated"] is True
+    warning = "\n".join(_board_coverage_warnings(stats))
+    assert "21222" in warning and "raise max_pages" in warning and "advertises 353" in warning
 
 
 def test_tier4_rows_become_scanned_jobs() -> None:

@@ -6,6 +6,7 @@ import json
 import os
 import re
 import time
+import unicodedata
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -19,15 +20,24 @@ from job_hunt.models.tracker import normalize
 from job_hunt.repositories.tracker_repo import TrackerRepository
 from job_hunt.services.adzuna import scan_adzuna_source
 from job_hunt.services import discovered_companies
+from job_hunt.services.builtin import scan_builtin_source
 from job_hunt.services.cn_boards import scan_cn_boards_source
+from job_hunt.services.employer_boards import scan_employer_boards_source
 from job_hunt.services.getro_boards import scan_getro_boards_source
 from job_hunt.services.gov_boards import scan_gov_boards
+from job_hunt.services.himalayas import scan_himalayas_source
 from job_hunt.services.hn_hiring import scan_hn_hiring_source
 from job_hunt.services.regional_boards import scan_regional_boards
+from job_hunt.services.immigration import AMBIGUOUS_PROVINCE_CODES, UNAMBIGUOUS_PROVINCE_CODES
 from job_hunt.services.immigration import place_tokens as immigration_place_tokens
 from job_hunt.services.jobbank import scan_jobbank
 from job_hunt.services.posted_date import jobbank_date_to_iso
+from job_hunt.services.saskjobs import scan_saskjobs_source
+from job_hunt.services.workable_search import scan_workable_search_source
+from job_hunt.services.workbc import scan_workbc_source
 from job_hunt.services.workday_boards import scan_workday_source
+from job_hunt.services.workpei import scan_workpei_source
+from job_hunt.services.yc_companies import scan_yc_companies_source
 from job_hunt.services.profile_loader import current_mode, discovery_context
 from job_hunt.services.web_extract import _bamboohr_slug
 
@@ -84,8 +94,9 @@ def scan_portals(
             Pass ``discovery_channel="<id>"`` to restrict tier 3 to one
             channel.
     Tier 4: Job Bank direct search (``jobbank_direct``).
+    Tier 4b: SaskJobs.ca (``saskjobs``), filtered to Job Bank's NOC codes.
     Tier 5: public-sector boards — GNWT, Nova Scotia, New Brunswick,
-        Manitoba (``gov_boards``), and regional tech-industry boards
+        Manitoba, Nunavut, Alberta (``gov_boards``), and regional tech-industry boards
         (``regional_boards``). Highest signal per request in this search:
         small local employers in the regions that carry immigration value,
         largely absent from the national aggregators.
@@ -100,11 +111,20 @@ def scan_portals(
     Tier 10: Hacker News "Who is hiring?" (``hn_hiring``) — the monthly thread
         where small companies post themselves, read through Algolia's public
         HN Search API. Free text, so it keeps the positive filter too.
+    Tier 11: single-employer career sites on Oracle / Jibe / UKG
+        (``employer_boards``) — J.D. Irving, City of Thunder Bay, Yukon
+        Hospitals. General employers: positive filter.
+    Tier 12: WorkPEI (``workpei``). General board: positive filter.
+    Tier 13: YC companies hiring in Canada (``yc_companies``). Positive filter.
+    Tier 14: WorkBC (``workbc``), searched by the profile's role terms. Positive filter.
+    Tier 15: Workable's cross-employer search (``workable_search``). Positive filter.
+    Tier 16: Himalayas remote roles open to Canada (``himalayas``). Positive filter.
+    Tier 17: Built In Vancouver (``builtin_vancouver``). Positive filter.
 
     Tier 1 also reads every company board the other tiers have surfaced
     (``services/discovered_companies.py``), not only the hand-written list.
 
-    Tiers 4-10 need no WebSearch provider and consume no search quota. They
+    Tiers 4-17 need no WebSearch provider and consume no search quota. They
     return structured employer / location fields, so they are strictly better
     per result than the tier-3 channels that cover the same boards.
     """
@@ -221,16 +241,24 @@ def scan_portals(
         # regional_boards.py's BOARDS vtable dispatches `fetch` as the string
         # "curl" rather than through a real seam. jobbank.py has neither
         # obstacle and is the next one worth converting.
+        noc_codes = (config.get("jobbank_direct") or {}).get("noc_codes")
         extra_tiers = [
             _jobbank_scanned_jobs(config.get("jobbank_direct"), result.errors),
+            _source_scanned_jobs(
+                "saskjobs",
+                lambda cfg: scan_saskjobs_source(cfg, noc_codes),
+                config.get("saskjobs"),
+                result.errors,
+            ),
             _gov_board_scanned_jobs(config.get("gov_boards"), result.errors),
             _regional_board_scanned_jobs(config.get("regional_boards"), result.errors),
             _workday_scanned_jobs(config.get("workday_boards"), result.errors),
             _adzuna_scanned_jobs(settings, discovery_context().get("roles", []), result.errors),
             _cn_board_scanned_jobs(config.get("cn_boards"), result.errors),
         ]
-        # All six already establish the occupation before we see the title:
-        # Job Bank is queried by NOC code, Adzuna rows are filtered on their
+        # All seven already establish the occupation before we see the title:
+        # Job Bank is queried by NOC code, SaskJobs rows are kept only when
+        # their own NOC code is on that same list, Adzuna rows are filtered on their
         # own `category` facet, the gov / regional / Workday boards are
         # small curated employer boards, and the Chinese boards are screened
         # with `triage.cn_technical_title` (their titles are in Chinese, so the
@@ -250,35 +278,67 @@ def scan_portals(
                 require_positive=False,
             )
 
-        # Tier 9 is the exception to the paragraph above: a Getro portfolio
-        # board is a general board — Communitech carried EY tax-litigation
-        # roles beside its ML ones on 2026-09-17 — so nothing but the title
-        # says whether a row is his work. It keeps the positive filter.
-        _accept_jobs(
+        # Tiers 9-13 are the exception to the paragraph above: each is a
+        # general board, where nothing but the title says whether a row is his
+        # work, so they keep the positive filter (and its near-miss ledger).
+        # Tier 9: a Getro portfolio board carried EY tax-litigation roles
+        # beside its ML ones on 2026-09-17. Tier 10: the monthly Hacker News
+        # "Who is hiring?" thread is free text from any kind of company.
+        # Tier 11: J.D. Irving's 736 postings are mostly drivers, mechanics and
+        # store staff. Tier 12: WorkPEI carries the whole island's job market.
+        # Tier 13: YC companies post sales and design roles beside engineering.
+        # Tier 14: WorkBC aggregates every kind of BC employer. Tier 15:
+        # Workable's search spans every employer on that ATS. Tier 16:
+        # Himalayas is remote roles of every kind. Tier 17: Built In lists
+        # every function at tech companies.
+        general_tiers = [
             _getro_scanned_jobs(config.get("getro_boards"), result.errors),
-            result,
-            positives=positives,
-            negatives=negatives,
-            include_non_canada=include_non_canada,
-            known_urls=known_urls,
-            known_company_roles=known_company_roles,
-            apply=apply,
-            count_fetched=True,
-        )
-
-        # Tier 10: the monthly Hacker News "Who is hiring?" thread. Free text
-        # from any kind of company, so the positive filter stays on.
-        _accept_jobs(
             _hn_hiring_scanned_jobs(config.get("hn_hiring"), result.errors),
-            result,
-            positives=positives,
-            negatives=negatives,
-            include_non_canada=include_non_canada,
-            known_urls=known_urls,
-            known_company_roles=known_company_roles,
-            apply=apply,
-            count_fetched=True,
-        )
+            _source_scanned_jobs(
+                "employer boards", scan_employer_boards_source,
+                config.get("employer_boards"), result.errors,
+            ),
+            _source_scanned_jobs("workpei", scan_workpei_source, config.get("workpei"), result.errors),
+            _source_scanned_jobs(
+                "yc companies", scan_yc_companies_source, config.get("yc_companies"), result.errors
+            ),
+            _source_scanned_jobs(
+                "workbc",
+                lambda cfg: scan_workbc_source(cfg, discovery_context().get("roles", [])),
+                config.get("workbc"),
+                result.errors,
+            ),
+            _source_scanned_jobs(
+                "workable search",
+                lambda cfg: scan_workable_search_source(cfg, discovery_context().get("roles", [])),
+                config.get("workable_search"),
+                result.errors,
+            ),
+            _source_scanned_jobs(
+                "himalayas",
+                lambda cfg: scan_himalayas_source(cfg, discovery_context().get("roles", [])),
+                config.get("himalayas"),
+                result.errors,
+            ),
+            _source_scanned_jobs(
+                "builtin vancouver",
+                lambda cfg: scan_builtin_source(cfg, discovery_context().get("roles", [])),
+                config.get("builtin_vancouver"),
+                result.errors,
+            ),
+        ]
+        for tier_jobs in general_tiers:
+            _accept_jobs(
+                tier_jobs,
+                result,
+                positives=positives,
+                negatives=negatives,
+                include_non_canada=include_non_canada,
+                known_urls=known_urls,
+                known_company_roles=known_company_roles,
+                apply=apply,
+                count_fetched=True,
+            )
 
     if apply and result.jobs:
         _append_pipeline(result.jobs)
@@ -388,6 +448,11 @@ def _board_coverage_warnings(stats: dict[str, dict[str, Any]]) -> list[str]:
                 f"{board_id}: page budget ran out with rows still coming "
                 f"({collected} collected{short}) — raise max_pages"
             )
+        if board.get("incomplete"):
+            warnings.append(
+                f"{board_id}: {board['incomplete']} sweep(s) ended short of the board's own "
+                f"count — a page was empty, repeated or unparseable, so rows were missed"
+            )
     return warnings
 
 
@@ -483,6 +548,28 @@ def _hn_hiring_scanned_jobs(
         return []
     if warnings is not None:
         warnings.extend(result.health.warnings())
+    return [_scanned_job_from_posting(posting) for posting in result.postings]
+
+
+def _source_scanned_jobs(
+    label: str, scan, config: dict[str, Any] | None, warnings: list[str] | None = None
+) -> list[ScannedJob]:
+    """Any ``SourceResult`` tier (saskjobs, employer boards, WorkPEI, YC).
+
+    The same body as the Getro / HN mappers above, once: a sweep that raises
+    becomes a warning, and so does a source's own record of failed requests,
+    truncation, or — when it failed — the reason it gives.
+    """
+    try:
+        result = scan(config)
+    except Exception as exc:
+        if warnings is not None:
+            warnings.append(f"{label}: sweep failed ({exc})")
+        return []
+    if warnings is not None:
+        warnings.extend(result.health.warnings())
+        if result.health.note and not result.health.ok:
+            warnings.append(f"{label}: {result.health.note}")
     return [_scanned_job_from_posting(posting) for posting in result.postings]
 
 
@@ -817,7 +904,10 @@ def _passes_canada_filter(location: str) -> bool:
     already Canada/location-scoped — otherwise the entire tier-2/3 discovery
     stream is silently dropped in default (Canada-only) mode.
     """
-    return not location or _location_matches_canada(location)
+    # Not a string, or only whitespace: unknown, which is accepted like "".
+    if not isinstance(location, str) or not location.strip():
+        return True
+    return _location_matches_canada(location)
 
 
 def scan_via_websearch(
@@ -1228,7 +1318,115 @@ def _record_near_miss(job: ScannedJob) -> None:
 
 
 def _location_matches_canada(location: str) -> bool:
-    """Return true for locations that look viable for Canadian work authorization."""
+    """Return true for locations that look viable for Canadian work authorization.
+
+    Read place by place ("Toronto, ON / New York, NY" is two); any accepted
+    place accepts the posting. Cost asymmetry decides every doubtful case: a
+    foreign posting let through costs one read, a Canadian one dropped here is
+    never seen again.
+    """
+    places = [p for p in _PLACE_SPLIT_RE.split(location or "") if p.strip()]
+    return any(_place_is_canadian(place) for place in places)
+
+
+def _place_is_canadian(place: str) -> bool:
+    """One place, in four steps.
+
+    A code is only ever read from a whole field ("Taber, AB"), a code plus a
+    Canadian postal code ("Cobourg, ON k9a 4j9"), a closed bracket ("Burnaby
+    (BC)", "(BC/Colombie-Britannique)") or the ISO form "CA-ON-Whitby" —
+    never from the first word of a field, which read "ON-SITE" as Ontario
+    and "IN PERSON" as Indiana.
+
+    1. Baja California: BC with a Baja city ("Tijuana, BC") is Mexico.
+    2. Canadian evidence accepts, whatever else the place names: an
+       unambiguous province code (AB BC MB NB NS ON QC), a CA-<code>, a
+       province named in English or French, a Canadian postal code, the word
+       Canada, or a place that is only "CA" / "CAN" ("US/CA"). So "Toronto,
+       ON, Canada and US", "Amsterdam, NL, Canada" and "Darwin, NT, Toronto,
+       ON" pass — and so do "Vancouver, BC, United States" and "Munich, BC,
+       CA - United States", on purpose: a doubtful row costs one read.
+    3. Otherwise a foreign signal outside the city field vetoes: a foreign
+       country ("Darwin, NT, Australia"), a US state code as a whole field or
+       with its ZIP ("Waterloo, IA 50701"), or an ambiguous code with a known
+       collision city ("Amsterdam, NL"). The city field is exempt, so "New
+       Germany, NS" and "Mexico City, NL" are not read as foreign.
+    4. Otherwise an ambiguous code (NL SK PE NT NU YT) is enough ("Corner
+       Brook, NL", "Swift Current (SK) - Hybrid"), and a place with none is
+       read by name, as it always was.
+    """
+    fields = [f.strip() for f in place.split(",")]
+    city = _collision_city(place)
+    codes = _codes_in(fields, _CODE_FIELD_RE, _CODE_TAIL_RE, _CODE_AFTER_NOTE_RE)
+    codes += _BRACKETED_CODE_RE.findall(place)
+    if "BC" in codes and _is_collision(city, "BC"):
+        return False
+    if (
+        any(code in UNAMBIGUOUS_PROVINCE_CODES for code in codes)
+        or _ISO_CANADA_RE.search(place)
+        or _CANADIAN_EVIDENCE_RE.search(place)
+        or place.strip(" ()").upper() in ("CA", "CAN")
+    ):
+        return True
+    if _FOREIGN_COUNTRY_RE.search(", ".join(fields[1:])):
+        return False
+    # The city field is exempt from the whole-field form only: "Austin TX"
+    # and "Remote - TX" name their state inside it.
+    if _codes_in(fields[1:], _US_STATE_FIELD_RE, None, _US_STATE_AFTER_NOTE_RE) or _codes_in(
+        fields[:1], None, _US_STATE_TAIL_RE, _US_STATE_AFTER_NOTE_RE
+    ):
+        return False
+    if any(_is_collision(city, code) for code in codes):
+        return False
+    if codes:
+        return True
+    return _matches_canada_by_name(place)
+
+
+def _codes_in(fields: list[str], whole=None, tail=None, after_note=None) -> list[str]:
+    """Codes found in ``fields`` by any of the three shapes given.
+
+    ``whole``: the field is the code ("BC", "BC - Remote", "BC [Hybrid]").
+    ``tail``: the first field ends in the code, after the city with no comma
+    ("Burnaby BC", "Burnaby BC - Remote"); only the first field is searched.
+    ``after_note``: the code closes a field after a spaced dash ("Remote - BC").
+    """
+    found: list[str] = []
+    for index, field in enumerate(fields):
+        for pattern in (whole, tail if index == 0 else None, after_note):
+            match = pattern.fullmatch(field) if pattern is not None else None
+            if match:
+                found.append(match.group(1))
+                break
+    return found
+
+
+def _collision_city(place: str) -> str:
+    """The first field, bracketed qualifiers removed ("(Remote) Amsterdam
+    (NL)", "Amsterdam (HQ)"), for the collision lookup."""
+    city = re.sub(r"\([^)]*\)?|\[[^\]]*\]?", " ", place).split(",")[0].strip().lower()
+    return _fold_accents(city)
+
+
+def _fold_accents(text: str) -> str:
+    """"garcía" -> "garcia", so the collision list need not spell accents."""
+    return "".join(
+        ch for ch in unicodedata.normalize("NFKD", text) if not unicodedata.combining(ch)
+    )
+
+
+def _is_collision(city: str, code: str) -> bool:
+    """A collision city named anywhere in the first field, as whole words, so
+    a leading note or a trailing code does not hide it ("Hybrid - Tijuana",
+    "Tijuana BC")."""
+    return any(
+        re.search(rf"\b{re.escape(_fold_accents(name))}\b", city)
+        for name in _FOREIGN_COLLISIONS.get(code, ())
+    )
+
+
+def _matches_canada_by_name(location: str) -> bool:
+    """The name-based reading, for places no code settles."""
     value = _compact_location(location)
     if not value:
         return False
@@ -1323,6 +1521,85 @@ def _location_matches_canada(location: str) -> bool:
         return True
     return not blocked
 
+
+# One place of a multi-place location. " or " is left alone: it also appears
+# inside a single place ("Toronto or Remote").
+_PLACE_SPLIT_RE = re.compile(r"\s*(?:/|;|\|)\s*")
+_ALL_PROVINCE_CODES = UNAMBIGUOUS_PROVINCE_CODES | AMBIGUOUS_PROVINCE_CODES
+_CODE_ALT = "|".join(sorted(_ALL_PROVINCE_CODES))
+_POSTAL = r"[ABCEGHJ-NPRSTVXY]\d[ABCEGHJ-NPRSTV-Z]\s?\d[ABCEGHJ-NPRSTV-Z]\d"
+# What may follow a code in its field: a note opened by "(", "[", "+" or ":", or by
+# a dash with space on both sides ("BC (Hybrid)", "BC [Remote]", "BC +2 more",
+# "ON - Remote", "NL – Remote"). A dash
+# glued to letters ("ON-SITE") or a bare word ("ON SITE", "IN PERSON", "OR
+# Remote") is not a code. Shared by province and state codes so they agree.
+_CODE_SUFFIX = r"(?:\s*[(\[+:].*|\s+[-–—]\s+.*)?"
+# A code field: the code, optionally its postal code (any case), optionally a note.
+_CODE_FIELD_RE = re.compile(
+    r"(" + _CODE_ALT + r")(?:\s+(?i:" + _POSTAL + r"))?" + _CODE_SUFFIX
+)
+# The city then the code, no comma: "Burnaby BC", "Taber AB T1G 2C9 - Hybrid".
+_CODE_TAIL_RE = re.compile(
+    r".*?\S\s+(" + _CODE_ALT + r")(?:\s+(?i:" + _POSTAL + r"))?" + _CODE_SUFFIX
+)
+# The code closing a field after a spaced dash: "Remote - BC", "Hybrid – AB".
+_CODE_AFTER_NOTE_RE = re.compile(r".*\S\s+[-–—]\s+(" + _CODE_ALT + r")")
+# Known edge cases, left alone on the cost-asymmetry rule (a foreign row let
+# through costs one read; a Canadian row dropped is lost for good):
+# - "Austin, TX, ON - SITE" is accepted: "ON - SITE" reads as Ontario + note.
+# - "Toronto, OR - Remote", "Vancouver, IN - Person" are rejected: OR / IN
+#   read as states. Letting an allow-listed city outrank a state would re-admit
+#   "Waterloo, IA - Hybrid", and capital "OR"/"IN" before a spaced dash is rare.
+# - Lower-case codes ("Burnaby, bc - Remote") are not codes: "on" and "in"
+#   are English words.
+# "(BC)", "(BC/Colombie-Britannique)"; also "(BC" at the end of a place,
+# which is what splitting "(BC/Colombie-Britannique)" on "/" leaves.
+_BRACKETED_CODE_RE = re.compile(r"[(\[](" + _CODE_ALT + r")(?=[)\]/]|\s*$)")
+# ISO 3166-2, as Oracle and Taleo write it: "CA-ON-Whitby".
+_ISO_CANADA_RE = re.compile(r"\bCA-(?:" + _CODE_ALT + r")\b")
+_CANADIAN_EVIDENCE_RE = re.compile(
+    r"\bcanada\b|"
+    r"\b(?:alberta|british columbia|manitoba|new brunswick|newfoundland|nova scotia|ontario|"
+    r"prince edward island|qu[eé]bec|saskatchewan|yukon|northwest territories|nunavut|"
+    r"colombie-britannique|nouveau-brunswick|terre-neuve|nouvelle-[eé]cosse|"
+    r"[iî]le-du-prince-[eé]douard|territoires du nord-ouest)\b|"
+    # Canadian postal code: no D F I O Q U, and never W or Z first.
+    r"\b" + _POSTAL + r"\b",
+    re.I,
+)
+# Excludes CA, which some boards use for Canada, and NE, which is also a
+# Calgary quadrant ("Calgary, NE"); "Omaha, NE" still fails, by name.
+_US_STATE_CODES = frozenset(
+    "AL AK AZ AR CO CT DE FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NV "
+    "NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY DC".split()
+)
+# State fields, by the same three shapes as province fields: the code,
+# optionally its ZIP ("IA 50701"), optionally a note ("WA (ON-SITE)").
+_STATE_ALT = "|".join(sorted(_US_STATE_CODES))
+_ZIP = r"(?:\s+\d{5}(?:-\d{4})?)?"
+_US_STATE_FIELD_RE = re.compile(r"(" + _STATE_ALT + r")" + _ZIP + _CODE_SUFFIX)
+_US_STATE_TAIL_RE = re.compile(r".*?\S\s+(" + _STATE_ALT + r")" + _ZIP + _CODE_SUFFIX)
+_US_STATE_AFTER_NOTE_RE = re.compile(r".*\S\s+[-–—]\s+(" + _STATE_ALT + r")")
+_FOREIGN_COUNTRY_RE = re.compile(
+    r"\b(?:united states|mexico|m[eé]xico|netherlands|australia|germany|"
+    r"slovakia|peru|united kingdom|england|france|india|ireland|spain|poland|japan|"
+    r"singapore|brazil|niue|mayotte)\b|(?-i:\b(?:US|USA|UK)\b)",
+    re.I,
+)
+# Cities that share a province code with a foreign region. Checked against the
+# city field only, so "London, ON" can never be caught by it. Deliberately
+# short: a collision missing here costs one read, and a Canadian town wrongly
+# listed here would be lost for good.
+_FOREIGN_COLLISIONS = {
+    "BC": ("tijuana", "mexicali", "ensenada", "tecate", "rosarito"),
+    "NL": ("amsterdam", "rotterdam", "the hague", "utrecht", "eindhoven",
+           "monterrey", "san pedro garza garcia"),
+    "SK": ("bratislava", "kosice", "košice"),
+    "PE": ("lima", "arequipa", "cusco", "trujillo"),
+    "NT": ("darwin", "alice springs", "palmerston"),
+    "NU": ("alofi",),
+    "YT": ("mamoudzou",),
+}
 
 _EXPLICIT_CANADA_RE = re.compile(
     r"\b(canada|canadian|ontario|quebec|qu[eé]bec|alberta|manitoba|saskatchewan|yukon|nunavut|"
