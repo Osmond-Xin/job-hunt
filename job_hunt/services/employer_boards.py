@@ -1058,12 +1058,14 @@ def scan_employer_boards_source(
                     failed = True
                     break
                 rows, page_total, page_lost = got
-                lost += page_lost
                 # The first total a board gives is kept: a later page that
                 # omits it must not erase what is known.
                 if total is None:
                     total = page_total
                 fresh = [row for row in rows if row["url"] not in board_urls]
+                # A repeated page repeats its losses too; count them once.
+                if fresh or not rows:
+                    lost += page_lost
                 if not fresh:
                     break
                 for row in fresh:
