@@ -1015,3 +1015,17 @@ def test_an_erecruit_url_that_already_names_the_feed_is_not_doubled():
     _scan(_config({"name": "Niagara Health", "platform": "erecruit",
                    "url": "https://careers.niagarahealth.on.ca/erecruit/RSS.aspx"}), handler)
     assert paths == ["/erecruit/RSS.aspx"]
+
+
+
+# --- review round 9, 2026-09-27 ------------------------------------------------
+
+
+def test_a_null_oracle_requisition_costs_itself_only():
+    """Round 9: [valid, null, valid] gave zero postings and a request error."""
+    payload = {"items": [{"TotalJobsCount": 3, "requisitionList": [
+        {"Id": "1", "Title": "Analyst"}, None, {"Id": "2", "Title": "Developer"}]}]}
+    result = _scan(_config({"name": "J.D. Irving", "platform": "oracle", "url": JDI_URL}),
+                   lambda request: httpx.Response(200, json=payload))
+    assert len(result.postings) == 2 and result.health.errors == 0
+    assert any("1 row(s) could not be parsed" in w for w in result.health.warnings())

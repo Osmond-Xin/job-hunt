@@ -18,6 +18,7 @@ row the tier had already read.
 
 from __future__ import annotations
 
+import math
 import re
 from typing import Any, Callable
 from urllib.parse import urljoin, urlparse
@@ -33,7 +34,10 @@ def safe_total(value: Any) -> int | None:
     if isinstance(value, int):
         return value if value >= 0 else None
     if isinstance(value, float):
-        return int(value) if value >= 0 and value == int(value) else None
+        # JSON 1e400 arrives as inf; int(inf) raises.
+        if not math.isfinite(value) or value < 0 or value != int(value):
+            return None
+        return int(value)
     match = _NUMBER_RE.match(str(value)) if isinstance(value, str) else None
     return int(match.group(1).replace(",", "")) if match else None
 
@@ -43,9 +47,12 @@ def absolute_url(value: Any, base: str | None = None) -> str:
     if not isinstance(value, str) or not value.strip():
         return ""
     url = value.strip()
-    if base and not urlparse(url).scheme:
-        url = urljoin(base, url)
-    parsed = urlparse(url)
+    try:
+        if base and not urlparse(url).scheme:
+            url = urljoin(base, url)
+        parsed = urlparse(url)
+    except ValueError:  # "https://[bad" is an invalid IPv6 host, and raises
+        return ""
     return url if parsed.scheme in ("http", "https") and parsed.netloc else ""
 
 

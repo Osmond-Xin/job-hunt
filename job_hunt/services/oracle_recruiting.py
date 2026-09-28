@@ -70,6 +70,10 @@ def parse_requisitions(
     rows: list[dict[str, str]] = []
     for item in (payload or {}).get("items") or []:
         for req in item.get("requisitionList") or []:
+            # One null requisition must not cost the page's others; the
+            # caller counts it as lost against the raw list length.
+            if not isinstance(req, dict):
+                continue
             job_id = str(req.get("Id") or "").strip()
             title = _text(req.get("Title"))
             if not job_id or not title:
