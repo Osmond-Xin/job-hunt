@@ -959,14 +959,16 @@ def test_a_tbe_link_with_extra_classes_or_other_attribute_order_is_read():
     assert result.health.ok and not result.health.incomplete
 
 
-def test_a_tbe_page_as_long_as_max_rows_is_reported_short():
-    """M6: a 500-row response was assumed to be the whole board."""
+def test_a_tbe_page_as_long_as_max_rows_is_flagged_as_capped_not_miscounted():
+    """M6 / round 9: a 500-row response may not be the whole board — but it
+    may be, so it is flagged as capped rather than given a made-up total."""
     links = "".join(
         f'<a href="https://tre.tbe.taleo.net/tre01/ats/careers/v2/viewRequisition?org=COSC&amp;cws=37&amp;rid={i}" '
         f'class="viewJobLink">Job {i}</a>' for i in range(500))
     result = _scan(_config({"name": "Big", "platform": "tbe", "url": TBE_URL}),
                    lambda request: httpx.Response(200, text=f'<div class="oracletaleocwsv2">{links}</div>'))
-    assert len(result.postings) == 500 and result.health.incomplete
+    assert len(result.postings) == 500 and result.health.advertised is None
+    assert any("hit its 500-row cap" in w for w in result.health.warnings())
 
 
 def test_selectminds_resolves_relative_links():
@@ -1029,3 +1031,34 @@ def test_a_null_oracle_requisition_costs_itself_only():
                    lambda request: httpx.Response(200, json=payload))
     assert len(result.postings) == 2 and result.health.errors == 0
     assert any("1 row(s) could not be parsed" in w for w in result.health.warnings())
+
+
+
+def test_relative_tbe_links_are_resolved_against_the_careers_directory():
+    """Round 9."""
+    page = ('<div class="oracletaleocwsv2"><a href="viewRequisition?org=COSC&amp;cws=37&amp;rid=5" '
+            'class="viewJobLink">Analyst</a></div>')
+    result = _scan(_config({"name": "St. Catharines", "platform": "tbe", "url": TBE_URL}),
+                   lambda request: httpx.Response(200, text=page))
+    assert result.postings[0].url == (
+        "https://tre.tbe.taleo.net/tre01/ats/careers/v2/viewRequisition?org=COSC&cws=37&rid=5")
+
+
+@pytest.mark.parametrize("platform, url, handler", [
+    ("avanti", "https://welland.myavanti.ca/careers", lambda r: httpx.Response(200, json=AVANTI_ITEMS)),
+    ("erecruit", "https://careers.niagarahealth.on.ca/erecruit", lambda r: httpx.Response(200, text=ERECRUIT_FEED)),
+])
+def test_a_single_response_board_read_in_one_page_is_complete_not_truncated(platform, url, handler):
+    """Round 9: with max_pages=1 a complete read reported truncated."""
+    result = _scan(_config({"name": "X", "platform": platform, "url": url}, max_pages=1), handler)
+    assert result.postings and not result.health.truncated and result.health.warnings() == []
+
+
+def test_peopleadmin_reads_single_quoted_links():
+    """Round 9 (agy)."""
+    feed = ("<feed xmlns='http://www.w3.org/2005/Atom'><entry>"
+            "<link rel='alternate' type='text/html' href='https://cnc.peopleadmin.ca/postings/7'/>"
+            "<title>Analyst</title></entry></feed>")
+    result = _scan(_config({"name": "CNC", "platform": "peopleadmin", "url": "https://cnc.peopleadmin.ca"}),
+                   lambda request: httpx.Response(200, text=feed if request.url.params["page"] == "1" else _atom([])))
+    assert [p.url for p in result.postings] == ["https://cnc.peopleadmin.ca/postings/7"]

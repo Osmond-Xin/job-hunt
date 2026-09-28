@@ -123,7 +123,7 @@ import httpx
 
 from job_hunt.models.posting import JobPosting, SourceHealth, SourceResult, from_row
 from job_hunt.services.gov_boards import parse_successfactors
-from job_hunt.services.row_guard import guard_rows, safe_total
+from job_hunt.services.row_guard import absolute_url, guard_rows, safe_total
 from job_hunt.services.oracle_recruiting import (
     MAX_PAGE_SIZE,
     fetch_requisitions,
@@ -392,6 +392,7 @@ def _erecruit_reader(employer: dict[str, Any]):
             return None
         return rows, None, len(_ERECRUIT_ITEM_RE.findall(response.text)) - len(rows)
 
+    read.one_page = True  # the whole board comes in one response
     return read
 
 
@@ -463,6 +464,7 @@ def _peoplesoft_reader(employer: dict[str, Any]):
         raw = len(set(_PS_ROW_RE.findall(response.text)))
         return rows, None, max(0, raw - len(rows))
 
+    read.one_page = True  # the whole board comes in one response
     return read
 
 
@@ -610,14 +612,17 @@ def _tbe_anchors(page_html: str) -> list[tuple[str, str]]:
     return found
 
 
-def parse_tbe(page_html: str) -> list[dict[str, str]]:
+def parse_tbe(page_html: str, base: str = "") -> list[dict[str, str]]:
+    """Job links, resolved against the careers directory (``base``) when
+    relative ("viewRequisition?org=...")."""
     rows, seen = [], set()
     for href, title in _tbe_anchors(page_html):
-        if "viewRequisition" not in href or href in seen:
+        url = absolute_url(href, base or None)
+        name = html.unescape(_TAG_RE.sub(" ", title)).strip()
+        if "viewRequisition" not in url or url in seen or not name:
             continue
-        seen.add(href)
-        rows.append({"url": href, "title": html.unescape(_TAG_RE.sub(" ", title)).strip(),
-                     "location": "", "posted": ""})
+        seen.add(url)
+        rows.append({"url": url, "title": name, "location": "", "posted": ""})
     return rows
 
 
@@ -642,13 +647,15 @@ def _tbe_reader(employer: dict[str, Any]):
             return None
         if "oracletaleocwsv2" not in response.text:
             return None  # not the careers page, or its markup changed
-        rows = parse_tbe(response.text)
+        rows = parse_tbe(response.text, base)
         raw = len({href for href, _ in _tbe_anchors(response.text)})
-        # A page as long as maxRows may not be the whole board: the total is
-        # then "at least one more", so the sweep is reported short.
-        total = len(rows) + 1 if len(rows) >= _TBE_MAX_ROWS else None
-        return rows, total, raw - len(rows)
+        # A page as long as maxRows may or may not be the whole board. That
+        # is uncertainty, not a known count, so it is flagged as such.
+        read.capped = raw >= _TBE_MAX_ROWS
+        return rows, None, raw - len(rows)
 
+    read.capped = False
+    read.one_page = True  # the whole board comes in one response
     return read
 
 
@@ -763,6 +770,7 @@ def _avanti_reader(employer: dict[str, Any]):
         rows, lost = guard_rows(payload["items"], lambda item: _avanti_row(item, base))
         return rows, None, lost
 
+    read.one_page = True  # the whole board comes in one response
     return read
 
 
@@ -893,9 +901,10 @@ _ATOM_LINK_RE = re.compile(r"<link\b[^>]*>")
 def _atom_link(entry: str) -> str:
     """The entry's HTML page: rel="alternate" type="text/html", else the first link."""
     links = _ATOM_LINK_RE.findall(entry)
-    chosen = next((tag for tag in links if 'rel="alternate"' in tag and 'type="text/html"' in tag),
+    chosen = next((tag for tag in links
+                   if re.search(r"""rel=['"]alternate['"]""", tag) and re.search(r"""type=['"]text/html['"]""", tag)),
                   links[0] if links else "")
-    href = re.search(r'href="([^"]+)"', chosen)
+    href = re.search(r"""href=['"]([^'"]+)['"]""", chosen)
     return html.unescape(href.group(1)) if href else ""
 
 
@@ -1084,9 +1093,13 @@ def scan_employer_boards_source(
                         postings.append(posting)
                 if total is not None and len(board_urls) >= total:
                     break
+                if getattr(read, "one_page", False):
+                    break  # a single-response board is complete after one read
             else:
                 budget_ran_out = truncated = True
             advertised += total or 0
+            if getattr(read, "capped", False):
+                short.append(f"{name}: the response hit its {_TBE_MAX_ROWS}-row cap; the board may hold more")
             if lost:
                 short.append(f"{name}: {lost} row(s) could not be parsed")
             # Ended on an empty or repeated page below the board's own count:
