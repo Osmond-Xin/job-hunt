@@ -643,6 +643,48 @@ def test_an_avanti_response_without_items_is_an_error():
     assert result.health.errors == 1
 
 
+# Trimmed from jobs.northernhealth.ca, 2026-09-27.
+def _aspx_page(ids, start, total, next_link=True):
+    rows = "".join(
+        f'<tr id="rowItem" role="button"><td data-col="Position"><a href="/ViewJobPosting/{i}?ReturnUrl=x">'
+        f'<span id="lblPosition" class="font-weight-bold">*Data Analyst {i}</span></a></td>'
+        f'<td data-col="Location"><a href="/ViewJobPosting/{i}"> Prince George, BC </a></td></tr>'
+        for i in ids)
+    nxt = ("<a href=\"javascript:__doPostBack(&#39;ctl00$MainContent$pagListTop$ctl04$ctl00&#39;,&#39;&#39;)\">Next</a>"
+           if next_link else "")
+    return (f'<input type="hidden" name="__VIEWSTATE" id="__VIEWSTATE" value="vs{start}" />'
+            f'<span>Records&nbsp; {start} &nbsp;-&nbsp; {start + len(ids) - 1} &nbsp;of&nbsp; {total} </span>'
+            f"{nxt}{rows}")
+
+
+def test_an_aspnet_job_search_is_paged_by_posting_back_its_next_link():
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.method == "GET":
+            return httpx.Response(200, text=_aspx_page(range(100), 1, 150))
+        return httpx.Response(200, text=_aspx_page(range(100, 150), 101, 150, next_link=False))
+
+    result = _scan(_config({"name": "Northern Health", "platform": "aspnet_jobsearch",
+                            "url": "https://jobs.northernhealth.ca", "location_hint": "BC"}), handler)
+    assert requests[0].url.path == "/JobSearch/s-/0-0-0-100-0-false-0-0"
+    form = requests[1].content.decode()
+    assert "__VIEWSTATE=vs1" in form and "__EVENTTARGET=ctl00%24MainContent%24pagListTop%24ctl04%24ctl00" in form
+    assert len(requests) == 2 and len(result.postings) == 150
+    first = result.postings[0]
+    assert first.url == "https://jobs.northernhealth.ca/ViewJobPosting/0"
+    assert first.title == "Data Analyst 0" and first.location == "Prince George, BC"
+    assert result.health.advertised == 150 and not result.health.incomplete
+
+
+def test_an_aspnet_page_without_its_record_count_is_an_error():
+    result = _scan(_config({"name": "Northern Health", "platform": "aspnet_jobsearch",
+                            "url": "https://jobs.northernhealth.ca"}),
+                   lambda request: httpx.Response(200, text="<html>maintenance</html>"))
+    assert result.health.errors == 1
+
+
 def test_the_tier_keeps_the_positive_title_filter():
     """J.D. Irving's board is drivers, mechanics and store managers; only the
     title says which of its 736 postings is his work."""

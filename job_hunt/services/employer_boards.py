@@ -69,6 +69,13 @@ public JSON endpoint, so an employer is one ``portals.yml`` entry — a
   (``Job``, ``Title``, ``Location``, ``ClosingDate``); the posting page is
   ``/careers/Job/Details/<Job>``. Locations are departments, hence
   ``location_hint``. City of Welland: 2026-09-27.
+- **aspnet_jobsearch** — the ASP.NET WebForms board BC's Interior and
+  Northern Health run (``<host>/JobSearch/s-/0-0-0-100-0-false-0-0``; the
+  fourth segment is the page size, 100 at most — larger falls back to 10).
+  Later pages are postbacks: the page's hidden fields posted back with
+  ``__EVENTTARGET`` set to its "Next" link. Rows link ``/ViewJobPosting/<id>``;
+  the count is "Records 1 - 100 of N". Interior Health 1,371 and Northern
+  Health 626 postings on 2026-09-27.
 - **successfactors** — SAP SuccessFactors career sites, read with the parser
   the public-sector boards use (``gov_boards.parse_successfactors``); the
   total is the page's "of <b>N</b>". For crown corporations — ICBC,
@@ -694,6 +701,65 @@ def _avanti_reader(employer: dict[str, Any]):
     return read
 
 
+_ASPX_HIDDEN_RE = re.compile(r'<input type="hidden" name="([^"]+)" id="[^"]*" value="([^"]*)"')
+_ASPX_NEXT_RE = re.compile(r"__doPostBack\(&#39;([^&]*pagListTop[^&]*)&#39;,&#39;&#39;\)\">Next<")
+_ASPX_TOTAL_RE = re.compile(r"Records&nbsp;\s*\d+\s*&nbsp;-&nbsp;\s*\d+\s*&nbsp;of&nbsp;\s*(\d+)")
+_ASPX_ROW_RE = re.compile(r'<tr id="rowItem".*?</tr>', re.S)
+
+
+def parse_aspnet_jobsearch(page_html: str, base: str) -> list[dict[str, str]]:
+    rows = []
+    for block in _ASPX_ROW_RE.findall(page_html or ""):
+        job = re.search(r'href="/ViewJobPosting/(\d+)', block)
+        title = re.search(r'id="lblPosition"[^>]*>(.*?)</span>', block, re.S)
+        place = re.search(r'data-col="Location".*?<a[^>]*>(.*?)</a>', block, re.S)
+        if not job or not title:
+            continue
+        rows.append(
+            {
+                "url": f"{base}/ViewJobPosting/{job.group(1)}",
+                "title": html.unescape(_TAG_RE.sub(" ", title.group(1))).strip(" *"),
+                "location": html.unescape(_TAG_RE.sub(" ", place.group(1))).strip() if place else "",
+                "posted": "",
+            }
+        )
+    return rows
+
+
+def _aspnet_jobsearch_reader(employer: dict[str, Any]):
+    parsed = urlparse(str(employer.get("url") or ""))
+    if not parsed.netloc:
+        return None
+    base = f"https://{parsed.netloc}"
+    search = f"{base}/JobSearch/s-/0-0-0-100-0-false-0-0"
+    state: dict[str, Any] = {}
+
+    def read(client: httpx.Client, page: int) -> Page:
+        try:
+            if page == 0:
+                response = client.get(search)
+            else:
+                target = state.get("next")
+                if not target:
+                    return [], state.get("total", 0)  # the last page had no Next link
+                response = client.post(
+                    search, data={**state["form"], "__EVENTTARGET": target, "__EVENTARGUMENT": ""}
+                )
+            response.raise_for_status()
+        except httpx.HTTPError:
+            return None
+        total = _ASPX_TOTAL_RE.search(response.text)
+        if page == 0 and not total:
+            return None  # not this board, or its markup changed
+        state["form"] = dict(_ASPX_HIDDEN_RE.findall(response.text))
+        next_link = _ASPX_NEXT_RE.search(response.text)
+        state["next"] = next_link.group(1) if next_link else ""
+        state["total"] = int(total.group(1)) if total else state.get("total", 0)
+        return parse_aspnet_jobsearch(response.text, base), state["total"]
+
+    return read
+
+
 _READERS = {
     "oracle": _oracle_reader,
     "jibe": _jibe_reader,
@@ -707,6 +773,7 @@ _READERS = {
     "tbe": _tbe_reader,
     "cornerstone": _cornerstone_reader,
     "avanti": _avanti_reader,
+    "aspnet_jobsearch": _aspnet_jobsearch_reader,
 }
 
 
