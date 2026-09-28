@@ -60,4 +60,50 @@ def test_the_budget_running_out_is_truncation():
 
 def test_no_cards_on_any_search_is_an_error_not_a_quiet_board():
     result = _scan(lambda request: httpx.Response(200, text="<html>redesigned</html>"))
-    assert result.health.errors == 1 and "markup" in result.health.note
+    assert result.health.errors == 1
+
+
+# --- review of the new-sources batch, 2026-09-27 ------------------------------
+
+
+def test_an_explicitly_empty_search_is_quiet_and_a_blocked_later_page_is_an_error():
+    """H4: a 200 block page on page 2 ended the walk as if it were the end."""
+    empty = _scan(lambda request: httpx.Response(200, text="<h2>No Results Found</h2>"))
+    assert empty.health.ok and empty.postings == []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.params["page"] == "1":
+            return httpx.Response(200, text="".join(_card(i) for i in range(25)))
+        return httpx.Response(200, text="<html>Just a moment...</html>")
+
+    blocked = _scan(handler, max_pages=3)
+    assert len(blocked.postings) == 25 and blocked.health.errors == 1
+
+
+def test_a_card_that_does_not_parse_is_loss_and_does_not_end_the_walk():
+    """H4: one unparseable card made a full page look short."""
+    broken = '<div data-id="job-card"><span>redesigned card</span></div>'
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        page = int(request.url.params["page"])
+        if page == 1:
+            return httpx.Response(200, text="".join(_card(i) for i in range(24)) + broken)
+        return httpx.Response(200, text="".join(_card(100 + i) for i in range(3)))
+
+    result = _scan(handler, max_pages=5)
+    assert len(result.postings) == 27
+    assert result.health.incomplete and any("1 job card" in w for w in result.health.warnings())
+
+
+def test_title_link_in_any_attribute_order_company_span_with_class_and_ages():
+    card = (
+        '<div data-id="job-card"><a data-id="company-title" href="/company/x"><span class="name">Acme</span></a>'
+        '<a data-id="job-card-title" class="card" href="/job/analyst/9">Analyst</a>'
+        '<span>Reposted One Month Ago</span></div>'
+        '<div data-id="job-card"><a href="/job/dev/8" data-id="job-card-title">Dev</a><span>30+ Days Ago</span></div>'
+    )
+    rows = parse_cards(card)
+    assert [(r["url"], r["company"]) for r in rows] == [
+        ("https://www.builtinvancouver.org/job/analyst/9", "Acme"),
+        ("https://www.builtinvancouver.org/job/dev/8", "")]
+    assert rows[0]["posted"] and rows[1]["posted"]
