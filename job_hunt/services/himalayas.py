@@ -23,6 +23,7 @@ from typing import Any, Callable
 import httpx
 
 from job_hunt.models.posting import JobPosting, SourceHealth, SourceResult, from_row
+from job_hunt.services.row_guard import guard_rows, safe_total
 
 API = "https://himalayas.app/jobs/api/search"
 _USER_AGENT = (
@@ -37,7 +38,7 @@ def parse_job(job: dict[str, Any]) -> dict[str, str]:
     except (TypeError, ValueError, OSError, OverflowError):
         posted = ""
     return {
-        "url": str(job.get("applicationLink") or job.get("guid") or "").strip(),
+        "url": job.get("applicationLink") or job.get("guid") or "",
         "title": str(job.get("title") or "").strip(),
         "company": str(job.get("companyName") or "").strip(),
         "location": "Remote, Canada",
@@ -81,8 +82,9 @@ def scan_himalayas_source(
     first = True
     try:
         for query in queries:
-            total = 0
+            total: int | None = None
             query_urls: set[str] = set()
+            lost = 0
             ended = "budget"
             for page in range(1, max_pages + 1):
                 if not first and delay > 0:
@@ -100,12 +102,13 @@ def scan_himalayas_source(
                     errors += 1
                     ended = "error"
                     break
-                total = total or int(payload.get("totalCount") or 0)
-                jobs = payload["jobs"]
+                if total is None:
+                    total = safe_total(payload.get("totalCount"))
+                rows, page_lost = guard_rows(payload["jobs"], parse_job)
+                lost += page_lost
                 before = len(query_urls)
-                for job in jobs:
-                    row = parse_job(job) if isinstance(job, dict) else None
-                    posting = from_row(row, source_id="himalayas", portal="himalayas") if row else None
+                for row in rows:
+                    posting = from_row(row, source_id="himalayas", portal="himalayas")
                     if posting is None:
                         continue
                     query_urls.add(posting.url)
@@ -113,18 +116,18 @@ def scan_himalayas_source(
                         continue
                     seen.add(posting.url)
                     postings.append(posting)
-                listed = len(query_urls)
-                fresh = listed - before
                 # Not a short page: non-final pages sometimes carry 19 rows
-                # (2026-09-27), so only an empty or repeated page, or the
+                # (2026-09-27), so only an empty or repeated page, or a known
                 # count, ends a search.
-                if not fresh or listed >= total:
+                if len(query_urls) == before or (total is not None and len(query_urls) >= total):
                     ended = "done"
                     break
-            advertised += total
-            if ended == "budget":
+            advertised += total or 0
+            if ended == "budget" and (total is None or len(query_urls) < total):
                 truncated = True
-            elif ended == "done" and total and len(query_urls) < total:
+            if lost:
+                short.append(f"{query}: {lost} row(s) could not be parsed")
+            elif ended == "done" and total is not None and len(query_urls) < total:
                 short.append(f"{query} {len(query_urls)} of {total}")
     finally:
         if owns_client:

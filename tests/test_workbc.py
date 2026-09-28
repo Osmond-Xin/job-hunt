@@ -7,6 +7,7 @@ import json
 
 import httpx
 
+from job_hunt.services.row_guard import SKIP
 from job_hunt.services.workbc import API, parse_job, scan_workbc_source
 
 ATS_ROW = {
@@ -44,23 +45,25 @@ def test_a_row_records_the_employers_own_posting_url():
 
 
 def test_job_bank_mirrors_are_skipped():
-    assert parse_job(JOB_BANK_MIRROR) is None
+    assert parse_job(JOB_BANK_MIRROR) is SKIP
 
 
 def test_a_title_search_per_role_paged_to_the_count():
+    """151 rows including one Job Bank mirror, at most 100 a page (L3)."""
+    rows = [JOB_BANK_MIRROR] + [_job(i) for i in range(150)]
     bodies: list[dict] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
         bodies.append(body)
         page = body["Page"]
-        jobs = [_job(i) for i in range((page - 1) * 100, min(page * 100, 150))]
-        return httpx.Response(200, json={"count": 150, "result": jobs + ([JOB_BANK_MIRROR] if page == 1 else [])})
+        return httpx.Response(200, json={"count": 151, "result": rows[(page - 1) * 100: page * 100]})
 
     result = _scan(handler)
     assert str(API) and [b["Page"] for b in bodies] == [1, 2]
     assert bodies[0]["Keyword"] == "Data Analyst" and bodies[0]["SearchInField"] == "title"
-    assert len(result.postings) == 150 and result.health.ok and not result.health.incomplete
+    assert len(result.postings) == 150
+    assert result.health.ok and not result.health.incomplete and not result.health.truncated
 
 
 def test_the_budget_running_out_is_truncation():
@@ -76,6 +79,46 @@ def test_a_short_read_is_incomplete_and_named():
     result = _scan(lambda request: httpx.Response(200, json={"count": 150, "result": []}))
     assert result.health.incomplete
     assert any("Data Analyst 0 of 150" in w for w in result.health.warnings())
+
+
+# --- review of the new-sources batch, 2026-09-27 ------------------------------
+
+
+def test_a_short_last_page_is_incomplete_not_truncated():
+    """L1."""
+    result = _scan(lambda request: httpx.Response(200, json={"count": 300, "result": [_job(i) for i in range(40)]}),
+                   max_pages=5)
+    assert result.health.incomplete and not result.health.truncated
+
+
+def test_a_repeated_page_is_not_counted_twice():
+    """H5: repeats counted as coverage."""
+    page = [_job(i) for i in range(100)]
+    result = _scan(lambda request: httpx.Response(200, json={"count": 200, "result": page}), max_pages=5)
+    assert len(result.postings) == 100
+    assert any("Data Analyst 100 of 200" in w for w in result.health.warnings())
+
+
+def test_null_rows_and_bad_links_are_loss_and_mirrors_are_not():
+    """H5, M2, M3."""
+    jobs = [JOB_BANK_MIRROR, None, {**ATS_ROW, "JobId": "x1", "ExternalSource": "not a dict"},
+            {**ATS_ROW, "JobId": "x2", "ExternalSource": {"Source": [{"Url": "javascript:void(0)"}]}}, _job(1)]
+    result = _scan(lambda request: httpx.Response(200, json={"count": 5, "result": jobs}))
+    assert len(result.postings) == 1
+    assert any("3 row(s) could not be parsed" in w for w in result.health.warnings())
+
+
+def test_an_unknown_count_keeps_paging_to_a_short_page():
+    """M1: a missing count ended the search after page 1."""
+    requested: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        page = json.loads(request.content)["Page"]
+        requested.append(page)
+        return httpx.Response(200, json={"result": [_job(page * 1000 + i) for i in range(100 if page < 3 else 7)]})
+
+    result = _scan(handler, max_pages=5)
+    assert requested == [1, 2, 3] and len(result.postings) == 207 and result.health.ok
 
 
 def test_a_malformed_or_failed_response_is_an_error():

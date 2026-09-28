@@ -31,6 +31,7 @@ from typing import Any, Callable
 import httpx
 
 from job_hunt.models.posting import JobPosting, SourceHealth, SourceResult, from_row
+from job_hunt.services.row_guard import SKIP, guard_rows, safe_total
 
 API = "https://workbc-jb.a55eb5-prod.stratus.cloud.gov.bc.ca/api/Search/JobSearch"
 _PAGE_SIZE = 100
@@ -40,14 +41,14 @@ _USER_AGENT = (
 )
 
 
-def parse_job(job: dict[str, Any]) -> dict[str, str] | None:
-    """A pipeline row, or None for a Job Bank mirror or a row with no link."""
+def parse_job(job: dict[str, Any]) -> Any:
+    """A pipeline row, or ``SKIP`` for a Job Bank mirror (tier 4 reads those)."""
     if job.get("IsFederalJob"):
-        return None
-    sources = (job.get("ExternalSource") or {}).get("Source") or []
-    url = next((str(s.get("Url") or "").strip() for s in sources if isinstance(s, dict) and s.get("Url")), "")
-    if not url:
-        return None
+        return SKIP
+    external = job.get("ExternalSource")
+    sources = external.get("Source") if isinstance(external, dict) else None
+    url = next((s.get("Url") for s in (sources if isinstance(sources, list) else [])
+                if isinstance(s, dict) and s.get("Url")), "")
     city = str(job.get("City") or "").strip()
     return {
         "url": url,
@@ -67,6 +68,12 @@ def scan_workbc_source(
     client: httpx.Client | None = None,
     sleep: Callable[[float], None] = time.sleep,
 ) -> SourceResult:
+    """One title search per role term, walked to the reported count.
+
+    Coverage is measured on unique JobIds per search: a page that repeats one
+    does not count twice. Job Bank mirrors are skipped on purpose and counted
+    as covered; a row that cannot be read is counted as lost.
+    """
     if not config or not config.get("enabled", False):
         return SourceResult(postings=[], health=SourceHealth(source_id="workbc", ok=True))
     queries = [str(r).strip() for r in (config.get("queries") or roles or []) if str(r).strip()]
@@ -95,9 +102,10 @@ def scan_workbc_source(
     first = True
     try:
         for query in queries:
-            total = 0
-            listed = 0
-            failed = False
+            total: int | None = None
+            ids: set[Any] = set()
+            lost = 0
+            ended = "budget"
             for page in range(1, max_pages + 1):
                 if not first and delay > 0:
                     sleep(delay)
@@ -112,31 +120,37 @@ def scan_workbc_source(
                     payload = response.json()
                 except (httpx.HTTPError, ValueError):
                     errors += 1
-                    failed = True
+                    ended = "error"
                     break
                 if not isinstance(payload, dict) or not isinstance(payload.get("result"), list):
                     errors += 1
-                    failed = True
+                    ended = "error"
                     break
-                total = total or int(payload.get("count") or 0)
+                if total is None:
+                    total = safe_total(payload.get("count"))
                 jobs = payload["result"]
-                listed += len(jobs)
-                for job in jobs:
-                    row = parse_job(job) if isinstance(job, dict) else None
-                    posting = from_row(row, source_id="workbc", portal="workbc") if row else None
+                before = len(ids)
+                ids.update(job.get("JobId") for job in jobs if isinstance(job, dict) and job.get("JobId"))
+                rows, page_lost = guard_rows(jobs, parse_job)
+                lost += page_lost
+                for row in rows:
+                    posting = from_row(row, source_id="workbc", portal="workbc")
                     if posting is None or posting.url in seen:
                         continue
                     seen.add(posting.url)
                     postings.append(posting)
-                if not jobs or listed >= total:
+                # A short or repeated page is the last one, whatever the count
+                # says; the count, when known, ends the search early.
+                if len(jobs) < _PAGE_SIZE or len(ids) == before or (total is not None and len(ids) >= total):
+                    ended = "done"
                     break
-            else:
-                truncated = truncated or listed < total
-                advertised += total
-                continue
-            advertised += total
-            if not failed and total and listed < total:
-                short.append(f"{query} {listed} of {total}")
+            advertised += total or 0
+            if ended == "budget" and (total is None or len(ids) < total):
+                truncated = True
+            if lost:
+                short.append(f"{query}: {lost} row(s) could not be parsed")
+            elif ended == "done" and total is not None and len(ids) < total:
+                short.append(f"{query} {len(ids)} of {total}")
     finally:
         if owns_client:
             client.close()

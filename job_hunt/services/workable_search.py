@@ -25,25 +25,28 @@ from typing import Any, Callable
 import httpx
 
 from job_hunt.models.posting import JobPosting, SourceHealth, SourceResult, from_row
+from job_hunt.services.row_guard import guard_rows, safe_total
 
-API = "https://jobs.workable.com/api/v1/jobs"
+_SITE = "https://jobs.workable.com"
+API = f"{_SITE}/api/v1/jobs"
 _USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/128.0 Safari/537.36"
 )
 
 
-def parse_job(job: dict[str, Any]) -> dict[str, str] | None:
+def parse_job(job: dict[str, Any]) -> dict[str, str]:
     place = job.get("location") if isinstance(job.get("location"), dict) else {}
     parts = [place.get("city"), place.get("subregion"), place.get("countryName")]
     location = ", ".join(str(p) for p in parts if p)
-    if not location and job.get("locations"):
-        location = str(job["locations"][0])
+    alternatives = job.get("locations") if isinstance(job.get("locations"), list) else []
+    if not location and alternatives:
+        location = str(alternatives[0])
     if job.get("workplace") == "remote":
         location = f"Remote, {location}" if location else "Remote"
     company = job.get("company") if isinstance(job.get("company"), dict) else {}
     return {
-        "url": str(job.get("url") or "").strip(),
+        "url": job.get("url") or "",
         "title": str(job.get("title") or "").strip(),
         "company": str(company.get("title") or "").strip(),
         "location": location,
@@ -89,8 +92,9 @@ def scan_workable_search_source(
     try:
         for query in queries:
             token: str | None = None
-            total = 0
-            listed = 0
+            total: int | None = None
+            ids: set[Any] = set()
+            lost = 0
             ended = "budget"
             for _page in range(max_pages):
                 if not first and delay > 0:
@@ -111,25 +115,31 @@ def scan_workable_search_source(
                     errors += 1
                     ended = "error"
                     break
-                total = total or int(payload.get("totalSize") or 0)
+                if total is None:
+                    total = safe_total(payload.get("totalSize"))
                 jobs = payload["jobs"]
-                listed += len(jobs)
-                for job in jobs:
-                    row = parse_job(job) if isinstance(job, dict) else None
-                    posting = from_row(row, source_id="workable_search", portal="workable") if row else None
+                before = len(ids)
+                ids.update(job.get("id") for job in jobs if isinstance(job, dict) and job.get("id"))
+                rows, page_lost = guard_rows(jobs, parse_job, base=_SITE)
+                lost += page_lost
+                for row in rows:
+                    posting = from_row(row, source_id="workable_search", portal="workable")
                     if posting is None or posting.url in seen:
                         continue
                     seen.add(posting.url)
                     postings.append(posting)
-                token = payload.get("nextPageToken")
-                if not token or not jobs:
+                token = payload.get("nextPageToken") if isinstance(payload.get("nextPageToken"), str) else None
+                if not token or not jobs or len(ids) == before:
                     ended = "done"
                     break
-            advertised += total
-            if ended == "budget":
+            advertised += total or 0
+            # Only a budget that left rows behind is truncation.
+            if ended == "budget" and (total is None or len(ids) < total):
                 truncated = True
-            elif ended == "done" and total and listed < total:
-                short.append(f"{query} {listed} of {total}")
+            if lost:
+                short.append(f"{query}: {lost} row(s) could not be parsed")
+            elif ended == "done" and total is not None and len(ids) < total:
+                short.append(f"{query} {len(ids)} of {total}")
     finally:
         if owns_client:
             client.close()

@@ -54,11 +54,12 @@ def test_a_page_one_row_short_does_not_end_the_search():
     """Live pages sometimes carry 19 rows, not 20, before the last one."""
     def handler(request: httpx.Request) -> httpx.Response:
         page = int(request.url.params["page"])
-        jobs = [_job(page * 100 + i) for i in range(19)] if page < 3 else []
+        jobs = [_job(page * 100 + i) for i in range(19)] if page <= 3 else []
         return httpx.Response(200, json={"totalCount": 57, "jobs": jobs})
 
     result = _scan(handler, max_pages=5)
-    assert len(result.postings) == 38 and not result.health.truncated
+    assert len(result.postings) == 57
+    assert not result.health.truncated and not result.health.incomplete
 
 
 def test_the_budget_running_out_is_truncation():
@@ -73,3 +74,18 @@ def test_a_short_read_is_incomplete_and_a_bad_response_is_an_error():
     short = _scan(lambda request: httpx.Response(200, json={"totalCount": 90, "jobs": [_job(1)]}))
     assert short.health.incomplete and any("Data Analyst 1 of 90" in w for w in short.health.warnings())
     assert _scan(lambda request: httpx.Response(200, json={"error": 1})).health.errors == 1
+
+
+
+def test_an_unknown_count_keeps_paging_and_bad_rows_are_loss():
+    """M1, M3: a missing count ended after page 1; a non-URL link became a posting."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        page = int(request.url.params["page"])
+        jobs = [_job(page * 100 + i) for i in range(20)] if page <= 2 else []
+        if page == 1:
+            jobs.append({**JOB, "applicationLink": 123, "guid": None})
+        return httpx.Response(200, json={"jobs": jobs})
+
+    result = _scan(handler, max_pages=5)
+    assert len(result.postings) == 40
+    assert any("1 row(s) could not be parsed" in w for w in result.health.warnings())
