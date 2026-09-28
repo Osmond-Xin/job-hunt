@@ -465,3 +465,13 @@ himalayas:
   delay_s: 1.0
   timeout_s: 30.0
   max_pages: 3
+
+# Tier 17 — Built In Vancouver (job_hunt/services/builtin.py), 2026-09-27. HTML
+# job cards, 25 a page, searched by profile role term (`queries` overrides).
+# Some cards say only "CA" or "Remote"; the Canada filter decides. Positive
+# title filter.
+builtin_vancouver:
+  enabled: true
+  delay_s: 1.2
+  timeout_s: 30.0
+  max_pages: 2
