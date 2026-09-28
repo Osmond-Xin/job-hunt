@@ -36,6 +36,15 @@ public JSON endpoint, so an employer is one ``portals.yml`` entry — a
   ``LOCATION$n`` / ``SCH_OPENED$n`` spans. ``url`` is the search page with
   its ``Siteid``. Niagara Region: 17 openings on 2026-09-27, locations named
   by facility ("Regional Headquarters"), hence ``location_hint``.
+- **taleo** — Taleo classic career sections (``<host>/careersection/<n>/
+  jobsearch.ftl``). The first page is embedded in the page's
+  ``initialHistory`` field and later ones come from ``jobsearch.ajax`` with
+  the page's hidden fields and ``rlPager.currentPage``; both are "!|!"-joined
+  strings. Columns differ per tenant, so a posting is found by the pattern
+  every tenant shares — the requisition id and title repeated, then the id
+  three more times — and the location comes from ``location_hint``. Total:
+  ``listRequisition.nbElements``. Hamilton Health Sciences: 85 postings on
+  2026-09-27, read at 100 a page (``dropListSize``) in one request.
 - **successfactors** — SAP SuccessFactors career sites, read with the parser
   the public-sector boards use (``gov_boards.parse_successfactors``); the
   total is the page's "of <b>N</b>". For crown corporations — ICBC,
@@ -52,12 +61,13 @@ ledger that ``triage --second-look`` reads.
 
 from __future__ import annotations
 
+import datetime as dt
 import html
 import re
 import time
 from email.utils import parsedate_to_datetime
 from typing import Any, Callable
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 import httpx
 
@@ -385,6 +395,76 @@ def _peoplesoft_reader(employer: dict[str, Any]):
     return read
 
 
+# The default is 10 a page in an order that is not stable between requests —
+# HHS paged at 10 returned 75 distinct of 85, the rest repeated. 100 a page
+# reads a board that size in one request.
+_TALEO_PAGE_SIZE = "100"
+_TALEO_HIDDEN_RE = re.compile(r'<input type="hidden" name="([^"]+)" id="[^"]*" value="([^"]*)"')
+_TALEO_RECORD_RE = re.compile(r"!\|!(\d+)!\|!([^!]+)!\|!\1!\|!\2!\|!\1!\|!\1!\|!\1!\|!")
+_TALEO_DATE_RE = re.compile(r"!\|!([A-Z][a-z]{2} \d{1,2}, \d{4})!\|!")
+
+
+def parse_taleo(joined: str, base: str) -> list[dict[str, str]]:
+    """Rows from a Taleo classic "!|!" list string (initialHistory or ajax)."""
+    matches = list(_TALEO_RECORD_RE.finditer(joined or ""))
+    rows = []
+    for index, match in enumerate(matches):
+        tail = joined[match.end(): matches[index + 1].start() if index + 1 < len(matches) else None]
+        date = _TALEO_DATE_RE.search(tail)
+        try:
+            posted = dt.datetime.strptime(date.group(1), "%b %d, %Y").date().isoformat() if date else ""
+        except ValueError:
+            posted = ""
+        rows.append(
+            {
+                "url": f"{base}jobdetail.ftl?job={match.group(1)}&lang=en",
+                "title": html.unescape(unquote(match.group(2))).strip(),
+                "location": "",
+                "posted": posted,
+            }
+        )
+    return rows
+
+
+def _taleo_reader(employer: dict[str, Any]):
+    url = str(employer.get("url") or "")
+    if "/careersection/" not in url:
+        return None
+    base = url.split("?", 1)[0].rsplit("/", 1)[0] + "/"
+    form: dict[str, str] = {}
+
+    def read(client: httpx.Client, page: int) -> Page:
+        try:
+            if page == 0:
+                response = client.get(
+                    f"{base}jobsearch.ftl", params={"lang": "en", "dropListSize": _TALEO_PAGE_SIZE}
+                )
+                response.raise_for_status()
+                form.clear()
+                form.update(_TALEO_HIDDEN_RE.findall(response.text))
+                joined = form.get("initialHistory", "")
+            else:
+                response = client.post(
+                    f"{base}jobsearch.ajax",
+                    data={**form, "ftlpageid": "reqListBasicPage",
+                          "ftlinterfaceid": "requisitionListInterface", "ftlcompid": "rlPager",
+                          "jsfCmdId": "rlPager", "ftlcompclass": "PagerComponent",
+                          "ftlcallback": "ftlPager_processResponse", "ftlajaxid": "ftlx1",
+                          "rlPager.currentPage": str(page + 1), "lang": "en",
+                          "dropListSize": _TALEO_PAGE_SIZE},
+                )
+                response.raise_for_status()
+                joined = response.text
+        except httpx.HTTPError:
+            return None
+        total = form.get("listRequisition.nbElements", "")
+        if page == 0 and not total.isdigit():
+            return None  # not a classic career section, or its markup changed
+        return parse_taleo(joined, base), int(total or 0)
+
+    return read
+
+
 _READERS = {
     "oracle": _oracle_reader,
     "jibe": _jibe_reader,
@@ -393,6 +473,7 @@ _READERS = {
     "successfactors": _successfactors_reader,
     "erecruit": _erecruit_reader,
     "peoplesoft": _peoplesoft_reader,
+    "taleo": _taleo_reader,
 }
 
 

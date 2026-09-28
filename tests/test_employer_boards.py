@@ -475,6 +475,42 @@ def test_a_peoplesoft_page_without_its_results_grid_is_an_error():
     assert result.health.errors == 1
 
 
+# Trimmed from hhsc.taleo.net/careersection/2, 2026-09-27: two records of the
+# "!|!"-joined list, the first in the page's initialHistory field.
+TALEO_RECORD = ("!|!false!|!false!|!{id}!|!{title}!|!{id}!|!{title}!|!{id}!|!{id}!|!{id}!|!{id}!|!{id}"
+                "!|!Full-time!|!125733!|!Ontario-Hamilton!|!false!|!!|!Hamilton General Hospital"
+                "!|!OR PACU!|!CUPE 7800!|!Sep 26, 2026!|!Oct 2, 2026!|!Apply!|!")
+TALEO_PAGE = ('<input type="hidden" name="listRequisition.nbElements" id="listRequisition.nbElements" value="2" />'
+              '<input type="hidden" name="csrftoken" id="csrftoken" value="tok" />'
+              '<input type="hidden" name="initialHistory" id="initialHistory" value="ftlx0!|!jobsearch'
+              + TALEO_RECORD.format(id=762948, title="Data Analyst")
+              + TALEO_RECORD.format(id=763032, title="RRT  - Respiratory Therapist") + '" />')
+
+
+def test_a_taleo_classic_section_is_read_from_its_embedded_list():
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, text=TALEO_PAGE)
+
+    result = _scan(_config({"name": "Hamilton Health Sciences", "platform": "taleo",
+                            "url": "https://hhsc.taleo.net/careersection/2/jobsearch.ftl",
+                            "location_hint": "Hamilton, ON"}), handler)
+    assert requests[0].url.params["dropListSize"] == "100" and len(requests) == 1
+    first = result.postings[0]
+    assert first.url == "https://hhsc.taleo.net/careersection/2/jobdetail.ftl?job=762948&lang=en"
+    assert first.title == "Data Analyst" and first.location == "Hamilton, ON" and first.posted == "2026-09-26"
+    assert len(result.postings) == 2 and result.health.advertised == 2 and not result.health.incomplete
+
+
+def test_a_taleo_page_without_its_count_is_an_error():
+    result = _scan(_config({"name": "HHS", "platform": "taleo",
+                            "url": "https://hhsc.taleo.net/careersection/2/jobsearch.ftl"}),
+                   lambda request: httpx.Response(200, text="<html>redirected</html>"))
+    assert result.health.errors == 1
+
+
 def test_the_tier_keeps_the_positive_title_filter():
     """J.D. Irving's board is drivers, mechanics and store managers; only the
     title says which of its 736 postings is his work."""
