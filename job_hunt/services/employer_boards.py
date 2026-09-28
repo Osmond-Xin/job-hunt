@@ -52,6 +52,11 @@ public JSON endpoint, so an employer is one ``portals.yml`` entry — a
   ``{jobRequisitions: [{requisitionTitle, postDate, requisitionLocations,
   customFieldGroup.stringFields[ExternalJobID]}], meta: {totalNumber}}``.
   Niagara Parks: 4 postings on 2026-09-27.
+- **tbe** — Taleo Business Edition (``<host>/<zone>/ats/careers/v2/
+  searchResults?org=<ORG>&cws=<n>``). One request with ``maxRows=500``
+  lists every requisition as a ``viewJobLink`` anchor; no location is
+  printed, hence ``location_hint``. Niagara College (6) and the City of St.
+  Catharines (10) on 2026-09-27.
 - **successfactors** — SAP SuccessFactors career sites, read with the parser
   the public-sector boards use (``gov_boards.parse_successfactors``); the
   total is the page's "of <b>N</b>". For crown corporations — ICBC,
@@ -526,6 +531,46 @@ def _adp_reader(employer: dict[str, Any]):
     return read
 
 
+_TBE_MAX_ROWS = 500
+_TBE_LINK_RE = re.compile(r'<a href="([^"]*viewRequisition\?[^"]*rid=\d+)"[^>]*class="viewJobLink"[^>]*>(.*?)</a>', re.S)
+
+
+def parse_tbe(page_html: str) -> list[dict[str, str]]:
+    rows, seen = [], set()
+    for href, title in _TBE_LINK_RE.findall(page_html or ""):
+        url = html.unescape(href)
+        if url in seen:
+            continue
+        seen.add(url)
+        rows.append({"url": url, "title": html.unescape(_TAG_RE.sub(" ", title)).strip(),
+                     "location": "", "posted": ""})
+    return rows
+
+
+def _tbe_reader(employer: dict[str, Any]):
+    url = str(employer.get("url") or "")
+    match = re.match(r"(https://[^/]+/[^/]+/ats/careers/v2/)searchResults\?.*?org=([^&]+).*?cws=(\d+)", url)
+    if not match:
+        return None
+    base, org, cws = match.groups()
+
+    def read(client: httpx.Client, page: int) -> Page:
+        if page:
+            return [], 0  # maxRows lists every requisition in one response
+        try:
+            response = client.get(f"{base}searchResults",
+                                  params={"org": org, "cws": cws, "act": "search", "maxRows": _TBE_MAX_ROWS})
+            response.raise_for_status()
+        except httpx.HTTPError:
+            return None
+        if "oracletaleocwsv2" not in response.text:
+            return None  # not the careers page, or its markup changed
+        rows = parse_tbe(response.text)
+        return rows, len(rows)
+
+    return read
+
+
 _READERS = {
     "oracle": _oracle_reader,
     "jibe": _jibe_reader,
@@ -536,6 +581,7 @@ _READERS = {
     "peoplesoft": _peoplesoft_reader,
     "taleo": _taleo_reader,
     "adp": _adp_reader,
+    "tbe": _tbe_reader,
 }
 
 

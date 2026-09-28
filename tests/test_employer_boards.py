@@ -546,6 +546,37 @@ def test_an_adp_response_without_its_list_is_an_error():
     assert result.health.errors == 1
 
 
+# Trimmed from the City of St. Catharines' Taleo Business Edition page, 2026-09-27.
+TBE_URL = "https://tre.tbe.taleo.net/tre01/ats/careers/v2/searchResults?org=COSC&cws=37"
+TBE_PAGE = """<div class="oracletaleocwsv2-accordion-head-info">
+<h4 class="oracletaleocwsv2-head-title"><a href="https://tre.tbe.taleo.net/tre01/ats/careers/v2/viewRequisition?org=COSC&amp;cws=37&amp;rid=2978" class="viewJobLink">Arborist I</a></h4>
+<div tabindex="0" >Community, Recreation and Culture Services</div></div>
+<button data-href="https://tre.tbe.taleo.net/tre01/ats/careers/v2/viewRequisition?org=COSC&cws=37&rid=2978">Share</button>
+<h4 class="oracletaleocwsv2-head-title"><a href="https://tre.tbe.taleo.net/tre01/ats/careers/v2/viewRequisition?org=COSC&amp;cws=37&amp;rid=3103" class="viewJobLink">Business Systems Analyst</a></h4>"""
+
+
+def test_a_taleo_business_edition_page_is_read_in_one_request():
+    seen: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(dict(request.url.params))
+        return httpx.Response(200, text=TBE_PAGE)
+
+    result = _scan(_config({"name": "City of St. Catharines", "platform": "tbe", "url": TBE_URL,
+                            "location_hint": "St. Catharines, ON"}), handler)
+    assert seen == [{"org": "COSC", "cws": "37", "act": "search", "maxRows": "500"}]
+    assert [p.url for p in result.postings] == [
+        "https://tre.tbe.taleo.net/tre01/ats/careers/v2/viewRequisition?org=COSC&cws=37&rid=2978",
+        "https://tre.tbe.taleo.net/tre01/ats/careers/v2/viewRequisition?org=COSC&cws=37&rid=3103"]
+    assert result.postings[1].location == "St. Catharines, ON" and result.health.ok
+
+
+def test_a_tbe_page_that_is_not_the_careers_page_is_an_error():
+    result = _scan(_config({"name": "City of St. Catharines", "platform": "tbe", "url": TBE_URL}),
+                   lambda request: httpx.Response(200, text="<html>maintenance</html>"))
+    assert result.health.errors == 1
+
+
 def test_the_tier_keeps_the_positive_title_filter():
     """J.D. Irving's board is drivers, mechanics and store managers; only the
     title says which of its 736 postings is his work."""
