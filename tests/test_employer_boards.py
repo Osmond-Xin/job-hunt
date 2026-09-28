@@ -511,6 +511,41 @@ def test_a_taleo_page_without_its_count_is_an_error():
     assert result.health.errors == 1
 
 
+# Trimmed from Niagara Parks' ADP career centre, 2026-09-27.
+ADP_URL = ("https://workforcenow.adp.com/mascsr/default/mdf/recruitment/recruitment.html"
+           "?cid=e2b4f25a-a77b-4b3d-9657-b97ec357ea04")
+ADP_REQ = {
+    "requisitionTitle": "Enterprise Application Analyst", "postDate": "2026-09-22T09:13:00.000-04:00",
+    "requisitionLocations": [
+        {"address": {"cityName": "", "countrySubdivisionLevel1": {"codeValue": ""}}},
+        {"address": {"cityName": "Niagara Falls", "countrySubdivisionLevel1": {"codeValue": "ON"}}}],
+    "customFieldGroup": {"stringFields": [{"stringValue": "598380", "nameCode": {"codeValue": "ExternalJobID"}}]},
+}
+
+
+def test_an_adp_career_centre_is_read_by_company_id():
+    seen: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(dict(request.url.params))
+        return httpx.Response(200, json={"jobRequisitions": [ADP_REQ], "meta": {"totalNumber": 1}})
+
+    result = _scan(_config({"name": "Niagara Parks", "platform": "adp", "url": ADP_URL,
+                            "location_hint": "Niagara Falls, ON"}), handler)
+    assert seen[0]["cid"] == "e2b4f25a-a77b-4b3d-9657-b97ec357ea04" and seen[0]["$skip"] == "1"
+    [posting] = result.postings
+    assert posting.url.endswith("recruitment.html?cid=e2b4f25a-a77b-4b3d-9657-b97ec357ea04&jobId=598380")
+    # The hint is not repeated when the location already names the town.
+    assert posting.location == "Niagara Falls, ON" and posting.posted == "2026-09-22"
+    assert result.health.advertised == 1 and result.health.ok
+
+
+def test_an_adp_response_without_its_list_is_an_error():
+    result = _scan(_config({"name": "Niagara Parks", "platform": "adp", "url": ADP_URL}),
+                   lambda request: httpx.Response(200, json={"errors": ["x"]}))
+    assert result.health.errors == 1
+
+
 def test_the_tier_keeps_the_positive_title_filter():
     """J.D. Irving's board is drivers, mechanics and store managers; only the
     title says which of its 736 postings is his work."""

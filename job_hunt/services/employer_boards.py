@@ -45,6 +45,13 @@ public JSON endpoint, so an employer is one ``portals.yml`` entry — a
   three more times — and the location comes from ``location_hint``. Total:
   ``listRequisition.nbElements``. Hamilton Health Sciences: 85 postings on
   2026-09-27, read at 100 a page (``dropListSize``) in one request.
+- **adp** — ADP Workforce Now's public career centre, by company id
+  (``cid``, the query parameter of any ``recruitment.html`` link):
+  ``GET workforcenow.adp.com/mascsr/default/careercenter/public/events/
+  staffing/v1/job-requisitions?cid=<cid>&$top=20&$skip=<1-based>`` ->
+  ``{jobRequisitions: [{requisitionTitle, postDate, requisitionLocations,
+  customFieldGroup.stringFields[ExternalJobID]}], meta: {totalNumber}}``.
+  Niagara Parks: 4 postings on 2026-09-27.
 - **successfactors** — SAP SuccessFactors career sites, read with the parser
   the public-sector boards use (``gov_boards.parse_successfactors``); the
   total is the page's "of <b>N</b>". For crown corporations — ICBC,
@@ -465,6 +472,60 @@ def _taleo_reader(employer: dict[str, Any]):
     return read
 
 
+_ADP_API = "https://workforcenow.adp.com/mascsr/default/careercenter/public/events/staffing/v1/job-requisitions"
+_ADP_POSTING = "https://workforcenow.adp.com/mascsr/default/mdf/recruitment/recruitment.html?cid={cid}&jobId={job}"
+_ADP_PAGE_SIZE = 20
+
+
+def parse_adp(payload: dict[str, Any], cid: str) -> list[dict[str, str]]:
+    rows = []
+    for req in payload.get("jobRequisitions") or []:
+        fields = (req.get("customFieldGroup") or {}).get("stringFields") or []
+        job = next((f.get("stringValue") for f in fields
+                    if (f.get("nameCode") or {}).get("codeValue") == "ExternalJobID"), "")
+        if not job:
+            continue
+        address = next(
+            (loc.get("address") or {} for loc in req.get("requisitionLocations") or []
+             if ((loc.get("address") or {}).get("cityName") or "").strip()),
+            {},
+        )
+        region = (address.get("countrySubdivisionLevel1") or {}).get("codeValue") or ""
+        rows.append(
+            {
+                "url": _ADP_POSTING.format(cid=cid, job=job),
+                "title": str(req.get("requisitionTitle") or "").strip(),
+                "location": ", ".join(p for p in (address.get("cityName", "").strip(), region) if p),
+                "posted": str(req.get("postDate") or "")[:10],
+            }
+        )
+    return rows
+
+
+def _adp_reader(employer: dict[str, Any]):
+    match = re.search(r"[?&]cid=([0-9a-fA-F-]{36})", str(employer.get("url") or ""))
+    if not match:
+        return None
+    cid = match.group(1)
+
+    def read(client: httpx.Client, page: int) -> Page:
+        try:
+            response = client.get(
+                _ADP_API,
+                params={"cid": cid, "lang": "en_CA", "locale": "en_CA",
+                        "$top": _ADP_PAGE_SIZE, "$skip": page * _ADP_PAGE_SIZE + 1},
+            )
+            response.raise_for_status()
+            payload = response.json()
+        except (httpx.HTTPError, ValueError):
+            return None
+        if not isinstance(payload, dict) or not isinstance(payload.get("jobRequisitions"), list):
+            return None
+        return parse_adp(payload, cid), int((payload.get("meta") or {}).get("totalNumber") or 0)
+
+    return read
+
+
 _READERS = {
     "oracle": _oracle_reader,
     "jibe": _jibe_reader,
@@ -474,6 +535,7 @@ _READERS = {
     "erecruit": _erecruit_reader,
     "peoplesoft": _peoplesoft_reader,
     "taleo": _taleo_reader,
+    "adp": _adp_reader,
 }
 
 
@@ -545,7 +607,7 @@ def scan_employer_boards_source(
                     board_urls.add(row["url"])
                     if row["url"] in seen:
                         continue
-                    if hint:
+                    if hint and hint.lower() not in (row.get("location") or "").lower():
                         row["location"] = f"{row['location']}, {hint}" if row.get("location") else hint
                     posting = from_row(
                         {**row, "company": name, "source": f"employer_boards:{name}"},

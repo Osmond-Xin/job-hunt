@@ -230,7 +230,7 @@ def scan_workday(
                         continue
                     seen.add(row["url"])
                     row["company"] = name
-                    if hint:
+                    if hint and hint.lower() not in row["location"].lower():
                         row["location"] = f"{row['location']}, {hint}" if row["location"] else hint
                     out.append(row)
                     if entry is not None:
