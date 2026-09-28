@@ -758,6 +758,35 @@ def test_a_peopleadmin_url_that_is_not_a_feed_is_an_error():
     assert result.health.errors == 1
 
 
+# Trimmed from Amii's Employment Hero widget feed, 2026-09-27.
+EH_URL = ("https://ats-cdn.ehrocks.com/ats/api/v1/embedded/widget/organisations/"
+          "75a19b05-282e-414f-b507-6107f92dbf68/jobs")
+EH_ITEM = {"title": "Machine Learning Resident", "vendor_location_name": "Edmonton, Alberta",
+           "remote": False, "created_at": "2026-09-26T21:38:08Z",
+           "application_url": "https://jobs.employmenthero.com/jobs/466bbeae-446a-44dc-8c3d-99ddeea72458"}
+
+
+def test_an_employment_hero_widget_is_read_by_page_index():
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.params["page_index"])
+        return httpx.Response(200, json={"data": {"total_items": 1, "total_pages": 1, "items": [EH_ITEM]}})
+
+    result = _scan(_config({"name": "Amii", "platform": "employmenthero", "url": EH_URL}), handler)
+    assert seen == ["1"]
+    [posting] = result.postings
+    assert posting.url.endswith("/jobs/466bbeae-446a-44dc-8c3d-99ddeea72458")
+    assert posting.location == "Edmonton, Alberta" and posting.posted == "2026-09-26"
+    assert result.health.advertised == 1 and result.health.ok
+
+
+def test_an_employment_hero_error_body_is_an_error():
+    result = _scan(_config({"name": "Amii", "platform": "employmenthero", "url": EH_URL}),
+                   lambda request: httpx.Response(200, json={"error": "unauthorized"}))
+    assert result.health.errors == 1
+
+
 def test_the_tier_keeps_the_positive_title_filter():
     """J.D. Irving's board is drivers, mechanics and store managers; only the
     title says which of its 736 postings is his work."""

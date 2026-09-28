@@ -90,6 +90,10 @@ public JSON endpoint, so an employer is one ``portals.yml`` entry — a
   ``location_hint``; the walk stops on a page with nothing new. On
   2026-09-27: Sask Polytech 71, U Regina 63, CNC 48, U Lethbridge 26,
   Lethbridge Polytechnic 11.
+- **employmenthero** — Employment Hero's embedded jobs widget. ``url`` is its
+  API path, ``ats-cdn.ehrocks.com/ats/api/v1/embedded/widget/organisations/
+  <org>/jobs`` (the org id is the widget's ``data-org-id``), paged by
+  ``page_index`` against ``total_items``. Amii: 9 postings on 2026-09-27.
 - **successfactors** — SAP SuccessFactors career sites, read with the parser
   the public-sector boards use (``gov_boards.parse_successfactors``); the
   total is the page's "of <b>N</b>". For crown corporations — ICBC,
@@ -869,6 +873,39 @@ def _peopleadmin_reader(employer: dict[str, Any]):
     return read
 
 
+_EH_ORG_RE = re.compile(r"^(https://[^/]+/ats/api/v1/embedded/widget/organisations/[0-9a-fA-F-]{36})")
+
+
+def _employmenthero_reader(employer: dict[str, Any]):
+    match = _EH_ORG_RE.match(str(employer.get("url") or ""))
+    if not match:
+        return None
+    jobs_url = f"{match.group(1)}/jobs"
+
+    def read(client: httpx.Client, page: int) -> Page:
+        try:
+            response = client.get(jobs_url, params={"page_index": page + 1})
+            response.raise_for_status()
+            data = response.json().get("data")
+        except (httpx.HTTPError, ValueError, AttributeError):
+            return None
+        if not isinstance(data, dict) or not isinstance(data.get("items"), list):
+            return None
+        rows = []
+        for item in data["items"]:
+            url = str(item.get("application_url") or "").strip()
+            if not url:
+                continue
+            place = str(item.get("vendor_location_name") or "").strip()
+            if item.get("remote"):
+                place = f"Remote, {place}" if place else "Remote"
+            rows.append({"url": url, "title": str(item.get("title") or "").strip(),
+                         "location": place, "posted": str(item.get("created_at") or "")[:10]})
+        return rows, int(data.get("total_items") or 0)
+
+    return read
+
+
 _READERS = {
     "oracle": _oracle_reader,
     "jibe": _jibe_reader,
@@ -885,6 +922,7 @@ _READERS = {
     "aspnet_jobsearch": _aspnet_jobsearch_reader,
     "selectminds": _selectminds_reader,
     "peopleadmin": _peopleadmin_reader,
+    "employmenthero": _employmenthero_reader,
 }
 
 

@@ -271,7 +271,7 @@ gov_boards:
 # Tier 11 — single-employer career sites (job_hunt/services/employer_boards.py).
 # `platform` is oracle | jibe | ukg | hrsmart |
 # successfactors | erecruit | peoplesoft | taleo | adp | tbe | cornerstone |
-# avanti | aspnet_jobsearch | selectminds | peopleadmin.
+# avanti | aspnet_jobsearch | selectminds | peopleadmin | employmenthero.
 # `url` is the employer's career-site URL.
 # `max_pages` and `location_hint` may be set per employer.
 # General employers, so these rows face the positive title filter.
@@ -393,6 +393,10 @@ employer_boards:
       platform: peopleadmin
       url: https://lethpolytech.peopleadmin.ca
       location_hint: "Lethbridge, AB"
+    - name: Amii (Alberta Machine Intelligence Institute)
+      platform: employmenthero
+      # The widget's data-org-id on amii.ca/careers.
+      url: https://ats-cdn.ehrocks.com/ats/api/v1/embedded/widget/organisations/75a19b05-282e-414f-b507-6107f92dbf68/jobs
 
 # Tier 12 — WorkPEI (job_hunt/services/workpei.py), over its WordPress REST API.
 # General board: positive title filter.
