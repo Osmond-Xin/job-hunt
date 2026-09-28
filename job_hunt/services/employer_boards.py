@@ -57,6 +57,18 @@ public JSON endpoint, so an employer is one ``portals.yml`` entry — a
   lists every requisition as a ``viewJobLink`` anchor; no location is
   printed, hence ``location_hint``. Niagara College (6) and the City of St.
   Catharines (10) on 2026-09-27.
+- **cornerstone** — Cornerstone OnDemand career sites (``<corp>.csod.com/
+  ux/ats/careersite/<n>/home?c=<corp>``). The page embeds a short-lived
+  bearer token in ``csod.context``; the search is then ``POST
+  us.api.csod.com/rec-job-search/external/jobs`` with the site id, 25 a page,
+  reporting ``totalCount``. The site id is not guessable: Mohawk College's
+  site 1 exists and lists nothing, site 2 is the public one (8 postings,
+  2026-09-27).
+- **avanti** — Avanti HR career sites (``<tenant>.myavanti.ca/careers``).
+  ``POST /careers/Job/Jobs`` returns every opening at once as JSON items
+  (``Job``, ``Title``, ``Location``, ``ClosingDate``); the posting page is
+  ``/careers/Job/Details/<Job>``. Locations are departments, hence
+  ``location_hint``. City of Welland: 2026-09-27.
 - **successfactors** — SAP SuccessFactors career sites, read with the parser
   the public-sector boards use (``gov_boards.parse_successfactors``); the
   total is the page's "of <b>N</b>". For crown corporations — ICBC,
@@ -75,11 +87,12 @@ from __future__ import annotations
 
 import datetime as dt
 import html
+import json
 import re
 import time
 from email.utils import parsedate_to_datetime
 from typing import Any, Callable
-from urllib.parse import unquote, urlparse
+from urllib.parse import quote, unquote, urlparse
 
 import httpx
 
@@ -571,6 +584,116 @@ def _tbe_reader(employer: dict[str, Any]):
     return read
 
 
+_CSOD_SEARCH = "https://us.api.csod.com/rec-job-search/external/jobs"
+_CSOD_PAGE_SIZE = 25
+_CSOD_CONTEXT_RE = re.compile(r"csod\.context=(\{.*?\});", re.S)
+
+
+def parse_cornerstone(payload: dict[str, Any], site_url: str) -> list[dict[str, str]]:
+    rows = []
+    for req in (payload.get("data") or {}).get("requisitions") or []:
+        req_id = req.get("requisitionId")
+        if req_id is None:
+            continue
+        place = (req.get("locations") or [{}])[0] or {}
+        month, _, rest = str(req.get("postingEffectiveDate") or "").partition("/")
+        day, _, year = rest.partition("/")
+        rows.append(
+            {
+                "url": site_url.format(req=req_id),
+                "title": str(req.get("displayJobTitle") or "").strip(),
+                "location": ", ".join(str(place[k]) for k in ("city", "state", "country") if place.get(k)),
+                "posted": f"{year}-{int(month):02d}-{int(day):02d}" if year and month.isdigit() and day.isdigit() else "",
+            }
+        )
+    return rows
+
+
+def _cornerstone_reader(employer: dict[str, Any]):
+    match = re.match(r"https://([^/.]+)\.csod\.com/ux/ats/careersite/(\d+)/", str(employer.get("url") or ""))
+    if not match:
+        return None
+    corp, site = match.group(1), int(match.group(2))
+    home = f"https://{corp}.csod.com/ux/ats/careersite/{site}/home"
+    token: dict[str, str] = {}
+
+    def read(client: httpx.Client, page: int) -> Page:
+        try:
+            if page == 0:
+                landing = client.get(home, params={"c": corp})
+                landing.raise_for_status()
+                context = _CSOD_CONTEXT_RE.search(landing.text)
+                token["value"] = json.loads(context.group(1)).get("token", "") if context else ""
+            if not token.get("value"):
+                return None
+            response = client.post(
+                _CSOD_SEARCH,
+                headers={"Authorization": f"Bearer {token['value']}"},
+                json={"careerSiteId": site, "careerSitePageId": site, "pageNumber": page + 1,
+                      "pageSize": _CSOD_PAGE_SIZE, "cultureId": 1, "cultureName": "en-US",
+                      "searchText": "", "states": [], "countryCodes": [], "cities": [],
+                      "placeID": "", "radius": None, "postingsWithinDays": None,
+                      "customFieldCheckboxKeys": [], "customFieldDropdowns": [],
+                      "customFieldRadios": []},
+            )
+            response.raise_for_status()
+            payload = response.json()
+        except (httpx.HTTPError, ValueError):
+            return None
+        data = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(data, dict) or not isinstance(data.get("requisitions"), list):
+            return None
+        rows = parse_cornerstone(payload, f"{home}/requisition/{{req}}?c={corp}")
+        return rows, int(data.get("totalCount") or 0)
+
+    return read
+
+
+def parse_avanti(payload: dict[str, Any], base: str) -> list[dict[str, str]]:
+    rows = []
+    for item in payload.get("items") or []:
+        job = str(item.get("Job") or "").strip()
+        if not job:
+            continue
+        try:
+            closes = dt.datetime.strptime(str(item.get("ClosingDate") or "").strip(), "%b %d, %Y").date().isoformat()
+        except ValueError:
+            closes = ""
+        rows.append(
+            {
+                "url": f"{base}/careers/Job/Details/{quote(job)}",
+                "title": str(item.get("Title") or "").strip(),
+                "location": str(item.get("Location") or "").strip(),
+                "posted": "",
+                "closes": closes,
+            }
+        )
+    return rows
+
+
+def _avanti_reader(employer: dict[str, Any]):
+    parsed = urlparse(str(employer.get("url") or ""))
+    if not parsed.netloc.endswith(".myavanti.ca"):
+        return None
+    base = f"https://{parsed.netloc}"
+
+    def read(client: httpx.Client, page: int) -> Page:
+        if page:
+            return [], 0  # one response lists every opening
+        try:
+            response = client.post(f"{base}/careers/Job/Jobs", headers={"X-Requested-With": "XMLHttpRequest"})
+            response.raise_for_status()
+            payload = response.json()
+        except (httpx.HTTPError, ValueError):
+            return None
+        if not isinstance(payload, dict) or not isinstance(payload.get("items"), list):
+            return None
+        rows = parse_avanti(payload, base)
+        return rows, len(rows)
+
+    return read
+
+
 _READERS = {
     "oracle": _oracle_reader,
     "jibe": _jibe_reader,
@@ -582,6 +705,8 @@ _READERS = {
     "taleo": _taleo_reader,
     "adp": _adp_reader,
     "tbe": _tbe_reader,
+    "cornerstone": _cornerstone_reader,
+    "avanti": _avanti_reader,
 }
 
 

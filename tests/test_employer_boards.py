@@ -577,6 +577,72 @@ def test_a_tbe_page_that_is_not_the_careers_page_is_an_error():
     assert result.health.errors == 1
 
 
+# Trimmed from Mohawk College's Cornerstone site, 2026-09-27.
+CSOD_URL = "https://talent-mohawkcollege.csod.com/ux/ats/careersite/2/home?c=talent-mohawkcollege"
+CSOD_HOME = '<script>if (!csod.context  || !csod.context.token)  csod.context={"corp":"talent-mohawkcollege","token":"tok123"};</script>'
+CSOD_REQ = {"requisitionId": 3432, "postingEffectiveDate": "9/25/2026",
+            "displayJobTitle": "Business Systems Analyst",
+            "locations": [{"city": "Hamilton", "state": "Ontario", "country": "CA"}]}
+
+
+def test_a_cornerstone_site_is_searched_with_the_token_its_page_embeds():
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.method == "GET":
+            return httpx.Response(200, text=CSOD_HOME)
+        return httpx.Response(200, json={"status": "Success",
+                                         "data": {"totalCount": 1, "requisitions": [CSOD_REQ]}})
+
+    result = _scan(_config({"name": "Mohawk College", "platform": "cornerstone", "url": CSOD_URL}), handler)
+    search = requests[1]
+    assert str(search.url) == "https://us.api.csod.com/rec-job-search/external/jobs"
+    assert search.headers["authorization"] == "Bearer tok123"
+    assert json.loads(search.content)["careerSiteId"] == 2
+    [posting] = result.postings
+    assert posting.url == ("https://talent-mohawkcollege.csod.com/ux/ats/careersite/2/home/"
+                           "requisition/3432?c=talent-mohawkcollege")
+    assert posting.location == "Hamilton, Ontario, CA" and posting.posted == "2026-09-25"
+    assert result.health.advertised == 1 and result.health.ok
+
+
+def test_a_cornerstone_page_without_a_token_is_an_error():
+    result = _scan(_config({"name": "Mohawk College", "platform": "cornerstone", "url": CSOD_URL}),
+                   lambda request: httpx.Response(200, text="<html>no context</html>"))
+    assert result.health.errors == 1
+
+
+# Trimmed from welland.myavanti.ca/careers/Job/Jobs, 2026-09-27.
+AVANTI_ITEMS = {"items": [
+    {"Job": "2026-54  ", "Title": "Design Technologist", "Location": "Engineering - Administration",
+     "ClosingDate": "Oct 16, 2026", "ApplyUrl": None},
+    {"Job": "2025     ", "Title": "Crossing Guard", "Location": "Crossing Guards", "ClosingDate": ""}]}
+
+
+def test_an_avanti_site_lists_every_opening_in_one_post():
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json=AVANTI_ITEMS)
+
+    result = _scan(_config({"name": "City of Welland", "platform": "avanti",
+                            "url": "https://welland.myavanti.ca/careers", "location_hint": "Welland, ON"}), handler)
+    assert [(r.method, r.url.path) for r in requests] == [("POST", "/careers/Job/Jobs")]
+    first = result.postings[0]
+    assert first.url == "https://welland.myavanti.ca/careers/Job/Details/2026-54"
+    assert first.location == "Engineering - Administration, Welland, ON" and first.closes == "2026-10-16"
+    assert len(result.postings) == 2 and result.health.ok
+
+
+def test_an_avanti_response_without_items_is_an_error():
+    result = _scan(_config({"name": "City of Welland", "platform": "avanti",
+                            "url": "https://welland.myavanti.ca/careers"}),
+                   lambda request: httpx.Response(200, json={"error": "x"}))
+    assert result.health.errors == 1
+
+
 def test_the_tier_keeps_the_positive_title_filter():
     """J.D. Irving's board is drivers, mechanics and store managers; only the
     title says which of its 736 postings is his work."""
