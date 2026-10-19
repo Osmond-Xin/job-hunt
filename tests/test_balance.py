@@ -4,17 +4,18 @@ from __future__ import annotations
 
 import pytest
 
-from job_hunt.services.balance import MIN_SCORE, Mix, balanced_slate, outside_gta
-from job_hunt.services.triage import region, sector
+from job_hunt.services.balance import MIN_SCORE, Mix, balanced_slate
+from job_hunt.services.triage import region, remote_region, sector, startup_source
 
 
 def _pick(items, limit, inbox=None):
-    # Items are (company, location, score) or (company, location, score, role);
-    # a 3-tuple stands for a technical role.
+    # Items are (company, location, score[, role[, source]]); a missing role
+    # stands for a technical one, a missing source for a non-start-up board.
     return balanced_slate(
         items, limit,
         company=lambda item: item[0], location=lambda item: item[1], score=lambda item: item[2],
         role=lambda item: item[3] if len(item) > 3 else "software developer",
+        source=lambda item: item[4] if len(item) > 4 else "adzuna",
         inbox=inbox,
     )
 
@@ -101,11 +102,42 @@ def test_region_names_a_place_only_on_positive_evidence(location, expected):
     assert region(location) == expected
 
 
-def test_only_named_places_outside_the_gta_count_as_outside_it():
-    assert outside_gta("Halifax, NS")
-    assert not outside_gta("Whitby, ON")
-    assert not outside_gta("Remote, Canada")
-    assert not outside_gta("Upto $85/hr")
+@pytest.mark.parametrize(
+    "location, expected",
+    [
+        ("Whitehorse, Yukon", True),
+        ("Greater Sudbury (ON)", True),
+        ("Pictou, NS", True),  # RCIP community
+        ("New Glasgow, Nova Scotia", True),
+        ("Brandon MB", True),
+        ("Moose Jaw, SK", True),
+        ("Kirkland Lake, ON", True),
+        ("Halifax, NS", False),  # a provincial capital is not remote
+        ("St. John's, Newfoundland and Labrador", False),  # the province's name, not Labrador
+        ("Bathurst Street, Barrie, ON", False),  # a street named after a town
+        ("Brandon Ave, Winnipeg, MB", False),
+        ("Bathurst, NB", True),
+        ("Val-d’Or, Quebec", True),  # curly apostrophe
+        ("Mackenzie, BC", True),  # Canfor mill town
+        ("Houston, BC", True),
+        ("Houston, TX", False),
+        ("Toronto, Ontario", False),
+        ("Remote, Canada", False),  # remote work is not a remote region
+        ("Vernon, CT 06066", False),  # a US address never counts
+        ("Upto $85/hr", False),
+    ],
+)
+def test_remote_region_is_the_north_or_a_named_small_community(location, expected):
+    assert remote_region(location) is expected
+
+
+def test_startup_sources_are_the_early_stage_boards_only():
+    assert startup_source("getro")
+    assert startup_source("hn_who_is_hiring")
+    assert startup_source("ycombinator")
+    assert not startup_source("ashby")
+    assert not startup_source("adzuna")
+    assert not startup_source("")
 
 
 def test_sector_follows_the_triage_government_vocabulary():
@@ -167,47 +199,58 @@ def test_the_north_is_a_lottery_any_technical_role_fills_it_regardless_of_score(
 
     assert junior in slate and it_analyst in slate
     assert policy not in slate and accounting not in slate
-    assert "North" not in {g.reservation for g in gaps}
+    remote = next(g for g in gaps if g.reservation == "remote region")
+    assert remote.got == 2 and remote.in_inbox == 2
 
 
-def test_a_toronto_heavy_ranking_still_yields_north_public_and_outside_gta_rows():
-    """The 2026-09-16 shape: a long plateau of Toronto private rows above a
-    Yukon government analyst that scores lower but is still a match."""
-    toronto = [(f"Startup{i}", "Toronto, Ontario", 3.5) for i in range(40)]
-    yukon = ("Government of Yukon", "Whitehorse, Yukon", 2.0)
-    brock = ("Brock University", "St. Catharines, Ontario", 3.5)
-    halifax = [(f"NS Co{i}", "Halifax, Nova Scotia", 2.5) for i in range(5)]
-    ranked = toronto + [brock] + halifax + [yukon]
+def test_a_corporate_heavy_ranking_still_yields_remote_region_and_startup_rows():
+    """Operator 2026-10-19: mostly remote-region employers and start-ups. A
+    long plateau of Toronto corporate rows ranks above both, and the slate
+    still gives each lane four of ten slots."""
+    toronto = [(f"Corp{i}", "Toronto, Ontario", 3.5) for i in range(40)]
+    remote = [
+        ("Government of Yukon", "Whitehorse, Yukon", 2.0),
+        ("Town of Pictou", "Pictou, NS", 1.0, "IT technician"),
+        ("Protocase", "Sydney, NS, Cape Breton", 3.0),
+    ]
+    startups = [(f"Seed{i}", "Remote, Canada", 2.5, "AI engineer", "getro") for i in range(5)]
+    ranked = toronto + startups + remote
 
     slate, gaps = _pick(ranked, 10)
 
     assert len(slate) == 10
-    assert yukon in slate
-    assert brock in slate
-    assert sum(1 for _c, loc, _s in slate if outside_gta(loc)) >= 5
+    assert all(row in slate for row in remote)
+    assert sum(1 for row in slate if row in startups) == 4
     assert slate == [item for item in ranked if item in slate]  # ranking order kept
-    assert [(g.reservation, g.wanted, g.got, g.in_inbox) for g in gaps] == [("public sector", 3, 2, 2)]
+    assert [(g.reservation, g.wanted, g.got, g.in_inbox) for g in gaps] == [("remote region", 4, 3, 3)]
     assert gaps[0].sourcing
 
 
 def test_rows_below_the_floor_never_fill_a_reservation():
     assert MIN_SCORE == 2.0  # the operator's floor, 2026-09-16
-    ranked = [(f"Startup{i}", "Toronto, Ontario", 3.5) for i in range(12)] + [
-        ("City of Windsor", "Windsor, Ontario", 1.0),  # a generic "Engineer II"
-    ]
+    weak = ("Seed", "Toronto, Ontario", 1.0, "engineer ii", "getro")  # a generic "Engineer II"
+    ranked = [(f"Corp{i}", "Toronto, Ontario", 3.5) for i in range(12)] + [weak]
     slate, gaps = _pick(ranked, 5)
-    assert ("City of Windsor", "Windsor, Ontario", 1.0) not in slate
-    assert {g.reservation for g in gaps} == {"North", "public sector", "outside GTA"}
+    assert weak not in slate
+    assert {g.reservation for g in gaps} == {"remote region", "start-up"}
 
 
 def test_a_gap_says_whether_the_inbox_had_the_rows():
     """Rows the screen or a dead link removed are not a sourcing gap."""
-    yukon = ("Government of Yukon", "Whitehorse, Yukon", 3.0)
+    remote = [("Government of Yukon", "Whitehorse, Yukon", 3.0, f"systems analyst {i}") for i in range(4)]
     survivors = [(f"Startup{i}", "Toronto, Ontario", 3.5) for i in range(10)]
-    _slate, gaps = _pick(survivors, 10, inbox=survivors + [yukon])
-    north = next(g for g in gaps if g.reservation == "North")
-    assert north.in_inbox == 1 and north.got == 0
-    assert not north.sourcing
+    _slate, gaps = _pick(survivors, 10, inbox=survivors + remote)
+    gap = next(g for g in gaps if g.reservation == "remote region")
+    assert gap.in_inbox == 4 and gap.got == 0
+    assert not gap.sourcing
+
+
+def test_a_small_slate_keeps_a_slot_for_the_best_row_overall():
+    best = ("Corp", "Toronto, Ontario", 5.0)
+    ranked = [best] + [("Town of Pictou", "Pictou, NS", 1.0, "IT technician"),
+                       ("Seed", "Remote, Canada", 3.0, "AI engineer", "getro")]
+    slate, _gaps = _pick(ranked, 3)
+    assert best in slate
 
 
 def test_limit_larger_than_the_pool_returns_every_item_once():

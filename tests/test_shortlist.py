@@ -288,18 +288,18 @@ def test_progress_is_reported_before_each_slow_call(tmp_path) -> None:
     ]
 
 
-def test_a_toronto_heavy_inbox_still_surfaces_public_and_northern_work(tmp_path) -> None:
-    """2026-09-16: 402 public and 95 northern rows sat in the inbox while the
-    top 30 was half Greater Toronto and had no northern row. The shortlist now
-    reserves slots for them — from rows that still score as a match."""
+def test_a_toronto_heavy_inbox_still_surfaces_remote_region_and_startup_work(tmp_path) -> None:
+    """2026-09-16: 95 northern rows sat in the inbox while the top 30 was half
+    Greater Toronto and had none. Since 2026-10-19 the shortlist reserves its
+    slots for remote regions and start-ups (the source board says which)."""
     rows = [
         _row(f"https://example.invalid/t{i}", f"Startup{i}", "AI Engineer", "Toronto, Ontario", posted="2026-09-15")
         for i in range(40)
     ] + [
         _row("https://example.invalid/yk", "Government of Yukon", "Systems Analyst", "Whitehorse, Yukon",
              posted="2026-09-10"),
-        _row("https://example.invalid/ns", "Province of Nova Scotia", "Business Analyst", "Halifax, Nova Scotia",
-             posted="2026-09-10"),
+        _row("https://example.invalid/hn", "Seedco", "AI Engineer", "Remote, Canada",
+             posted="2026-09-10", source="hn_who_is_hiring"),
     ]
     pipeline = _write(tmp_path, "pipeline.md", _pipeline(rows))
     tracker = _write(tmp_path, "applications.md", "")
@@ -310,11 +310,10 @@ def test_a_toronto_heavy_inbox_still_surfaces_public_and_northern_work(tmp_path)
 
     shown = {entry.ranked.row.company for entry in result.entries}
     assert "Government of Yukon" in shown
-    assert "Province of Nova Scotia" in shown
+    assert "Seedco" in shown
     assert result.mix_shown.regions["north"] == 1
-    assert result.mix_shown.sectors["public"] == 2
     assert result.mix_pool.total == 42
-    assert {gap.reservation for gap in result.reservation_gaps} == {"public sector", "outside GTA"}
+    assert {gap.reservation for gap in result.reservation_gaps} == {"remote region", "start-up"}
     assert all(gap.sourcing for gap in result.reservation_gaps)
 
 

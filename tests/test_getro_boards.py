@@ -13,6 +13,7 @@ import httpx
 import pytest
 
 from job_hunt.services.getro_boards import GETRO_SEARCH, scan_getro_boards_source
+from job_hunt.services.triage import startup_source
 
 
 def _job(title: str, company: str, url: str, *, locations=("Toronto, ON, Canada",), created_at=1789600000):
@@ -234,3 +235,59 @@ def test_the_tier_keeps_the_positive_title_filter_unlike_the_curated_boards():
 
     assert result.new_jobs == 1
     assert [job.url for job in result.jobs] == ["https://b.example/ml"]
+
+
+def _one(job):
+    pages = {(8936, "ai engineer", 0): {"results": {"count": 1, "jobs": [job]}}}
+    result = scan_getro_boards_source(_config(), client=_client(_transport(pages)), sleep=lambda _s: None)
+    assert len(result.postings) == 1
+    return result.postings[0]
+
+
+@pytest.mark.parametrize(
+    "organization, portal",
+    [
+        ({"name": "Kindred", "stage": "seed", "head_count": 2}, "getro"),
+        ({"name": "Cohere", "stage": "series_unknown", "head_count": 4}, "getro"),
+        ({"name": "Okta", "stage": "ipo", "head_count": 6}, "getro_mature"),
+        ({"name": "Lacework", "stage": "acquisition", "head_count": 4}, "getro_mature"),
+        ({"name": "StackAdapt", "stage": "private_equity", "head_count": 5}, "getro_mature"),
+        ({"name": "KPMG Canada", "stage": "other", "head_count": 6}, "getro_mature"),
+    ],
+)
+def test_a_company_past_the_startup_stage_is_labelled_mature(organization, portal):
+    """2026-10-19: a third to a half of ~1,000 sampled portfolio-board rows were IPO,
+    acquired, private-equity or 1,001+ staff — not the start-up lane."""
+    job = _job("AI Engineer", "x", "https://boards.example/a")
+    job["organization"] = organization
+    posting = _one(job)
+    assert posting.portal == portal
+    assert startup_source(posting.portal) is (portal == "getro")
+
+
+@pytest.mark.parametrize(
+    "organization, url, company",
+    [
+        # Getro files an acquirer's postings under the company it bought.
+        ("Qubit.", "https://ca.linkedin.com/jobs/view/senior-product-designer-at-coveo-4468212985", "Coveo"),
+        ("One Way Ventures", "https://jobs.ashbyhq.com/helm-ai/a9c443b8-4fc0", "Helm Ai"),
+        ("Tile", "https://boards.greenhouse.io/life360/jobs/123", "Life360"),
+        # The URL agrees, or the company rebranded and kept its stem: keep Getro's name.
+        ("Fellow.app", "https://jobs.ashbyhq.com/fellowai/123", "Fellow.app"),
+        ("GlossGenius", "https://jobs.ashbyhq.com/geniusai/123", "GlossGenius"),
+        ("Vendasta Technologies", "https://jobs.lever.co/vendasta/1", "Vendasta Technologies"),
+        ("Prompt.io", "https://job-boards.greenhouse.io/promptioinc/jobs/1", "Prompt.io"),
+        ("Kindred", "https://kindred.example/careers/1", "Kindred"),
+        # An embed URL names the board in for=, wherever it sits; without one it names nobody.
+        ("Tile", "https://boards.greenhouse.io/embed/job_app?token=123&for=life360", "Life360"),
+        ("Acme", "https://boards.greenhouse.io/embed/job_board?token=123", "Acme"),
+        # A slug that abbreviates the name is the same employer (spec review 2026-10-19).
+        ("Royal Bank of Canada", "https://ca.linkedin.com/jobs/view/analyst-at-rbc-123", "Royal Bank of Canada"),
+        ("Maple Leaf Sports & Entertainment", "https://jobs.lever.co/mlse/1", "Maple Leaf Sports & Entertainment"),
+        # No name from Getro: the slug is the only one there is.
+        ("", "https://jobs.lever.co/coveo/1", "Coveo"),
+        ("Acme", "https://apply.workable.com/api/v3/accounts/x/jobs/1", "Acme"),
+    ],
+)
+def test_the_employer_comes_from_the_posting_url_when_getro_names_another(organization, url, company):
+    assert _one(_job("AI Engineer", organization, url)).company == company

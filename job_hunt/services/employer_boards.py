@@ -45,6 +45,15 @@ public JSON endpoint, so an employer is one ``portals.yml`` entry — a
   three more times — and the location comes from ``location_hint``. Total:
   ``listRequisition.nbElements``. Hamilton Health Sciences: 85 postings on
   2026-09-27, read at 100 a page (``dropListSize``) in one request.
+- **taleo_rest** — Taleo's newer career-section UI, whose page carries no
+  ``initialHistory`` and loads its list from ``POST <host>/careersection/rest/
+  jobboard/searchjobs?lang=en&portal=<portal>`` (the ``portal`` number is in
+  the page's links; ``url`` must carry it). The call answers 500 without a
+  ``tz`` header. -> ``{pagingData: {totalCount, pageSize}, requisitionList:
+  [{jobId, column: [title, '["Province-Town-Site"]', closing date]}]}``.
+  Agnico Eagle: 69 postings on 2026-10-19, most at the Nunavut fly-in mines
+  and Kirkland Lake / Detour Lake — the FIFO employers the 2026-08-16 probes
+  of its corporate site (403) and Workday guesses had written off.
 - **adp** — ADP Workforce Now's public career centre, by company id
   (``cid``, the query parameter of any ``recruitment.html`` link):
   ``GET workforcenow.adp.com/mascsr/default/careercenter/public/events/
@@ -538,6 +547,77 @@ def _taleo_reader(employer: dict[str, Any]):
     return read
 
 
+_TALEO_REST_BODY = {
+    "multilineEnabled": False,
+    "sortingSelection": {"sortBySelectionParam": "3", "ascendingSortingOrder": "false"},
+    "fieldData": {"fields": {"KEYWORD": "", "LOCATION": ""}, "valid": True},
+    # An empty selection list answers 500; these three empty facets do not.
+    "filterSelectionParam": {
+        "searchFilterSelections": [
+            {"id": "POSTING_DATE", "selectedValues": []},
+            {"id": "LOCATION", "selectedValues": []},
+            {"id": "JOB_FIELD", "selectedValues": []},
+        ]
+    },
+    "advancedSearchFiltersSelectionParam": {"searchFilterSelections": []},
+}
+
+
+def _taleo_rest_location(cell: Any) -> str:
+    """'["Nunavut-Baker Lake-Meadowbank Division"]' -> 'Baker Lake-Meadowbank Division, Nunavut'.
+
+    Only the first hyphen separates: the province comes first, and the town
+    after it may be hyphenated itself ("Quebec-Val-d'Or", "Quebec-Rouyn-Noranda").
+    """
+    try:
+        places = json.loads(cell) if isinstance(cell, str) else cell
+    except ValueError:
+        places = [cell]
+    if not isinstance(places, list) or not places:
+        return ""
+    province, _, rest = str(places[0]).partition("-")
+    return f"{rest.strip()}, {province.strip()}" if rest.strip() else province.strip()
+
+
+def _taleo_rest_reader(employer: dict[str, Any]):
+    url = str(employer.get("url") or "")
+    parsed = urlparse(url)
+    portal = (parse_qs(parsed.query).get("portal") or [""])[0]
+    section = re.search(r"/careersection/([^/]+)/", parsed.path)
+    if not portal or not section:
+        return None
+    host = f"{parsed.scheme}://{parsed.netloc}"
+    endpoint = f"{host}/careersection/rest/jobboard/searchjobs"
+
+    def parse(item: dict[str, Any]) -> dict[str, str]:
+        column = item.get("column") or []
+        job_id = str(item.get("jobId") or "").strip()
+        return {
+            "url": f"{host}/careersection/{section.group(1)}/jobdetail.ftl?job={job_id}&lang=en" if job_id else "",
+            "title": str(column[0] if column else "").strip(),
+            "location": _taleo_rest_location(column[1]) if len(column) > 1 else "",
+        }
+
+    def read(client: httpx.Client, page: int) -> Page:
+        try:
+            response = client.post(
+                endpoint,
+                params={"lang": "en", "portal": portal},
+                json={**_TALEO_REST_BODY, "pageNo": page + 1},
+                headers={"tz": "GMT-04:00", "Accept": "application/json"},
+            )
+            response.raise_for_status()
+            payload = response.json()
+        except (httpx.HTTPError, ValueError):
+            return None
+        if not isinstance(payload, dict) or not isinstance(payload.get("requisitionList"), list):
+            return None
+        rows, lost = guard_rows(payload["requisitionList"], parse)
+        return rows, safe_total((payload.get("pagingData") or {}).get("totalCount")), lost
+
+    return read
+
+
 _ADP_API = "https://workforcenow.adp.com/mascsr/default/careercenter/public/events/staffing/v1/job-requisitions"
 _ADP_POSTING = "https://workforcenow.adp.com/mascsr/default/mdf/recruitment/recruitment.html?cid={cid}&jobId={job}"
 _ADP_PAGE_SIZE = 20
@@ -991,6 +1071,7 @@ _READERS = {
     "erecruit": _erecruit_reader,
     "peoplesoft": _peoplesoft_reader,
     "taleo": _taleo_reader,
+    "taleo_rest": _taleo_rest_reader,
     "adp": _adp_reader,
     "tbe": _tbe_reader,
     "cornerstone": _cornerstone_reader,

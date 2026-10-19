@@ -1062,3 +1062,55 @@ def test_peopleadmin_reads_single_quoted_links():
     result = _scan(_config({"name": "CNC", "platform": "peopleadmin", "url": "https://cnc.peopleadmin.ca"}),
                    lambda request: httpx.Response(200, text=feed if request.url.params["page"] == "1" else _atom([])))
     assert [p.url for p in result.postings] == ["https://cnc.peopleadmin.ca/postings/7"]
+
+
+AGNICO_URL = "https://agnicoeagle.taleo.net/careersection/2/jobsearch.ftl?lang=en&portal=101430233"
+
+
+def _taleo_rest_page(page_no, rows, total):
+    return {"pagingData": {"currentPageNo": page_no, "pageSize": 25, "totalCount": total},
+            "requisitionList": [
+                {"jobId": job_id, "contestNo": f"MEA{job_id}", "column": [title, json.dumps([place]), "Nov 3, 2026"]}
+                for job_id, title, place in rows]}
+
+
+def test_taleo_rest_reads_every_page_with_the_tz_header_and_names_the_town():
+    """Agnico Eagle, 2026-10-19: the newer Taleo UI lists jobs over a REST call
+    that answers 500 without a ``tz`` header. Its location is
+    "Province-Town-Site", and the town may itself be hyphenated."""
+    pages = {
+        1: _taleo_rest_page(1, [("146540", "Systems Administrator, Business Applications",
+                                 "Nunavut-Baker Lake-Meadowbank Division")], 2),
+        2: _taleo_rest_page(2, [("148062", "Business Analyst", "Quebec-Val-d'Or")], 2),
+    }
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/careersection/rest/jobboard/searchjobs"
+        assert request.url.params["portal"] == "101430233"
+        if "tz" not in request.headers:
+            return httpx.Response(500, text="")
+        page_no = json.loads(request.content)["pageNo"]
+        seen.append(page_no)
+        return httpx.Response(200, json=pages[page_no])
+
+    result = _scan(_config({"name": "Agnico Eagle", "platform": "taleo_rest", "url": AGNICO_URL}), handler)
+
+    assert seen == [1, 2]
+    assert result.health.errors == 0
+    assert [(p.title, p.location, p.url) for p in result.postings] == [
+        ("Systems Administrator, Business Applications", "Baker Lake-Meadowbank Division, Nunavut",
+         "https://agnicoeagle.taleo.net/careersection/2/jobdetail.ftl?job=146540&lang=en"),
+        ("Business Analyst", "Val-d'Or, Quebec",
+         "https://agnicoeagle.taleo.net/careersection/2/jobdetail.ftl?job=148062&lang=en"),
+    ]
+    assert all(p.company == "Agnico Eagle" and p.portal == "taleo_rest" for p in result.postings)
+
+
+def test_taleo_rest_without_a_portal_number_is_a_config_error():
+    result = _scan(
+        _config({"name": "Agnico Eagle", "platform": "taleo_rest",
+                 "url": "https://agnicoeagle.taleo.net/careersection/2/jobsearch.ftl?lang=en"}),
+        lambda request: httpx.Response(200, json={}),
+    )
+    assert result.postings == [] and result.health.errors == 1

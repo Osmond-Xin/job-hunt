@@ -34,6 +34,19 @@ Unlike the Chinese boards (tier 8), these titles are in English and the boards
 are general — so scan.py runs these rows through the **positive** title filter
 rather than waving them past it.
 
+Two more facts, measured 2026-10-19 on ~1,000 rows across all configured boards:
+
+- **A portfolio board is not a start-up board.** A third to a half of its rows
+  are from companies past that stage — ``organization.stage`` "ipo" (Google, Okta,
+  GitLab), "acquisition", "private_equity" — or with a ``head_count`` bucket of
+  5+ (1,001+ staff: KPMG, EY, Scotiabank, Stripe). Those rows are kept but
+  labelled ``getro_mature``, so triage's start-up lane does not count them.
+- **``organization.name`` can name the wrong employer.** Getro files an acquired
+  company's postings under the acquiree: Coveo's roles appear as "Qubit.", Helm.ai's
+  as "One Way Ventures". The posting URL usually names the real employer (its ATS
+  slug, or LinkedIn's "...-at-<company>-<id>"), so when that slug disagrees with
+  the organization, the slug wins — which also lets one-role-per-employer see it.
+
 The network id is not the board's slug: it is the integer in
 ``props.pageProps.network.id`` of the board's own HTML. Recorded per board in
 ``portals.yml`` so this module never has to scrape it.
@@ -41,7 +54,9 @@ The network id is not the board's slug: it is the integer in
 
 from __future__ import annotations
 
+import re
 import time
+from difflib import SequenceMatcher
 from datetime import datetime, timezone
 from typing import Any, Callable
 
@@ -63,6 +78,78 @@ def _posted(created_at: Any) -> str:
         return datetime.fromtimestamp(float(created_at), tz=timezone.utc).date().isoformat()
     except (TypeError, ValueError, OSError, OverflowError):
         return ""
+
+
+# Stages and head-count buckets that mean the employer is no longer a start-up.
+_MATURE_STAGES = frozenset({"ipo", "acquisition", "private_equity"})
+_MATURE_HEAD_COUNT = 5  # Getro's bucket for 1,001-5,000 staff; 6 is 5,001+
+
+
+def _mature(organization: dict[str, Any]) -> bool:
+    if str(organization.get("stage") or "").lower() in _MATURE_STAGES:
+        return True
+    try:
+        return int(organization.get("head_count") or 0) >= _MATURE_HEAD_COUNT
+    except (TypeError, ValueError):
+        return False
+
+
+# The employer as the posting URL names it.
+_URL_EMPLOYER_RES = (
+    re.compile(r"linkedin\.com/jobs/view/[^/?#]*-at-([a-z0-9-]+?)-\d+(?:[/?#]|$)", re.I),
+    re.compile(r"jobs\.ashbyhq\.com/([^/?#]+)", re.I),
+    # An embed URL names the board in its ``for=`` parameter, wherever that sits
+    # in the query; any other embed URL names no employer and is skipped.
+    re.compile(r"greenhouse\.io/embed/[^?#]*\?(?:[^#]*&)?for=([^&#]+)", re.I),
+    re.compile(r"greenhouse\.io/(?!embed/)([^/?#&]+)", re.I),
+    re.compile(r"jobs\.lever\.co/([^/?#]+)", re.I),
+    re.compile(r"apply\.workable\.com/(?!api/)([^/?#]+)", re.I),
+)
+
+
+def _squash(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", value.lower())
+
+
+def _shared_run(a: str, b: str) -> int:
+    """Length of the longest run of characters the two strings share."""
+    if not a or not b:
+        return 0
+    match = SequenceMatcher(None, a, b, autojunk=False).find_longest_match(0, len(a), 0, len(b))
+    return match.size
+
+
+def _initials(name: str) -> set[str]:
+    """"Royal Bank of Canada" -> {"rboc", "rbc"}: a slug that abbreviates the name
+    is the same employer, not another one (spec review 2026-10-19: RBC, MLSE)."""
+    words = re.findall(r"[a-z0-9]+", name.lower())
+    significant = [word for word in words if word not in {"of", "and", "the", "for"}]
+    return {"".join(word[0] for word in words), "".join(word[0] for word in significant)} - {""}
+
+
+def _employer(job: dict[str, Any]) -> str:
+    """The hiring company: Getro's organization, unless the URL names another."""
+    name = str((job.get("organization") or {}).get("name") or "").strip()
+    url = str(job.get("url") or "")
+    for pattern in _URL_EMPLOYER_RES:
+        match = pattern.search(url)
+        if not match:
+            continue
+        slug = match.group(1)
+        squashed_slug, squashed_name = _squash(slug), _squash(name)
+        derived = " ".join(part.capitalize() for part in re.split(r"[-_]+", slug) if part)
+        if not squashed_name:
+            return derived if len(squashed_slug) >= 3 else name
+        if squashed_slug in _initials(name):
+            return name
+        # A rebrand keeps a stem ("Fellow.app" -> fellowai, "GlossGenius" ->
+        # geniusai); an acquirer shares nothing with the acquiree.
+        if len(squashed_slug) < 3 or _shared_run(squashed_slug, squashed_name) >= min(
+            5, len(squashed_slug), len(squashed_name)
+        ):
+            return name
+        return derived
+    return name
 
 
 def _location(job: dict[str, Any]) -> str:
@@ -150,13 +237,13 @@ def scan_getro_boards_source(
                             {
                                 "url": url,
                                 "title": str(job.get("title") or "").strip(),
-                                "company": str((job.get("organization") or {}).get("name") or "").strip(),
+                                "company": _employer(job),
                                 "location": _location(job),
                                 "posted": _posted(job.get("created_at")),
                                 "source": f"getro:{board_id}",
                             },
                             source_id=f"getro:{board_id}",
-                            portal="getro",
+                            portal="getro_mature" if _mature(job.get("organization") or {}) else "getro",
                         )
                         if posting is None:
                             continue

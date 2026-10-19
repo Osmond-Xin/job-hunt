@@ -469,6 +469,54 @@ def region(location: str) -> str:
     return "unknown"
 
 
+# Small and remote communities south of the North, for the remote-region
+# reservation (operator 2026-10-19: "主要投递边远企业和初创企业"). The RCIP
+# pilot communities first, then towns whose employers recruit from away
+# because few people live there. Names that are also foreign cities are left
+# out ("Terrace", "Trail", "Nelson", "Sydney"), and "Labrador" alone is the
+# province's name — "St. John's, Newfoundland and Labrador" is not remote
+# (Labrador City and Happy Valley are in _NORTH_RE). Many of these towns are
+# also street names in bigger cities ("Bathurst Street, Barrie", "Brandon Ave,
+# Winnipeg"), so a name followed by a street word does not count (standards
+# review 2026-10-19).
+_SMALL_COMMUNITY_RE = re.compile(
+    r"\b(pictou|new glasgow|stellarton|antigonish|cape breton|port hawkesbury|yarmouth|"
+    r"steinbach|altona|rhineland|winkler|brandon|the pas|moose jaw|claresholm|castlegar|"
+    r"rossland|vernon|salmon arm|dawson creek|prince rupert|kitimat|smithers|williams lake|"
+    r"quesnel|cranbrook|mackenzie|houston|fairview|peace river|high level|slave lake|lac la biche|cold lake|whitecourt|"
+    r"hinton|lloydminster|north battleford|prince albert|swift current|yorkton|estevan|"
+    r"dryden|fort frances|sioux lookout|kapuskasing|kirkland lake|elliot lake|wawa|"
+    r"corner brook|gander|grand falls|miramichi|bathurst|campbellton|edmundston|"
+    r"rouyn-noranda|val-d['’]or|sept-[iî]les|baie-comeau|chibougamau|gasp[eé]|"
+    # Mine sites, named by the employer instead of a town (Agnico Eagle, 2026-10-19).
+    r"detour lake|dobie|upper beaver)\b"
+    r"(?!\s+(?:st|street|ave|avenue|rd|road|dr|drive|blvd|boulevard|cres|crescent|way|pl|place|ct|court)\b)",
+    re.I,
+)
+
+
+def remote_region(location: str) -> bool:
+    """The North, or a small community far from a metro — on positive evidence.
+
+    Reads through ``region`` first, so a US address or a remote posting never
+    counts however its text happens to match.
+    """
+    place = region(location)
+    if place == "north":
+        return True
+    return place in {"ontario", "other_province"} and bool(_SMALL_COMMUNITY_RE.search(location or ""))
+
+
+# Pipeline sources that only carry early-stage companies: accelerator and VC
+# portfolio boards (Getro), Y Combinator, the HN "Who is hiring?" thread and
+# Wellfound. An Ashby or Greenhouse board says nothing either way.
+STARTUP_SOURCES = frozenset({"getro", "ycombinator", "yc_companies", "hn_who_is_hiring", "wellfound"})
+
+
+def startup_source(source: str) -> bool:
+    return source.split(":", 1)[0].strip().lower() in STARTUP_SOURCES
+
+
 def sector(company: str) -> str:
     text = company or ""
     return "public" if GOVERNMENT_RE.search(text) and not PRIVATE_INSTITUTION_RE.search(text) else "private"

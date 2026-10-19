@@ -25,6 +25,16 @@ reach. Any role he can do on technology alone fills a North slot whatever it
 scores, and a role he cannot (a policy or accounting analyst) does not, however
 well it scores (``triage.technical_reach``).
 
+The strategy changed on 2026-10-19 (operator: "主要投递边远企业和初创企业"),
+after two finished interview loops (Cameron Stephens, Hexalence) ended in
+rejection on the same day. Every human conversation so far had come from a
+start-up, a remote region, or a mid-size employer outside the GTA; none from a
+large corporate. So the slate is now mostly two lanes — remote regions (the
+North plus small communities, ``triage.remote_region``) and start-ups (read off
+the source board, ``triage.startup_source``) — and the public-sector and
+outside-GTA reservations are gone; a public employer in a remote town still
+fills the remote-region lane. The remaining slots go to the best match overall.
+
 A reservation that cannot be filled is reported, with whether the inbox had the
 rows at all — a sourcing gap and a row lost to the model screen or a dead link
 call for different fixes.
@@ -40,7 +50,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from typing import Callable, Sequence, TypeVar
 
-from job_hunt.services.triage import REGIONS, region, sector, technical_reach
+from job_hunt.services.triage import REGIONS, region, remote_region, sector, startup_source, technical_reach
 
 T = TypeVar("T")
 
@@ -56,25 +66,21 @@ REGION_LABELS = {
 }
 
 
-def outside_gta(location: str) -> bool:
-    """A named place that is not the GTA. Remote and unknown rows do not count."""
-    return region(location) in {"ontario", "other_province", "north"}
-
-
 @dataclass(frozen=True)
 class Reservation:
     name: str
-    share: float  # of the slate, rounded up
-    belongs: Callable[[str, str], bool]  # (company, location)
+    share: float  # of the slate, rounded down so small slates keep room for the best overall
+    belongs: Callable[[str, str, str], bool]  # (company, location, source)
     # Filled on technical reach instead of the score floor (see module docstring).
     lottery: bool = False
 
 
 RESERVATIONS: tuple[Reservation, ...] = (
-    # Smallest bucket first, so a Yukon government row is spent where it is scarcest.
-    Reservation("North", 0.1, lambda _company, location: region(location) == "north", lottery=True),
-    Reservation("public sector", 0.3, lambda company, _location: sector(company) == "public"),
-    Reservation("outside GTA", 0.5, lambda _company, location: outside_gta(location)),
+    # Scarcest bucket first. Remote regions are a lottery on technical reach,
+    # as the North alone was from 2026-09-17: a full match there almost never
+    # exists. Start-ups are plentiful, so they keep the score floor.
+    Reservation("remote region", 0.4, lambda _company, location, _source: remote_region(location), lottery=True),
+    Reservation("start-up", 0.4, lambda _company, _location, source: startup_source(source)),
 )
 
 
@@ -123,15 +129,15 @@ def balanced_slate(
     location: Callable[[T], str],
     score: Callable[[T], float],
     role: Callable[[T], str],
+    source: Callable[[T], str],
     inbox: Sequence[T] | None = None,
     min_score: float = MIN_SCORE,
     reservations: Sequence[Reservation] = RESERVATIONS,
 ) -> tuple[list[T], list[ReservationGap]]:
     """Pick ``limit`` items from ``items`` (already in preference order).
 
-    Each reservation takes the best eligible items not yet chosen; a Yukon
-    government row counts toward all three. The remaining slots go to the best
-    items overall. The slate keeps the input order, so whatever ranking the
+    Each reservation takes the best eligible items not yet chosen. The
+    remaining slots go to the best items overall. The slate keeps the input order, so whatever ranking the
     caller applied (score, or model fit) still decides where each item appears.
     ``inbox`` is what a gap is measured against (defaults to ``items``).
     """
@@ -147,9 +153,9 @@ def balanced_slate(
             return score(item) >= min_score
 
         def belongs(item: T) -> bool:
-            return reservation.belongs(company(item), location(item))
+            return reservation.belongs(company(item), location(item), source(item))
 
-        wanted = math.ceil(limit * reservation.share)
+        wanted = math.floor(limit * reservation.share)
         have = sum(1 for index in chosen if belongs(items[index]))
         for index, item in enumerate(items):
             if have >= wanted or len(chosen) >= limit:

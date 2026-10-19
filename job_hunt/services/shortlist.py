@@ -181,6 +181,7 @@ def build_shortlist(
             location=lambda item: item.row.location,
             score=lambda item: item.score,
             role=lambda item: item.row.role,
+            source=lambda item: item.row.source,
             inbox=ranked_all,
         )
 
