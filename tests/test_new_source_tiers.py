@@ -1348,3 +1348,23 @@ def test_adzuna_genuinely_empty_role_stays_ok() -> None:
     )
     assert result.health.ok is True
     assert result.health.warnings() == []
+
+
+def test_a_workday_location_hint_places_a_building_name() -> None:
+    """Municipal tenants write "City Hall"; the town is appended so the
+    Canada filter can place it (City of Niagara Falls, 2026-09-27)."""
+    from job_hunt.services.workday_boards import scan_workday
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"total": 2, "jobPostings": [
+            {"title": "Data Analyst", "externalPath": "/job/a", "locationsText": "City Hall"},
+            {"title": "Clerk", "externalPath": "/job/b", "locationsText": ""}]})
+
+    rows = scan_workday(
+        {"enabled": True, "delay_s": 0, "employers": [
+            {"name": "City of Niagara Falls", "url": "https://niagarafalls.wd10.myworkdayjobs.com/CNF",
+             "location_hint": "Niagara Falls, ON"}]},
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        sleep=lambda s: None,
+    )
+    assert [r["location"] for r in rows] == ["City Hall, Niagara Falls, ON", "Niagara Falls, ON"]

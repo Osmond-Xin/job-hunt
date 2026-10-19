@@ -55,19 +55,22 @@ model="${JOB_HUNT_OPENCODE_MODEL:-minimax-cn-coding-plan/MiniMax-M3}"
 workdir="$(mktemp -d -t opencode-llm)"
 trap 'rm -rf "$workdir"' EXIT
 
-answer="$(
-    opencode run \
-        --model "$model" \
-        --format json \
-        --dir "$workdir" \
-        --pure \
-        --auto \
-        2>/dev/null \
-    | jq -j -R 'fromjson? // empty | select(.type == "text") | .part.text'
-)"
+events="$workdir/events.jsonl"
+opencode run \
+    --model "$model" \
+    --format json \
+    --dir "$workdir" \
+    --pure \
+    --auto \
+    2>/dev/null > "$events" || true
+answer="$(jq -j -R 'fromjson? // empty | select(.type == "text") | .part.text' < "$events")"
 
 if [ -z "$answer" ]; then
-    echo "opencode run ($model) produced no answer" >&2
+    # A spent quota arrives as an `error` event (HTTP 429, exit 0) and nothing
+    # else; before 2026-09-27 this said only "produced no answer" and a used-up
+    # MiniMax Token Plan looked like a model that had nothing to say.
+    reason="$(jq -r -R 'fromjson? // empty | select(.type == "error") | .error.data.message // .error.name // empty' < "$events")"
+    echo "opencode run ($model) produced no answer${reason:+: $reason}" >&2
     exit 1
 fi
 

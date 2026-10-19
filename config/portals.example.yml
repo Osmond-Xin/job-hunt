@@ -31,6 +31,15 @@ tracked_companies:
     enabled: false
     careers_url: "https://jobs.lever.co/example"
 
+  # BambooHR and Lever boards are read the same way (verified 2026-09-27).
+  - name: "City of Hamilton"
+    enabled: true
+    careers_url: "https://cityofhamilton.bamboohr.com/careers"
+
+  - name: "Okanagan College"
+    enabled: true
+    careers_url: "https://jobs.lever.co/okanagan"
+
   # Brave WebSearch example. Requires config/settings.yml web_search.provider=brave
   # and BRAVE_API_KEY in .env.
   - name: "Example Search Company"
@@ -66,6 +75,8 @@ discovery_channels:
     modes: [full]
     query_template: '"{role}" {location} site:glassdoor.com/Job'
 
+  # For Canadian roles this is superseded by the `yc_companies` tier below,
+  # which reads ycombinator.com directly at no search quota.
   - id: ycombinator
     enabled: false
     modes: [full]
@@ -190,3 +201,287 @@ getro_boards:
       network_id: 1546
       label: Invest Ottawa
       enabled: true
+    - id: georgian
+      network_id: 14282
+      label: Georgian
+      enabled: true
+    - id: portage
+      network_id: 144
+      label: Portage Ventures
+      enabled: true
+    - id: pender
+      network_id: 3854
+      label: Pender Ventures
+      enabled: true
+    - id: queertech
+      network_id: 883
+      label: QueerTech
+      enabled: true
+    - id: getro-community
+      network_id: 8870
+      label: Getro Community
+      enabled: true
+
+# Tier 4b — SaskJobs.ca (job_hunt/services/saskjobs.py). Rows are kept only when
+# their NOC code is in `jobbank_direct.noc_codes`; with no such list the tier
+# reads nothing. Occupation comes from the code, so no positive title filter.
+saskjobs:
+  enabled: true
+  delay_s: 1.0
+  timeout_s: 30.0
+  max_pages: 10
+
+# Tier 5 — public-sector boards (job_hunt/services/gov_boards.py). Besides the
+# built-in boards (gnwt, ns_gov, nb_gov, mb_gov, nsha, wrha), a board can be
+# defined wholly here by its platform URL plus a `company`:
+#   oracle_url          any Oracle Candidate Experience URL (.../sites/<site>/...)
+#   successfactors_url  the SuccessFactors career site's root
+gov_boards:
+  enabled: true
+  delay_s: 1.5
+  timeout_s: 30.0
+  boards:
+    nu_gov:
+      enabled: true
+      company: Government of Nunavut
+      oracle_url: https://fa-exux-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_5/requisitions
+      max_pages: 4      # 92 postings at 50 per page (2026-09-27)
+    ab_gov:
+      enabled: true
+      company: Government of Alberta
+      successfactors_url: https://jobpostings.alberta.ca
+      max_pages: 8      # 130 postings at 25 per page (2026-09-27)
+    cmhc:
+      enabled: true
+      company: Canada Mortgage and Housing Corporation
+      successfactors_url: https://careers.cmhc-schl.gc.ca
+      max_pages: 4
+    nrc:
+      enabled: true
+      company: National Research Council Canada
+      successfactors_url: https://recruitment-recrutement.nrc-cnrc.gc.ca
+      max_pages: 4
+    hsn:
+      enabled: true
+      company: Health Sciences North
+      successfactors_url: https://careers.hsnsudbury.ca
+      title_screen: true    # a hospital: titles are screened by the model
+      max_pages: 6
+
+# Tier 11 — single-employer career sites (job_hunt/services/employer_boards.py).
+# `platform` is oracle | jibe | ukg | hrsmart |
+# successfactors | erecruit | peoplesoft | taleo | adp | tbe | cornerstone |
+# avanti | aspnet_jobsearch | selectminds | peopleadmin | employmenthero.
+# `url` is the employer's career-site URL.
+# `max_pages` and `location_hint` may be set per employer.
+# General employers, so these rows face the positive title filter.
+employer_boards:
+  enabled: true
+  delay_s: 1.0
+  timeout_s: 30.0
+  max_pages: 10         # pages of 200 (Oracle) or 100 (Jibe, UKG)
+  employers:
+    - name: J.D. Irving
+      platform: oracle
+      url: https://hcpd.fa.ca2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_5003/requisitions
+    - name: City of Thunder Bay
+      platform: jibe
+      url: https://careers.thunderbay.ca
+    - name: Yukon Hospitals
+      platform: ukg
+      # The board GUID cannot be guessed; take it from the employer's own
+      # careers link (here, the redirect behind yukonhospitals.ca/en/careers).
+      url: https://recruiting.ultipro.ca/YUK5001YUHC/JobBoard/7ed94cc1-3925-495d-a225-c5d6b7c3ad3e/
+    - name: Government of Yukon
+      platform: hrsmart
+      url: https://yukongovernment.hua.hrsmart.com/hr/ats/JobSearch/viewAll
+      notes: "hrSmart, 47 postings in 2 pages (2026-09-27), mostly nurses and trades. YNP territory."
+    - name: BC Public Service
+      platform: hrsmart
+      url: https://bcpublicservice.hua.hrsmart.com/hr/ats/JobSearch/viewAll
+      # 84 postings in 4 pages of 25 (2026-09-27). hrSmart advertises no total
+      # and serves its last page again past the end; the walk stops there.
+    - name: WSIB
+      platform: oracle
+      url: https://wsib-iaepup.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1001/requisitions
+    - name: Emera
+      platform: jibe
+      url: https://careers.emera.com
+    - name: Island Health
+      platform: hrsmart
+      url: https://islandhealth.hua.hrsmart.com/hr/ats/JobSearch/viewAll
+      max_pages: 55     # per-employer budget: ~1,229 postings at 25 a page
+    - name: ICBC
+      platform: successfactors
+      url: https://careers.icbc.com
+    - name: SaskPower
+      platform: successfactors
+      url: https://jobs.saskpower.com
+    - name: SaskTel
+      platform: successfactors
+      url: https://jobs.sasktel.com
+    - name: Canada Post
+      platform: successfactors
+      url: https://jobs.canadapost.ca
+      # 604 postings at 20 a page (tile theme, 2026-09-27); mostly delivery
+      # and plant roles.
+      max_pages: 40
+    - name: Niagara Health
+      platform: erecruit
+      url: https://careers.niagarahealth.on.ca/erecruit
+      # Locations name the hospital site ("NIAGARA FALLS SITE"), not the town.
+      location_hint: "Niagara, ON"
+    - name: Niagara Region
+      platform: peoplesoft
+      url: https://careers.niagararegion.ca/psc/careers/EMPLOYEE/PSFT_HR/c/HRS_HRAM_FL.HRS_CG_SEARCH_FL.GBL?FOCUS=Applicant&Siteid=1002
+      # Facility names ("Regional Headquarters"), not towns.
+      location_hint: "Niagara, ON"
+    - name: Hamilton Health Sciences
+      platform: taleo
+      url: https://hhsc.taleo.net/careersection/2/jobsearch.ftl
+      # Taleo classic columns differ per tenant, so the town is supplied.
+      location_hint: "Hamilton, ON"
+    - name: Niagara Parks
+      platform: adp
+      url: https://workforcenow.adp.com/mascsr/default/mdf/recruitment/recruitment.html?cid=e2b4f25a-a77b-4b3d-9657-b97ec357ea04
+      location_hint: "Niagara Falls, ON"
+    - name: Niagara College
+      platform: tbe
+      url: https://tre.tbe.taleo.net/tre01/ats/careers/v2/searchResults?org=NIAGARACOLLEGE&cws=38
+      location_hint: "Niagara, ON"
+    - name: City of St. Catharines
+      platform: tbe
+      url: https://tre.tbe.taleo.net/tre01/ats/careers/v2/searchResults?org=COSC&cws=37
+      location_hint: "St. Catharines, ON"
+    - name: Mohawk College
+      platform: cornerstone
+      # Site 2 is the public one; site 1 exists and lists nothing.
+      url: https://talent-mohawkcollege.csod.com/ux/ats/careersite/2/home?c=talent-mohawkcollege
+    - name: City of Welland
+      platform: avanti
+      url: https://welland.myavanti.ca/careers
+      location_hint: "Welland, ON"
+    - name: Interior Health
+      platform: aspnet_jobsearch
+      url: https://jobs.interiorhealth.ca
+      location_hint: "BC"
+      max_pages: 20     # 1,371 postings at 100 a page (2026-09-27)
+    - name: Northern Health
+      platform: aspnet_jobsearch
+      url: https://jobs.northernhealth.ca
+      location_hint: "BC"
+      max_pages: 10     # 626 postings
+    - name: Alberta Health Services
+      platform: selectminds
+      url: https://careers.albertahealthservices.ca
+      # albertahs.taleo.net redirects here. 127 pages of 10 (2026-09-27);
+      # "North Zone, Valleyview" needs the province.
+      location_hint: "Alberta"
+      max_pages: 140
+    # PeopleAdmin Atom feeds (no location in the feed, so a town is supplied).
+    - name: Saskatchewan Polytechnic
+      platform: peopleadmin
+      url: https://careers.saskpolytech.ca
+      location_hint: "Saskatchewan"
+    - name: University of Regina
+      platform: peopleadmin
+      url: https://urcareers.uregina.ca
+      location_hint: "Regina, SK"
+    - name: College of New Caledonia
+      platform: peopleadmin
+      url: https://cnc.peopleadmin.ca
+      location_hint: "Prince George, BC"
+    - name: University of Lethbridge
+      platform: peopleadmin
+      url: https://uleth.peopleadmin.ca
+      location_hint: "Lethbridge, AB"
+    - name: Lethbridge Polytechnic
+      platform: peopleadmin
+      url: https://lethpolytech.peopleadmin.ca
+      location_hint: "Lethbridge, AB"
+    - name: Amii (Alberta Machine Intelligence Institute)
+      platform: employmenthero
+      # The widget's data-org-id on amii.ca/careers.
+      url: https://ats-cdn.ehrocks.com/ats/api/v1/embedded/widget/organisations/75a19b05-282e-414f-b507-6107f92dbf68/jobs
+
+# Tier 12 — WorkPEI (job_hunt/services/workpei.py), over its WordPress REST API.
+# General board: positive title filter.
+workpei:
+  enabled: true
+  delay_s: 1.0
+  timeout_s: 30.0
+  max_pages: 6          # 271 postings in 3 pages of 100 (2026-09-27)
+
+# Tier 13 — YC companies hiring in Canada (job_hunt/services/yc_companies.py).
+# One request per company; YC leaves postings up for years, so older ones go.
+yc_companies:
+  enabled: true
+  delay_s: 1.0
+  timeout_s: 30.0
+  max_age_days: 120
+
+# Tier 6 — Workday CxS JSON boards (job_hunt/services/workday_boards.py). Paste
+# any myworkdayjobs.com URL as `url`. `location_hint` is appended to every row's
+# location, for tenants that name a building ("City Hall") instead of a town.
+workday_boards:
+  enabled: true
+  page_size: 20
+  max_pages: 3
+  delay_s: 1.0
+  timeout_s: 30.0
+  employers:
+    - name: Brock University
+      url: https://brocku.wd3.myworkdayjobs.com/brocku_careers
+      location_hint: "St. Catharines, ON"
+    - name: City of Niagara Falls
+      url: https://niagarafalls.wd10.myworkdayjobs.com/CNF
+      location_hint: "Niagara Falls, ON"
+    - name: City of Port Colborne
+      url: https://portcolborne.wd10.myworkdayjobs.com/CPC
+      location_hint: "Port Colborne, ON"
+    - name: Fallsview Casino / Casino Niagara (Mohegan)
+      url: https://mohegan.wd1.myworkdayjobs.com/Niagara
+      location_hint: "Niagara Falls, ON"
+    - name: WCB Alberta
+      url: https://wcbalberta.wd10.myworkdayjobs.com/wcbalbertacareers
+      location_hint: "Alberta"
+
+# Tier 14 — WorkBC (job_hunt/services/workbc.py), 2026-09-27. BC's provincial
+# board over its public search API: a title search per profile role term
+# (`queries` overrides). Job Bank mirrors are skipped; each row records the
+# employer's own posting URL. General board: positive title filter.
+# 25 roles x up to max_pages pages of 100, paced by delay_s.
+workbc:
+  enabled: true
+  delay_s: 1.0
+  timeout_s: 45.0
+  max_pages: 3
+
+# Tier 15 — Workable cross-employer search (job_hunt/services/workable_search.py),
+# 2026-09-27. Every Workable customer's Canadian postings, by profile role term
+# (`queries` overrides). 20 rows a page, token-paged. Positive title filter.
+workable_search:
+  enabled: true
+  location: Canada
+  delay_s: 1.0
+  timeout_s: 30.0
+  max_pages: 5
+
+# Tier 16 — Himalayas (job_hunt/services/himalayas.py), 2026-09-27. Remote roles
+# whose location restrictions include Canada, searched by profile role term
+# (`queries` overrides). 20 rows a page. Positive title filter.
+himalayas:
+  enabled: true
+  delay_s: 1.0
+  timeout_s: 30.0
+  max_pages: 3
+
+# Tier 17 — Built In Vancouver (job_hunt/services/builtin.py), 2026-09-27. HTML
+# job cards, 25 a page, searched by profile role term (`queries` overrides).
+# Some cards say only "CA" or "Remote"; the Canada filter decides. Positive
+# title filter.
+builtin_vancouver:
+  enabled: true
+  delay_s: 1.2
+  timeout_s: 30.0
+  max_pages: 2

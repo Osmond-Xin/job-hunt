@@ -17,6 +17,14 @@ import yaml
 
 _PROFILE_PATH = Path("profile/profile.yml")
 
+# Two-letter province / territory codes, split by whether the code alone can
+# place a posting in Canada. The ambiguous six are also a country code or a
+# foreign region: NL Netherlands / Nuevo Leon, NT Australia's Northern
+# Territory, NU Niue, PE Peru, SK Slovakia, YT Mayotte. Shared by the scan's
+# Canada gate and the YC location reader so the two cannot disagree.
+UNAMBIGUOUS_PROVINCE_CODES = frozenset({"AB", "BC", "MB", "NB", "NS", "ON", "QC"})
+AMBIGUOUS_PROVINCE_CODES = frozenset({"NL", "NT", "NU", "PE", "SK", "YT"})
+
 
 def priority_config(profile_path: Path | None = None) -> dict:
     """Return the ``immigration_priority`` block, or ``{}`` when absent/disabled."""
