@@ -23,6 +23,7 @@ from job_hunt.services import discovered_companies
 from job_hunt.services.builtin import scan_builtin_source
 from job_hunt.services.cn_boards import scan_cn_boards_source
 from job_hunt.services.employer_boards import scan_employer_boards_source
+from job_hunt.services.employmenthero_search import scan_employmenthero_source
 from job_hunt.services.getro_boards import scan_getro_boards_source
 from job_hunt.services.gov_boards import scan_gov_boards
 from job_hunt.services.himalayas import scan_himalayas_source
@@ -120,11 +121,13 @@ def scan_portals(
     Tier 15: Workable's cross-employer search (``workable_search``). Positive filter.
     Tier 16: Himalayas remote roles open to Canada (``himalayas``). Positive filter.
     Tier 17: Built In Vancouver (``builtin_vancouver``). Positive filter.
+    Tier 18: Employment Hero's Canadian search (``employmenthero_search``), which
+        carries CareerBeacon's Atlantic Canada postings. Positive filter.
 
     Tier 1 also reads every company board the other tiers have surfaced
     (``services/discovered_companies.py``), not only the hand-written list.
 
-    Tiers 4-17 need no WebSearch provider and consume no search quota. They
+    Tiers 4-18 need no WebSearch provider and consume no search quota. They
     return structured employer / location fields, so they are strictly better
     per result than the tier-3 channels that cover the same boards.
     """
@@ -290,7 +293,8 @@ def scan_portals(
         # Tier 14: WorkBC aggregates every kind of BC employer. Tier 15:
         # Workable's search spans every employer on that ATS. Tier 16:
         # Himalayas is remote roles of every kind. Tier 17: Built In lists
-        # every function at tech companies.
+        # every function at tech companies. Tier 18: Employment Hero is every
+        # kind of employer, most of them Atlantic Canadian.
         general_tiers = [
             _getro_scanned_jobs(config.get("getro_boards"), result.errors),
             _hn_hiring_scanned_jobs(config.get("hn_hiring"), result.errors),
@@ -324,6 +328,12 @@ def scan_portals(
                 "builtin vancouver",
                 lambda cfg: scan_builtin_source(cfg, discovery_context().get("roles", [])),
                 config.get("builtin_vancouver"),
+                result.errors,
+            ),
+            _source_scanned_jobs(
+                "employment hero",
+                lambda cfg: scan_employmenthero_source(cfg, discovery_context().get("roles", [])),
+                config.get("employmenthero_search"),
                 result.errors,
             ),
         ]

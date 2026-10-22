@@ -485,3 +485,17 @@ builtin_vancouver:
   delay_s: 1.2
   timeout_s: 30.0
   max_pages: 2
+
+# Tier 18 — Employment Hero (job_hunt/services/employmenthero_search.py), 2026-10-21.
+# Its Canadian search carries CareerBeacon's Atlantic Canada postings (32,060 in
+# 30 days). Searched by profile role term (`queries` overrides), 50 rows a page,
+# in relevance order: the search matches loosely and past page 3 a term is
+# mostly unrelated engineering postings. The source caps any search at 10 pages.
+# Positive title filter.
+employmenthero_search:
+  enabled: true
+  days: 30
+  sort: relevance
+  delay_s: 1.0
+  timeout_s: 30.0
+  max_pages: 3
