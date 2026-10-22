@@ -80,3 +80,70 @@ def test_every_checked_in_cv_variant_is_ordered():
     """profile/cv.md is the source the pipeline copies its order from."""
     for path in sorted(ROOT.joinpath("profile").rglob("cv*.md")):
         assert check_experience_order(path.read_text(encoding="utf-8")) == [], path
+
+
+# --- first-pass screening signals (2026-09-30) ---------------------------------
+
+check_screen_signals = render_cv.check_screen_signals
+
+CLEAN = """## Professional Summary
+
+Recent Master of Data Analytics graduate who builds **LLM applications** in Python.
+
+## Core Skills
+
+**Languages:** Python, SQL
+
+## Experience
+
+### Technical Director — Iqidao | Dec 2014 – May 2021
+
+- Owned system architecture; AWS work **featured as a case study**.
+
+## Selected Projects
+
+### LearnArken | 2026 – ongoing
+
+- Hybrid retrieval reached **Recall@5 0.99** on an 82-query set.
+
+## Education
+
+### Bachelor of Computer Science and Technology — BUPT
+
+**Certifications:** PMP – Project Management Professional (2014–2020, expired)
+"""
+
+
+def test_clean_layout_passes():
+    assert check_screen_signals(CLEAN) == []
+
+
+def test_early_career_block_is_rejected():
+    assert check_screen_signals(CLEAN + "\n### Early Career (2005–2014)\n\nroles\n")
+
+
+def test_pre_2014_year_is_rejected():
+    dated = CLEAN.replace("— BUPT", "— BUPT | 2001 – 2005")
+    assert any("2001" in p for p in check_screen_signals(dated))
+
+
+def test_projects_above_experience_is_rejected():
+    head, rest = CLEAN.split("## Experience")
+    exp, proj_and_after = rest.split("## Selected Projects")
+    proj, after = proj_and_after.split("## Education")
+    swapped = head + "## Selected Projects" + proj + "## Experience" + exp + "## Education" + after
+    assert any("Projects come before" in p for p in check_screen_signals(swapped))
+
+
+def test_two_bold_spans_on_a_bullet_is_rejected():
+    noisy = CLEAN.replace("reached **Recall@5 0.99**", "reached **Recall@5 0.99** on **82 queries**")
+    assert any("bold spans" in p for p in check_screen_signals(noisy))
+
+
+def test_skill_group_labels_are_not_counted_as_bold():
+    assert check_screen_signals(CLEAN.replace("Python, SQL", "Python, SQL **Tools:** Git")) == []
+
+
+def test_long_summary_is_rejected():
+    long = CLEAN.replace("in Python.", "in Python. " + "word " * 60)
+    assert any("summary" in p for p in check_screen_signals(long))

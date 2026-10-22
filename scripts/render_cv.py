@@ -73,6 +73,54 @@ def check_experience_order(markdown: str) -> list[str]:
     return problems
 
 
+_OLD_YEAR = re.compile(r"\b(19\d{2}|200\d|201[0-3])\b")
+_BOLD = re.compile(r"\*\*([^*]+)\*\*")
+SUMMARY_MAX_WORDS = 60
+
+
+def check_screen_signals(markdown: str) -> list[str]:
+    """What a screener sees in the first pass, decided 2026-09-30.
+
+    19 of 67 red-team HR reads on the 09-21..09-29 résumés flagged the pre-2014
+    director/manager titles and the 2001-2005 degree as an overqualification
+    signal; page one of the 09-26+ résumés carried no paid work at all (Projects
+    above Experience); and bold grew from ~25 to ~55 spans per résumé, so the
+    accent colour stopped marking anything. Each is a removal, never an added
+    explanation."""
+    problems = []
+    lines = markdown.split("\n")
+    body_start = next((i for i, l in enumerate(lines) if l.startswith("## ")), len(lines))
+    body = lines[body_start:]
+
+    for line in body:
+        if re.match(r"#+\s*(Early Career|Earlier roles)", line.strip(), re.I) or \
+                re.match(r"\*\*(Early Career|Earlier roles)", line.strip(), re.I):
+            problems.append(f"pre-2014 roles are listed: {line.strip()[:60]!r}")
+        elif (m := _OLD_YEAR.search(line)):
+            problems.append(f"a pre-2014 year ({m.group(0)}) appears: {line.strip()[:80]!r}")
+
+    headings = [l.strip() for l in body if l.startswith("## ")]
+    exp = next((i for i, h in enumerate(headings) if re.search(r"Experience", h, re.I)), None)
+    proj = next((i for i, h in enumerate(headings) if re.search(r"Projects?\b", h, re.I)), None)
+    if exp is not None and proj is not None and proj < exp:
+        problems.append("Projects come before Experience — page one must show paid work")
+
+    in_summary = False
+    summary_words = 0
+    for line in body:
+        if line.startswith("## "):
+            in_summary = bool(re.search(r"Summary|Profile", line, re.I))
+            continue
+        if in_summary:
+            summary_words += len(line.split())
+        spans = [s for s in _BOLD.findall(line) if not s.rstrip().endswith(":")]
+        if len(spans) > 1:
+            problems.append(f"{len(spans)} bold spans on one line (max 1): {line.strip()[:70]!r}")
+    if summary_words > SUMMARY_MAX_WORDS:
+        problems.append(f"summary is {summary_words} words (max {SUMMARY_MAX_WORDS})")
+    return problems
+
+
 def md_inline(text: str) -> str:
     """Convert inline markdown (bold, italic, code, links) to HTML."""
     text = html.escape(text, quote=False)
@@ -308,6 +356,11 @@ def main() -> None:
         default=2,
         help="Fail if the rendered PDF exceeds this many pages (0 disables the check)",
     )
+    ap.add_argument(
+        "--allow-legacy-layout",
+        action="store_true",
+        help="Skip the screening-signal check (for the full-history profile/ variants only)",
+    )
     args = ap.parse_args()
 
     source = args.source if args.source.is_absolute() else ROOT / args.source
@@ -325,6 +378,14 @@ def main() -> None:
             + "\n  ".join(out_of_order)
             + "\nTailoring reorders bullets, skills and projects — never dated roles."
         )
+    if not args.allow_legacy_layout:
+        signals = check_screen_signals(source.read_text(encoding="utf-8"))
+        if signals:
+            raise SystemExit(
+                "REJECTED (nothing rendered): first-pass screening signals.\n  "
+                + "\n  ".join(signals)
+                + "\nSee docs/resume-writing-brief.md."
+            )
 
     pdf_path = render(source, out_dir, args.title or f"Yi Xin — {source.stem}", args.pdf_name)
 

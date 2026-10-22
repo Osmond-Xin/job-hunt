@@ -66,31 +66,29 @@ beyond what is stated):
 
 ## Task
 
-Write the **body** of a cover letter (3-4 paragraphs, no salutation, no signature, no header).
-Output Markdown only. Each paragraph 3-5 sentences. The full letter must fit on one A4 page
-when rendered with 11pt body type and 0.6in margins.
+Write the **body** of a cover letter (3 paragraphs, no salutation, no signature, no header).
+Output Markdown only. The full letter must fit on one A4 page when rendered with 11pt body
+type and 0.6in margins.
 
-### Tone rules — "I'm choosing you" framework
+### Tone rules
 
-- **Confident, not arrogant**: state what you have built, then what you intend to build with this team.
-- **Selective, not apologetic**: the reader should sense you have other options and chose them deliberately.
-- **Specific and concrete**: reference at least one phrase from the JD verbatim, mapped to a CV achievement.
+- **Plain and specific**: state what was built and what it did, mapped to the posting's own words.
+  Quote at least one JD phrase verbatim next to the achievement that answers it.
 - **Direct, no fluff**: do not write "I am passionate about", "I would love the opportunity", "I am writing to express my interest".
-- **The hook is the proof, not the claim**: instead of "I am skilled at X", write "I built X that delivered Y."
+- **The proof is the point, not the claim**: instead of "I am skilled at X", write "I built X that did Y."
+- **No positioning talk**: no "I chose you", no "rare combination", no "unusual overlap", no
+  30-60-day plan. The reader is deciding whether to call, and each of those gives them
+  something to argue with instead of evidence to check.
 
 ### Paragraph framework
 
-- **Paragraph 1 — The hook**: open with the strongest proof point that maps to this role. One sentence
-  on what you have built; one sentence connecting it to a specific JD requirement; one sentence on why
-  that overlap is unusual.
-- **Paragraph 2 — Why this company specifically**: cite something concrete about the company's product,
-  mission, or market position (drawn from the JD or from public information you can infer). Avoid generic
-  praise.
-- **Paragraph 3 — Compound differentiator**: one paragraph on the rare combination you bring (product +
-  engineering, AI orchestration + analytics, etc.). Tie it to a JD phrase that describes the team shape.
-- **Paragraph 4 (optional) — Forward-looking close**: one or two sentences on what you would do in the
-  first 30-60 days, grounded in JD language. End with a single declarative sentence; no "I look forward
-  to hearing from you."
+- **Paragraph 1 — Role and best match**: name the role, then the single CV achievement that best
+  answers the posting's top requirement, as what was built and what it did.
+- **Paragraph 2 — Second match and the employer**: a second achievement mapped to a second JD
+  phrase, then one concrete, checkable fact about the employer (a product, a customer group,
+  something stated in the JD) and why it matters to the work. No generic praise.
+- **Paragraph 3 — Close**: one sentence on work authorization and location/relocation (when
+  availability is given above), then one closing sentence. No "I look forward to hearing from you."
 
 ### Hard constraints
 
@@ -106,20 +104,22 @@ when rendered with 11pt body type and 0.6in margins.
 - Do not use the words "passionate", "excited", "thrilled", "love", or "opportunity" except in factual
   references to the JD itself.
 - Every claim must be traceable to a line in the CV or the JD text.
-- Stay under 280 words total. Stop when the case is made; do not pad.
+- Stay between 220 and 260 words. Stop when the case is made; do not pad.
+- Do not lead with, or dwell on, the Technical Director years or any pre-2014 role; the
+  evidence comes from the freelance work, the recent projects and the master's.
 - Output ONLY the paragraphs (Markdown), separated by blank lines. No headings, no bullets, no signature.
 
 ### Anti-pattern constraints (learned from past iterations)
 
 - **Never self-label a quantified tenure** ("X+ years of experience", "two decades", "20 years",
-  "veteran of N years"). It triggers age/over-qualified screens. Use neutral phrases like
-  "experienced backend engineer", "deep track record in …", "shipping production systems across …".
-  Employer-side year math from the CV's dated roles is fine; the candidate must not advertise totals.
-- **Honest framing on domain gaps**: if the JD's vertical (e.g., industrial IoT, fintech compliance,
-  bioinformatics) is NOT visibly represented in the CV experience, name the gap in paragraph 1 with one
-  direct sentence ("I have not worked in industrial IoT before — sensors, MQTT, and Sparkplug B are not
-  part of my prior shipping experience.") BEFORE pivoting to transferable strengths. Do not paper over
-  the gap with adjacent claims. Recruiters trust direct acknowledgement and discount hedging.
+  "veteran of N years"). It triggers age/over-qualified screens. Also avoid "experienced",
+  "deep track record" and "production systems across …" — they pitch above the intermediate
+  rung. Describe the specific work instead.
+- **Domain gaps — name one only when it is the employer's core business.** If the company's
+  whole product is a domain absent from the CV (a Stripe consultancy and no payments work), say so
+  in one plain sentence and move on; Hiveway wrote back on 2026-08-18 that it appreciated that
+  candour. For any other gap (a nice-to-have, an adjacent vertical), say nothing: raising a doubt
+  the reader had not formed plants it. Never claim the domain through adjacent work either.
 - **Use the prep-project pivot**: if the CV's Projects section contains a project whose stack matches
   the JD's nice-to-have / bonus list AND the JD vertical is otherwise new to the candidate, treat that
   project as the explicit closing-the-gap evidence — "Rather than ask the team to take this on faith,

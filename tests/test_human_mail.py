@@ -55,6 +55,13 @@ def entry(number: int, company: str, status: str = "Applied") -> TrackerEntry:
         ("Indeed <donotreply@jobalert.indeed.com>", {}),
         ("Jobright Job Alert <noreply@jobright.ai>", {}),
         ("Portfolio Monitor <information_pusher@163.com>", {}),
+        # 2026-09-22: an ATS robot sending for Ippolito, reported as a person
+        # writing from tracker row #845 "Dayforce" — the platform, not the employer.
+        ("notify@dayforce.com", {}),
+        # 2026-09-22: a Workday account-verification code, reported as a person
+        # writing from row #848 "Workday". The local part names the tenant, so
+        # only the one-time-password host gives it away.
+        ("guidewire@otp.workday.com", {}),
     ],
 )
 def test_automated_senders_are_filtered(sender, headers):

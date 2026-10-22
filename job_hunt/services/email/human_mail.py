@@ -43,7 +43,7 @@ from job_hunt.services.employer_match import normalize
 # and `jobalerts-noreply@linkedin.com` are both caught.
 _AUTOMATED_LOCALPART = re.compile(
     r"(no[-_.]?reply|do[-_.]?not[-_.]?reply|jobalert|job[-_.]?alerts?"
-    r"|notification|mailer|bounce|newsletter|digest|invitations"
+    r"|notification|notify|mailer|bounce|newsletter|digest|invitations"
     r"|donotreply|postmaster|information[-_.]?pusher)",
     re.IGNORECASE,
 )
@@ -103,7 +103,12 @@ def is_automated(sender: str, headers: dict[str, str]) -> bool:
         return True
     if lowered.get("precedence", "").strip().lower() in _BULK_PRECEDENCE:
         return True
-    local_part = sender_address(sender).partition("@")[0]
+    local_part, _, domain = sender_address(sender).partition("@")
+    # A one-time-password host (`otp.workday.com`) sends only verification
+    # codes, and puts the employer's name in the local part where a person's
+    # name would go.
+    if domain.startswith("otp."):
+        return True
     return bool(_AUTOMATED_LOCALPART.search(local_part))
 
 

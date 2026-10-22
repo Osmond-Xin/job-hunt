@@ -13,6 +13,9 @@ aliases:
   BCG: Boston Consulting Group
   BCG Platinion: Boston Consulting Group
   Clariti Cloud Inc.: Clariti
+  # The receipt for #974 (2026-09-22) signs "PCL Construction"; the posting
+  # and the row say "PCL Constructors".
+  PCL Construction: PCL Constructors
 
   # Hiring platform vs the actual employer behind the posting
   Flexhire: Awear
