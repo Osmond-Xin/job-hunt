@@ -66,6 +66,12 @@ order — before the PDF exists, the same way the page budget deletes one that
 overflows. An LLM reviewer is not a date checker; do not treat a clean review as
 evidence that the order is right.
 
+## 2c. Hand-written résumés follow `docs/resume-writing-brief.md`
+
+Layout v2 (2026-09-30): no pre-2014 roles, no bachelor's years, Experience above Projects,
+at most one bold span per line, a summary of 60 words or fewer. `render_cv.py` refuses the
+mechanical ones. Read the brief before writing; `tailor_cv.md` does not reach hand-written work.
+
 ## 3. Record what was sent
 
 **An application that is not in `data/applications.md` did not happen** — not for

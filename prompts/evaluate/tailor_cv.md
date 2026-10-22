@@ -49,7 +49,10 @@ Rewrite the master CV into a tailored resume body for THIS role.
 - **No Professional Summary section**: the PDF template already renders a tailored summary
   banner above the resume body. A second summary reads as duplicated filler to a recruiter.
   Drop the master CV's summary entirely and start at the first content section.
-- **Experience**: keep every dated role (no employment gaps may appear), in the same order.
+- **Experience**: keep every dated role from **Dec 2014 (Iqidao) onward** (no employment gaps
+  may appear), in the same order. **Drop the Early Career block and every pre-2014 role** —
+  decided by the candidate 2026-09-30: the director/manager titles before 2014 were the most
+  frequent "overqualified" finding in the red team's HR reads. Omitting them leaves no gap.
   Within each role, reorder bullets so the most JD-relevant comes first; you may drop a
   bullet that is clearly irrelevant to this role. Never alter employers, titles, dates,
   metrics, or scope.
@@ -59,7 +62,11 @@ Rewrite the master CV into a tailored resume body for THIS role.
   exhaustive-and-padded as junior.
 - **Skills**: reorder the groups so the most JD-relevant group comes first. Drop groups
   irrelevant to this archetype. Never add skills that are not in the master CV.
-- **Education & Certifications**: keep verbatim.
+- **Education & Certifications**: keep verbatim, except that the bachelor's degree carries
+  **no years** (school and degree only).
+- **Project bullets lead with the plain-language result**, the technical term after it: "answers
+  only with a cited source or a refusal (five refusal gates)", not "five refusal gates enforce
+  fail-closed grounding". A screener who has never seen the repo must understand the first half.
 {% if mode == "student" %}
 - **Section order (student mode)**: Education → Projects → Experience → Skills →
   Certifications. Recruiters screening intern/co-op applications look for current
@@ -94,8 +101,6 @@ delivery. **Anything you write past the budget is not "extra"; it evicts somethi
   Long build-log bullets from the master CV must be compressed to their result, not copied.
 - **Experience: every dated role stays**, but bullets are capped — at most **3** for the
   two most recent or most relevant roles, **1–2** for the rest.
-- **Early Career**: keep as the single one-line list; drop it entirely if you are over
-  budget after everything else.
 - **Skills**: at most 4 groups, one line each.
 
 If the budget forces a choice, drop the least JD-relevant evidence — never a dated role,
@@ -116,11 +121,13 @@ Before you output, check your own draft against this list:
    the retired AWS page, the synthetic corpus, the simulated deployment, the
    four-person team, the expired credential?
 6. Does every bullet still sit under the employer, project or period it came from?
-7. Is there any word in the draft that presents the candidate above the intermediate
+7. No Early Career block, no role before Dec 2014, no years on the bachelor's degree, and
+   no bullet with more than one bold span?
+8. Is there any word in the draft that presents the candidate above the intermediate
    rung — "senior", "seasoned", "veteran", "lead", "principal", "at scale",
    "enterprise-scale", "production scale", "scalable systems", "senior judgment"?
 
-If any answer is no, fix it before answering — not after. Questions 5 to 7 are answered
+If any answer is no, fix it before answering — not after. Questions 5 to 8 are answered
 by re-reading the draft against the master CV, not from memory of what you intended.
 
 ### Hard rules
@@ -169,7 +176,9 @@ Bold is a scarce signal. It is spent on **results**, never on identity.
   rates, scale, awards, rankings, named honours, and the specific thing that was
   achieved ("**98.9% match rate**", "**275,156 city-owned trees**", "**1st Place**").
   Bold the metric and the few words that make it mean something — not the whole
-  sentence. Aim for at most one bolded span per bullet; a bullet with no result
+  sentence. **At most one bolded span per bullet** — a hard limit, not an aim;
+  `scripts/render_cv.py` refuses a line with two. The 2026-09-29 résumés carried 50–60
+  bold spans each, and when everything is accented nothing is. A bullet with no result
   worth quantifying gets no bold at all.
 - **Never bold an employer, a job title, a school, or a date.** Those already carry
   structural emphasis from the heading and are what a reader finds by position, not
