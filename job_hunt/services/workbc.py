@@ -31,6 +31,7 @@ from typing import Any, Callable
 import httpx
 
 from job_hunt.models.posting import JobPosting, SourceHealth, SourceResult, from_row
+from job_hunt.services.board_queries import board_queries
 from job_hunt.services.row_guard import SKIP, guard_rows, row_key, safe_total
 
 API = "https://workbc-jb.a55eb5-prod.stratus.cloud.gov.bc.ca/api/Search/JobSearch"
@@ -77,7 +78,7 @@ def scan_workbc_source(
     """
     if not config or not config.get("enabled", False):
         return SourceResult(postings=[], health=SourceHealth(source_id="workbc", ok=True))
-    queries = [str(r).strip() for r in (config.get("queries") or roles or []) if str(r).strip()]
+    queries = board_queries(config, roles)
     if not queries:
         return SourceResult(
             postings=[],

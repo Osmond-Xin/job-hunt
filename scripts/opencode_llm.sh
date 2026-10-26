@@ -20,7 +20,8 @@
 #    instead, and the answer is exactly the `text` events' `part.text` in
 #    order — a real parse rather than trimming decoration off a stream.
 #
-# The default model is MiniMax-M3 on the operator's coding plan. Two things
+# The default model is MiniMax-M3.1-Flash on the operator's coding plan (unmetered
+# since 2026-10-26; MiniMax-M3 before that). Two things
 # about that are easy to get wrong:
 #
 # - It is NOT the same path as the `minimax` HTTP tier in settings.example.yml.
@@ -42,7 +43,7 @@
 # before anyone weighed it).
 set -euo pipefail
 
-model="${JOB_HUNT_OPENCODE_MODEL:-minimax-cn-coding-plan/MiniMax-M3}"
+model="${JOB_HUNT_OPENCODE_MODEL:-minimax-cn-coding-plan/MiniMax-M3.1-Flash}"
 
 # opencode is an agent with a working directory, and this operator's config
 # already allows every tool inside it. The prompts are self-contained --

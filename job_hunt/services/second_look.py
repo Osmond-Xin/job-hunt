@@ -184,6 +184,22 @@ def reviewed_urls(path: Path = LOG_PATH) -> set[str]:
         return {record["url"] for record in csv.DictReader(handle, delimiter="\t") if record.get("url")}
 
 
+CUT_CONFIRMED = "cut confirmed"
+
+
+def confirmed_cuts(path: Path = LOG_PATH) -> dict[str, str]:
+    """URL -> the latest date the posting was read and the cut confirmed."""
+    if not path.exists():
+        return {}
+    cuts: dict[str, str] = {}
+    with path.open(encoding="utf-8", newline="") as handle:
+        for record in csv.DictReader(handle, delimiter="\t"):
+            url, stamp = record.get("url") or "", record.get("date") or ""
+            if url and record.get("verdict") == CUT_CONFIRMED and stamp >= cuts.get(url, ""):
+                cuts[url] = stamp
+    return cuts
+
+
 def log_findings(findings: list["Finding"], path: Path = LOG_PATH, *, today: date | None = None) -> None:
     """Record what was read. An unread page is NOT recorded, so it is retried."""
     stamp = (today or date.today()).isoformat()
@@ -196,7 +212,7 @@ def log_findings(findings: list["Finding"], path: Path = LOG_PATH, *, today: dat
         for item in findings:
             if item.unread:
                 continue
-            verdict = "rescued" if item.rescued else ("cut confirmed" if item.kill else "no signal")
+            verdict = "rescued" if item.rescued else (CUT_CONFIRMED if item.kill else "no signal")
             row = item.candidate.row
             writer.writerow([stamp, row.url, row.company, row.role, item.candidate.why_cut,
                              verdict, "; ".join(item.rescue), "; ".join(item.kill)])

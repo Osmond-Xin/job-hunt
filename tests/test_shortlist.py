@@ -162,8 +162,17 @@ def test_screened_sort_is_fit_then_score_not_either_alone(tmp_path) -> None:
         today=today,
     )
 
-    ordered_companies = [entry.ranked.row.company for entry in result.entries]
-    assert ordered_companies == ["Government of Manitoba", "Alpha", "Yukon Government"]
+    # Since 2026-10-24 the list is grouped by lane first (remote region leads),
+    # and fit-then-score orders rows *within* a lane: Manitoba and Alpha share
+    # the best-overall lane, and Manitoba's fit ties Alpha's while its score is
+    # higher. Yukon is the remote-region lane's only row, so it comes first
+    # despite the worst fit — the operator reads the lanes first.
+    ordered = [(entry.lane, entry.ranked.row.company) for entry in result.entries]
+    assert ordered == [
+        ("remote region", "Yukon Government"),
+        ("best overall", "Government of Manitoba"),
+        ("best overall", "Alpha"),
+    ]
 
 
 def test_verification_resets_the_lane_pool_to_survivors(tmp_path) -> None:
@@ -371,3 +380,65 @@ def test_one_posting_under_two_employer_spellings_fills_one_slot(tmp_path) -> No
     )
     urls = [entry.ranked.row.url for entry in result.entries]
     assert len(urls) == len(set(urls)) == 10
+
+
+def test_lanes_come_first_and_written_off_rows_never_return(tmp_path) -> None:
+    """2026-10-24: the top of the list was the best-overall public-sector rows,
+    and 11 of 30 had been read and written off on earlier days. The two lanes
+    now lead the list, and a settled URL is dropped before ranking."""
+    rows = [
+        _row(f"https://example.invalid/t{i}", f"Corp{i}", "AI Engineer", "Toronto, Ontario", posted="2026-10-20")
+        for i in range(10)
+    ] + [
+        _row("https://example.invalid/yk", "Government of Yukon", "Systems Analyst", "Whitehorse, Yukon",
+             posted="2026-10-10"),
+        _row("https://example.invalid/hn", "Seedco", "AI Engineer", "Remote, Canada",
+             posted="2026-10-10", source="hn_who_is_hiring"),
+        _row("https://example.invalid/read", "Readco", "AI Engineer", "Remote, Canada",
+             posted="2026-10-22", source="hn_who_is_hiring"),
+    ]
+    pipeline = _write(tmp_path, "pipeline.md", _pipeline(rows))
+    tracker = _write(tmp_path, "applications.md", "")
+
+    result = build_shortlist(
+        pipeline=pipeline, tracker=tracker, options=ShortlistOptions(limit=5), today=date(2026, 10, 24),
+        settled={"https://example.invalid/read"},
+    )
+
+    shown = [entry.ranked.row.company for entry in result.entries]
+    assert shown[:2] == ["Government of Yukon", "Seedco"]
+    assert "Readco" not in shown
+    assert result.pending == 12
+    assert result.excluded["already read and written off (data/postings-read.tsv, second look)"] == 1
+
+
+
+def test_verification_keeps_the_best_overall_rows_the_plain_list_had(tmp_path) -> None:
+    """Codex red team 2026-10-24: with the slate grouped by lane before
+    verification re-chose from it, remote rows were read as the "best overall"
+    and the real best-overall rows vanished (4/4/2 became 6/4/0)."""
+    rows = [
+        _row(f"https://example.invalid/c{i}", f"Corp{i}", "AI Engineer", "Toronto, Ontario", posted="2026-10-20")
+        for i in range(6)
+    ] + [
+        _row(f"https://example.invalid/r{i}", f"Town{i}", "Systems Analyst", "Whitehorse, Yukon", posted="2026-10-01")
+        for i in range(8)
+    ] + [
+        _row(f"https://example.invalid/s{i}", f"Seed{i}", "AI Engineer", "Remote, Canada",
+             posted="2026-10-01", source="hn_who_is_hiring")
+        for i in range(8)
+    ]
+    pipeline = _write(tmp_path, "pipeline.md", _pipeline(rows))
+    tracker = _write(tmp_path, "applications.md", "")
+
+    def lanes(result):
+        return [entry.lane for entry in result.entries]
+
+    plain = build_shortlist(pipeline=pipeline, tracker=tracker, options=ShortlistOptions(limit=10),
+                            today=date(2026, 10, 24))
+    verified = build_shortlist(
+        pipeline=pipeline, tracker=tracker, options=ShortlistOptions(limit=10, verify=True),
+        checker=lambda urls, delay_s: {}, today=date(2026, 10, 24),
+    )
+    assert lanes(plain) == lanes(verified)
+    assert lanes(plain).count("best overall") == 2

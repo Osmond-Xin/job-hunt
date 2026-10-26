@@ -25,6 +25,7 @@ from typing import Any, Callable
 import httpx
 
 from job_hunt.models.posting import JobPosting, SourceHealth, SourceResult, from_row
+from job_hunt.services.board_queries import board_queries
 from job_hunt.services.row_guard import guard_rows, row_key, safe_total
 
 _SITE = "https://jobs.workable.com"
@@ -65,7 +66,7 @@ def scan_workable_search_source(
 ) -> SourceResult:
     if not config or not config.get("enabled", False):
         return SourceResult(postings=[], health=SourceHealth(source_id="workable_search", ok=True))
-    queries = [str(r).strip() for r in (config.get("queries") or roles or []) if str(r).strip()]
+    queries = board_queries(config, roles)
     if not queries:
         return SourceResult(
             postings=[],

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from job_hunt.services.balance import MIN_SCORE, Mix, balanced_slate
+from job_hunt.services.balance import MIN_SCORE, Mix, balanced_slate, by_lane, lane_of
 from job_hunt.services.triage import region, remote_region, sector, startup_source
 
 
@@ -113,7 +113,16 @@ def test_region_names_a_place_only_on_positive_evidence(location, expected):
         ("Moose Jaw, SK", True),
         ("Kirkland Lake, ON", True),
         ("Halifax, NS", False),  # a provincial capital is not remote
-        ("St. John's, Newfoundland and Labrador", False),  # the province's name, not Labrador
+        # The province's name still does not count as Labrador; since 2026-10-24
+        # the city does, as a regional city (operator's ruling).
+        ("St. John's, Newfoundland and Labrador", True),
+        ("Corner Brook Street, Toronto, ON", False),
+        ("Saint John, New Brunswick", True),
+        ("Saint John Street, Toronto, ON", False),
+        ("Kelowna, BC", True),
+        ("Fort St. John, BC", True),
+        ("Halifax, NS", False),
+        ("Red Deer Trail SE, Calgary, AB", False),
         ("Bathurst Street, Barrie, ON", False),  # a street named after a town
         ("Brandon Ave, Winnipeg, MB", False),
         ("Bathurst, NB", True),
@@ -221,7 +230,12 @@ def test_a_corporate_heavy_ranking_still_yields_remote_region_and_startup_rows()
     assert len(slate) == 10
     assert all(row in slate for row in remote)
     assert sum(1 for row in slate if row in startups) == 4
-    assert slate == [item for item in ranked if item in slate]  # ranking order kept
+    assert slate == [item for item in ranked if item in slate]  # ranking order kept for later stages
+    # Lane by lane only for display (operator 2026-10-24).
+    def lane(item):
+        return lane_of(item[0], item[1], item[4] if len(item) > 4 else "adzuna")
+    shown = by_lane(slate, lane)
+    assert shown[:3] == remote and shown[3:7] == startups[:4]
     assert [(g.reservation, g.wanted, g.got, g.in_inbox) for g in gaps] == [("remote region", 4, 3, 3)]
     assert gaps[0].sourcing
 

@@ -148,6 +148,14 @@ posting to read, not a recommendation. The signal lists live in
 `job_hunt/services/second_look.py`; when a reading session teaches a new reason a posting
 fits or collapses, add it there with the posting that taught it.
 
+**Read the lanes first, and record every verdict.** Since 2026-10-24 the triage list comes
+lane by lane — remote region, then start-up, then best overall (the `Lane` column) — and is
+read in that order. Every posting read by hand gets
+`job-hunt mark-read '<pipeline url>' --verdict FIT|COLLAPSE --reason '...'`; triage drops
+COLLAPSE rows (`data/postings-read.tsv`) and rows the second look confirmed cut. A verdict
+that lives only in `docs/postings-read-*.md` is invisible to triage: on 10-24, 11 of the top
+30 had been read before. Unread pages are not recorded, so they come back.
+
 One role per employer still stands, with the exception he made on 2026-09-21: when a new
 role at an employer fits **better** than the one already applied to, say so and let him
 decide. Do not silently hold it back, and do not offer a menu.
