@@ -300,7 +300,13 @@ def _proxy_from_profile() -> str:
 
 
 def _is_proxy_only_host(url: str) -> bool:
-    host = (urlparse(url or "").netloc or "").lower().split(":")[0]
+    # `hostname`, not `netloc`: "user:pass@www.linkedin.com" and the
+    # fully-qualified "www.linkedin.com." both slipped past a netloc split
+    # (Codex red team 2026-10-24).
+    try:
+        host = (urlparse(url or "").hostname or "").rstrip(".")
+    except ValueError:
+        return True  # an unparseable URL is not fetched on the chance it is LinkedIn
     bare = host[4:] if host.startswith("www.") else host
     return any(bare == h or bare.endswith("." + h) for h in _PROXY_ONLY_HOSTS)
 

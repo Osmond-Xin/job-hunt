@@ -20,7 +20,7 @@ from datetime import date
 from pathlib import Path
 from typing import Callable
 
-from job_hunt.services.balance import MIN_SCORE, Mix, ReservationGap, balanced_slate
+from job_hunt.services.balance import MIN_SCORE, Mix, ReservationGap, balanced_slate, by_lane, lane_of
 from job_hunt.services.link_check import SKIPPED, Verdict, annotate_pipeline, check_urls
 from job_hunt.services.screen import Screened, screen
 from job_hunt.services.triage import (
@@ -36,8 +36,10 @@ from job_hunt.services.triage import (
 # How many shortlist slots are reserved for this exploration budget.
 #
 # With --screen the model's fit rating is the primary sort key, so a row it
-# rates 3 can never outrank anything it rates 4 — including rows the
-# deterministic score liked. On 2026-08-16 that buried two GNWT rows
+# rates 3 can never outrank anything it rates 4 *in the same lane* — including
+# rows the deterministic score liked. (Since 2026-10-24 the list the operator
+# sees is grouped by lane first, see ``balance.by_lane``; fit orders rows
+# within each lane, and every choosing stage still works in fit order.) On 2026-08-16 that buried two GNWT rows
 # (deterministic score 8.5 and 7.5) beneath a Nova Scotia full-stack post the
 # model preferred.
 #
@@ -102,6 +104,7 @@ class ShortlistEntry:
     screen_reason: str  # only meaningful when fit is not None
     verdict: Verdict | None  # None = unverified
     overflow: bool  # True if this entry filled an overflow-lane slot, not a ranked-list slot
+    lane: str = ""  # balance.lane_of — the one place the triage list's Lane comes from
 
 
 @dataclass(frozen=True)
@@ -137,6 +140,7 @@ def build_shortlist(
     checker: Callable[..., dict[str, Verdict]] = check_urls,
     today: date | None = None,
     progress: Callable[[str], None] = lambda _m: None,
+    settled: set[str] | None = None,
 ) -> Shortlist:
     """Rank the pipeline inbox down to `options.limit` candidates.
 
@@ -144,8 +148,13 @@ def build_shortlist(
     verification (which also marks dead postings in `pipeline`), then the
     overflow lane. Each stage's ordering invariants are documented where
     they are enforced below — they were each written after a real incident.
+    ``settled`` are URLs a reader already wrote off (``services/read_log.py``);
+    they never reach the ranking.
     """
-    rows = parse_pipeline(pipeline.read_text(encoding="utf-8"))
+    all_rows = parse_pipeline(pipeline.read_text(encoding="utf-8"))
+    settled = settled or set()
+    rows = [row for row in all_rows if row.url not in settled]
+    already_read = len(all_rows) - len(rows)
     tracker_text = tracker.read_text(encoding="utf-8") if tracker.exists() else ""
     seen_urls, seen_pairs = tracker_seen(tracker_text)
     seen_employers = submitted_employers(tracker_text)
@@ -273,11 +282,15 @@ def build_shortlist(
             screen_reason=reasons.get(id(item), ""),
             verdict=verdicts_by_url.get(item.row.url),
             overflow=is_overflow,
+            lane=lane_of(item.row.company, item.row.location, item.row.source),
         )
 
-    entries = [_entry(item, is_overflow=False) for item in best] + [
-        _entry(item, is_overflow=True) for item in overflow_rows
-    ]
+    def _lane(entry: ShortlistEntry) -> str:
+        return entry.lane
+
+    entries = by_lane([_entry(item, is_overflow=False) for item in best], _lane) + by_lane(
+        [_entry(item, is_overflow=True) for item in overflow_rows], _lane
+    )
 
     dropped = Counter(reason for row in rows if (reason := excluded(row)))
     # One role per employer is a deletion like any other here, so it is counted
@@ -287,10 +300,12 @@ def build_shortlist(
     )
     if hidden:
         dropped["already applied to this employer"] = hidden
+    if already_read:
+        dropped["already read and written off (data/postings-read.tsv, second look)"] = already_read
 
     return Shortlist(
         entries=entries,
-        pending=len(rows),
+        pending=len(rows),  # the written-off rows are counted in `excluded`, not twice
         excluded=dropped,
         dropped_by_model=dropped_by_model,
         unscreened=unscreened,

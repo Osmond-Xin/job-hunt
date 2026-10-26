@@ -118,6 +118,7 @@ def triage(
     list. Location plays no part in it.
     """
     from job_hunt.services.balance import MIN_SCORE
+    from job_hunt.services.read_log import settled_urls
     from job_hunt.services.shortlist import ShortlistOptions, build_shortlist
 
     pipeline = Path("data/pipeline.md")
@@ -136,6 +137,7 @@ def triage(
         # printed before the call starts, the operator has no signal the
         # command is alive rather than hung.
         progress=lambda message: console.print(f"[dim]{message}[/dim]"),
+        settled=settled_urls(),
     )
 
     if llm_screen:
@@ -192,14 +194,16 @@ def triage(
             f"[yellow]balance: wanted {gap.wanted} {gap.reservation} slot(s), filled {gap.got} — {cause}[/yellow]"
         )
     console.print()
-    columns = ["#", "Score", "Company", "Role", "Location", "Posted", "Why"]
+    # Rows come lane by lane (balance.balanced_slate): read from the top.
+    columns = ["#", "Lane", "Score", "Company", "Role", "Location", "Posted", "Why"]
     if llm_screen:
-        columns.insert(2, "Fit")
+        columns.insert(3, "Fit")
     table = Table(*columns)
     for index, entry in enumerate(result.entries, start=1):
         item = entry.ranked
         cells = [
             str(index),
+            entry.lane,
             f"{item.score:.1f}",
             _short(item.row.company, 24),
             _short(item.row.role, 34),
@@ -208,7 +212,7 @@ def triage(
             ", ".join(item.reasons) or "—",
         ]
         if llm_screen:
-            cells.insert(2, f"{entry.fit:.0f}" if entry.fit is not None else "?")
+            cells.insert(3, f"{entry.fit:.0f}" if entry.fit is not None else "?")
             cells[-1] = _short((entry.screen_reason if entry.fit is not None else cells[-1]) or "—", 34)
         if entry.overflow:
             cells[0] = f"L{index - best_count}"
@@ -242,11 +246,112 @@ def triage(
         console.print("\nEvaluate one: .venv/bin/job-hunt evaluate '<url>'")
 
 
+@app.command("sweep-employers")
+def sweep_employers(
+    limit: int = typer.Option(0, help="Sweep only the first N employers (0 = all)."),
+    apply: bool = typer.Option(False, "--apply", help="Append new rows to data/pipeline.md; otherwise only print them."),
+    concurrency: int = typer.Option(3, help="Parallel MiniMax calls (capped at 3)."),
+    employers_path: Path = typer.Option(Path("data/designated-employers.tsv"), "--employers",
+                                        help="Employer list (TSV: employer, community, province, careers_url)."),
+) -> None:
+    """Read each designated employer's careers page; MiniMax picks the technical postings.
+
+    See services/employer_sweep.py. Rows land in the pipeline as
+    ``source: designated_employer`` with the employer's own community as location.
+    """
+    import datetime as dt
+
+    import yaml
+
+    from job_hunt.services import employer_sweep as es
+    from job_hunt.services.scan import (
+        ScannedJob, _append_pipeline, _append_scan_history, _known_urls, _select_title_filter, _title_matches,
+        is_job_posting_url,
+    )
+
+    employers = es.load_employers(employers_path)
+    with_url = [e for e in employers if e.careers_url]
+    if not with_url:
+        console.print(f"[yellow]{employers_path}: {len(employers)} employers, none with a careers_url[/yellow]")
+        return
+    if limit:
+        with_url = with_url[:limit]
+    portals = Path("config/portals.yml")
+    if not portals.exists():
+        console.print("[red]config/portals.yml is missing — its title filter decides what is kept[/red]")
+        raise typer.Exit(1)
+    raw = yaml.safe_load(portals.read_text(encoding="utf-8")) or {}
+    positives, negatives = _select_title_filter(raw.get("title_filter") or {}, "full")
+    if not positives:
+        console.print("[red]config/portals.yml has no title_filter.full positives — every row would be dropped[/red]")
+        raise typer.Exit(1)
+
+    def keep(url: str, title: str) -> bool:
+        # The gates every general board passes: a posting URL and the positive
+        # title filter. Negatives alone let a department page through (Desjardins'
+        # "En savoir plus sur le poste de Développeur ou développeuse TI").
+        return is_job_posting_url(url) and _title_matches(title, positives, negatives)
+
+    console.print(f"[dim]sweeping {len(with_url)} of {len(employers)} employers through MiniMax…[/dim]")
+    try:
+        report = es.collect(with_url, known_urls=_known_urls(), keep=keep, concurrency=concurrency)
+    except es.ModelUnavailable as exc:
+        console.print(f"[red]{exc} — nothing fetched[/red]")
+        raise typer.Exit(1)
+
+    new = [
+        ScannedJob(url=row.url, title=row.title, company=row.company, location=row.location,
+                   portal="designated_employer", source="designated_employer")
+        for row in report.rows
+    ]
+    table = Table("Employer", "Community", "Posting", "URL")
+    for job in new:
+        table.add_row(_short(job.company, 28), _short(job.location or "—", 22), _short(job.title, 40),
+                      _short(job.url, 60))
+    console.print(table)
+    console.print(
+        f"{len(new)} new technical row(s) · {len(report.unreadable)} employer(s) unreadable · "
+        f"{len(report.partial)} read only in part"
+    )
+    for result in [*report.unreadable, *report.partial][:40]:
+        console.print(f"  [dim]{_short(result.employer.employer, 30)}: {result.error}[/dim]")
+    if apply and new:
+        _append_pipeline(new)
+        for job in new:
+            _append_scan_history(job)
+        console.print(f"appended {len(new)} row(s) to data/pipeline.md ({dt.date.today().isoformat()})")
+
+
+@app.command("mark-read")
+def mark_read(
+    url: str = typer.Argument(..., help="The posting URL exactly as it appears in data/pipeline.md."),
+    verdict: str = typer.Option(..., "--verdict", help="FIT or COLLAPSE."),
+    reason: str = typer.Option(..., "--reason", help="Why, in a few words (the years line, the stack, 'expired')."),
+) -> None:
+    """Record a posting read by hand, so triage stops offering it (COLLAPSE) once read."""
+    from job_hunt.services import read_log
+    from job_hunt.services.triage import parse_pipeline
+
+    url = url.strip()  # a pasted URL with a trailing space never matched its row
+    pipeline = Path("data/pipeline.md")
+    rows = parse_pipeline(pipeline.read_text(encoding="utf-8")) if pipeline.exists() else []
+    row = next((row for row in rows if row.url == url), None)
+    if row is None:
+        console.print("[yellow]not a pending pipeline URL — recorded anyway, but triage only matches exact URLs[/yellow]")
+    try:
+        read_log.record(url, verdict.upper(), reason, company=row.company if row else "", role=row.role if row else "")
+    except ValueError:
+        console.print("[red]--verdict must be FIT or COLLAPSE. An unread page is not recorded, so it is retried.[/red]")
+        raise typer.Exit(2)
+    console.print(f"recorded {verdict.upper()}: {row.company + ' — ' + row.role if row else url}")
+
+
 def _print_second_look(pipeline: Path, tracker_path: Path, *, limit: int, shown_urls: set[str]) -> None:
     """Re-check what the filters cut. See services/second_look.py for why."""
     import asyncio
 
     from job_hunt.services import second_look as sl
+    from job_hunt.services.read_log import settled_urls
     from job_hunt.services.triage import parse_pipeline, submitted_employers, tracker_seen
     from job_hunt.services.web_extract import extract_url_text
 
@@ -259,7 +364,7 @@ def _print_second_look(pipeline: Path, tracker_path: Path, *, limit: int, shown_
         seen_pairs=seen_pairs,
         seen_employers=submitted_employers(tracker_text),
         near_misses=sl.load_near_misses(),
-        already_reviewed=sl.reviewed_urls(),
+        already_reviewed=sl.reviewed_urls() | settled_urls(),  # a row written off by hand is not offered again
         limit=limit,
     )
     console.print(f"\n[bold]Second look[/bold] [dim]— re-reading {len(picked)} row(s) the filters cut[/dim]")

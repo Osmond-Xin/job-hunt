@@ -42,6 +42,7 @@ from typing import Any, Callable
 import httpx
 
 from job_hunt.models.posting import JobPosting, SourceHealth, SourceResult, from_row
+from job_hunt.services.board_queries import board_queries
 from job_hunt.services.row_guard import guard_rows, safe_total
 
 NONCE_URL = "https://employmenthero.com/en-ca/wp-admin/admin-ajax.php"
@@ -91,7 +92,7 @@ def scan_employmenthero_source(
 ) -> SourceResult:
     if not config or not config.get("enabled", False):
         return SourceResult(postings=[], health=SourceHealth(source_id=SOURCE_ID, ok=True))
-    queries = [str(r).strip() for r in (config.get("queries") or roles or []) if str(r).strip()]
+    queries = board_queries(config, roles)
     if not queries:
         return SourceResult(
             postings=[],

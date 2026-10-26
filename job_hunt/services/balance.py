@@ -137,8 +137,13 @@ def balanced_slate(
     """Pick ``limit`` items from ``items`` (already in preference order).
 
     Each reservation takes the best eligible items not yet chosen. The
-    remaining slots go to the best items overall. The slate keeps the input order, so whatever ranking the
-    caller applied (score, or model fit) still decides where each item appears.
+    remaining slots go to the best items overall. The slate keeps the input
+    order, so whatever ranking the caller applied (score, or model fit) still
+    decides where each item appears — and a later stage can choose again from
+    it. Grouping by lane is a display step, done once at the end (``by_lane``):
+    grouping here made ``--verify`` re-choose from a lane-ordered list, read the
+    remote rows as the "best overall" and drop the real ones (Codex red team
+    2026-10-24).
     ``inbox`` is what a gap is measured against (defaults to ``items``).
     """
     if limit <= 0 or not items:
@@ -171,7 +176,22 @@ def balanced_slate(
         if len(chosen) >= limit:
             break
         chosen.add(index)
+
     return [items[index] for index in sorted(chosen)], gaps
+
+
+BEST_OVERALL = "best overall"
+LANE_ORDER = (*(reservation.name for reservation in RESERVATIONS), BEST_OVERALL)
+
+
+def lane_of(
+    company: str, location: str, source: str, reservations: Sequence[Reservation] = RESERVATIONS
+) -> str:
+    """The first reservation a row belongs to, or ``BEST_OVERALL``."""
+    for reservation in reservations:
+        if reservation.belongs(company, location, source):
+            return reservation.name
+    return BEST_OVERALL
 
 
 def harvest_line(rows: Sequence[dict]) -> str:
@@ -183,3 +203,12 @@ def harvest_line(rows: Sequence[dict]) -> str:
     """
     mix = Mix.of([(row.get("company", ""), row.get("location", "")) for row in rows])
     return f"balance of kept: {mix.line()} — AI-phrase lane only; `job-hunt triage` is the balanced inbox"
+
+
+def by_lane(items: Sequence[T], lane: Callable[[T], str]) -> list[T]:
+    """Remote region, then start-up, then the rest; input order within a lane.
+
+    The operator reads the list from the top (2026-10-24: "下次优先从边远和初创
+    读取。然后再是现在的"), so the lanes the strategy rests on come first.
+    """
+    return sorted(items, key=lambda item: LANE_ORDER.index(lane(item)))

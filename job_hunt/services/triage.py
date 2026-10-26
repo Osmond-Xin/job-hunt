@@ -490,7 +490,20 @@ _SMALL_COMMUNITY_RE = re.compile(
     r"rouyn-noranda|val-d['’]or|sept-[iî]les|baie-comeau|chibougamau|gasp[eé]|"
     # Mine sites, named by the employer instead of a town (Agnico Eagle, 2026-10-19).
     r"detour lake|dobie|upper beaver)\b"
-    r"(?!\s+(?:st|street|ave|avenue|rd|road|dr|drive|blvd|boulevard|cres|crescent|way|pl|place|ct|court)\b)",
+    r"(?!\s+(?:st|street|ave|avenue|rd|road|dr|drive|blvd|boulevard|cres|crescent|way|pl|place|ct|court|trail|tr|parkway|pkwy|circle|cir|terrace|square|sq|lane|ln|highway|hwy|close|gate|row)\b)",
+    re.I,
+)
+
+
+# Regional cities outside every metro, added to the lane on the operator's
+# ruling 2026-10-24 ("这一档" — Atlantic and BC/Alberta interior cities the size
+# of North Bay). They held ~150 technical rows the lane never saw: Saint John 45,
+# Fredericton 21, Moncton 18, St. John's 13, Kelowna 11.
+_REGIONAL_CITY_RE = re.compile(
+    r"\b(saint john|fredericton|moncton|st\.? john['’]?s|charlottetown|summerside|truro|"
+    r"kelowna|kamloops|penticton|prince george|fort st\.? john|"
+    r"lethbridge|medicine hat|red deer|grande prairie|fort mcmurray)\b"
+    r"(?!\s+(?:st|street|ave|avenue|rd|road|dr|drive|blvd|boulevard|cres|crescent|way|pl|place|ct|court|trail|tr|parkway|pkwy|circle|cir|terrace|square|sq|lane|ln|highway|hwy|close|gate|row)\b)",
     re.I,
 )
 
@@ -504,7 +517,10 @@ def remote_region(location: str) -> bool:
     place = region(location)
     if place == "north":
         return True
-    return place in {"ontario", "other_province"} and bool(_SMALL_COMMUNITY_RE.search(location or ""))
+    text = location or ""
+    return place in {"ontario", "other_province"} and bool(
+        _SMALL_COMMUNITY_RE.search(text) or _REGIONAL_CITY_RE.search(text)
+    )
 
 
 # Pipeline sources that only carry early-stage companies: accelerator and VC
@@ -515,6 +531,40 @@ STARTUP_SOURCES = frozenset({"getro", "ycombinator", "yc_companies", "hn_who_is_
 
 def startup_source(source: str) -> bool:
     return source.split(":", 1)[0].strip().lower() in STARTUP_SOURCES
+
+
+# A portfolio-board row hosted on a large employer's own hiring system. Since
+# 2026-10-19 the Getro reader labels a mature company ``getro_mature`` from its
+# stage and head count, but the ~1,500 Getro rows already in the pipeline kept
+# plain ``getro``: on 2026-10-24, 60 of the start-up lane's 109 unread rows were
+# Microsoft (filed as Yammer, Swiftkey, Citus Data), Fortinet (Lacework), Stripe,
+# Salesforce (Airkit, Slack), Databricks (Neon), TD (Layer 6) and the like — read
+# off the URL, the one field Getro does not rename. Start-ups hire through
+# Ashby, Lever, Greenhouse, Workable, Rippling or their own small site.
+# Large employers' own career sites, and the enterprise ATSs only large
+# employers run (Code review / Spec review 2026-10-24: iCIMS, Jobvite,
+# SmartRecruiters, UltiPro and Dayforce were in this list too, and start-ups use
+# them — Litmus Automation and Mozazz were relabelled mature).
+LARGE_EMPLOYER_SITE_RE = re.compile(
+    r"^https?://(?:[^/]*\.)?(?:careers\.microsoft\.com|stripe\.com|salesforce\.com|databricks\.com|"
+    r"careers\.ibm\.com|opentext\.com|atlassian\.com|careersatdoordash\.com)(?:[/:?#]|$)",
+    re.I,
+)
+ENTERPRISE_ATS_RE = re.compile(
+    r"^https?://(?:[^/]*\.)?(?:myworkdayjobs\.com|oraclecloud\.com|successfactors\.(?:com|eu)|taleo\.net)"
+    r"(?:[/:?#]|$)",
+    re.I,
+)
+
+
+def _getro_maturity(source: str, url: str, company: str) -> str:
+    # The company name catches what the URL cannot: Okta, Samsara and Clio post
+    # on Greenhouse like any start-up (OpenCode red team round 2).
+    if source == "getro" and (
+        LARGE_EMPLOYER_SITE_RE.match(url) or ENTERPRISE_ATS_RE.match(url) or BIG_EMPLOYER_RE.search(company)
+    ):
+        return "getro_mature"
+    return source
 
 
 def sector(company: str) -> str:
@@ -585,12 +635,26 @@ def parse_pipeline(text: str) -> list[PipelineRow]:
                 url=parts[0],
                 company=company,
                 role=role,
-                location=parts[3] if len(parts) > 3 else "",
+                location=_location_field(parts),
                 posted=posted,
-                source=source,
+                source=_getro_maturity(source, parts[0], company),
             )
         )
     return rows
+
+
+def _location_field(parts: list[str]) -> str:
+    """The fourth field — unless the writer left the location out and the
+    fourth field is already a tag. ``scan._append_pipeline`` omits an empty
+    location, and a sweep row on a large employer's ATS has none on purpose; it
+    was read back as ``location='source: designated_employer'`` (OpenCode red
+    team 2026-10-24)."""
+    if len(parts) <= 3:
+        return ""
+    field = parts[3]
+    if field.startswith(("source:", "closes:")) or _POSTED_RE.match(field):
+        return ""
+    return field
 
 
 def _unpack_board_title(company: str, role: str) -> tuple[str, str]:

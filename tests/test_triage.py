@@ -617,3 +617,39 @@ def test_large_employers_are_dropped_but_governments_are_not():
     assert excluded(rows[0]) == "large employer"
     assert excluded(rows[1]) == ""
     assert excluded(rows[2]) == ""
+
+
+def test_an_old_getro_row_on_a_large_employers_hiring_system_is_not_a_startup() -> None:
+    """2026-10-24: Microsoft filed as "Yammer", Stripe and TD's Layer 6 filled
+    the start-up lane from Getro rows labelled before ``getro_mature`` existed."""
+    from job_hunt.services.triage import parse_pipeline, startup_source
+
+    rows = parse_pipeline(
+        "- [ ] https://apply.careers.microsoft.com/careers/job/1 | Yammer | Solution Engineer | Toronto | source: getro\n"
+        "- [ ] https://td.wd3.myworkdayjobs.com/x/job/2 | Layer 6 AI | ML Engineer | Toronto | source: getro\n"
+        "- [ ] https://jobs.ashbyhq.com/ranger/3 | Ranger | Applied AI Engineer | Canada | source: getro\n"
+        "- [ ] https://stripe.com.example.invalid/4 | Lookalike | Engineer | Canada | source: getro\n"
+        "- [ ] https://jobs.smartrecruiters.com/Litmus/5 | Litmus | Engineer | Canada | source: getro\n"
+    )
+    assert [startup_source(row.source) for row in rows] == [False, False, True, True, True]
+
+
+
+def test_a_row_written_without_a_location_is_not_read_as_one() -> None:
+    from job_hunt.services.triage import parse_pipeline
+
+    rows = parse_pipeline(
+        "- [ ] https://x.wd1.myworkdayjobs.com/j/1 | Verafin | ML Engineer | source: designated_employer\n"
+        "- [ ] https://x/2 | Town | IT Analyst | posted 2026-10-20 | source: jobbank\n"
+        "- [ ] https://x/3 | Town | IT Analyst | Hay River, NT | source: designated_employer\n"
+    )
+    assert [row.location for row in rows] == ["", "", "Hay River, NT"]
+    assert rows[0].source == "designated_employer" and rows[1].posted == "2026-10-20"
+
+
+
+def test_a_big_employer_on_a_startup_ats_is_not_a_startup() -> None:
+    from job_hunt.services.triage import parse_pipeline, startup_source
+
+    rows = parse_pipeline("- [ ] https://boards.greenhouse.io/rbc/jobs/1 | RBC | Engineer | Toronto | source: getro\n")
+    assert not startup_source(rows[0].source)
