@@ -44,7 +44,9 @@ sharper selection and ordering.
 
 Rewrite the master CV into a tailored resume body for THIS role.
 
-**A person reads this, so it must read like a person wrote it — this outranks every rule below.**
+**A person reads this, so it must read like a person wrote it — this outranks every wording and
+length rule below.** It does not override the facts, the caveats, or the layout invariants (every
+dated role, two projects).
 Pick one through-line for this role and keep only what backs it up. The summary is a plain statement,
 not a colon-led list. One bullet says one thing — what he did and what came of it — in about 20 words,
 never more than 30, with no semicolons and at most one parenthesis. Use the JD's nouns where a person
@@ -99,7 +101,8 @@ end-to-end data solutions and RESTful APIs as a solo contractor" — the one lin
 evidenced the posting's single non-negotiable requirement, customer-facing technical
 delivery. **Anything you write past the budget is not "extra"; it evicts something better.**
 
-- **Total body: 500–600 words.** Count them before you answer and cut to fit. Over 650
+- **Total body: at most 600 words.** It is a ceiling, not a target: never pad to reach it.
+  Count them before you answer and cut to fit. Over 650
   words the trimmer starts deleting employment evidence. These numbers are measured, not
   guessed: the 2026-09-06 resume fit two pages only once the trimmer had cut the body to
   **583 words**, under a 304-word header. The earlier 600–750 figure was above what

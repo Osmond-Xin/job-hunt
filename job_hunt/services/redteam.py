@@ -93,8 +93,9 @@ on the page.
 
 Rate each finding BLOCK or WARN on the same scale as the TARGETING pass: BLOCK for
 something on the page that is untrue, inflated, or self-contradictory; WARN for anything
-that is merely weak, thin, or missing. Rate PLAIN findings WARN and keep the PLAIN label: the
-writer must answer each one, but an LLM reader always finds some, so they do not set the verdict.
+that is merely weak, thin, or missing. PLAIN is a third label, neither BLOCK nor WARN: list
+PLAIN findings, but leave them out of the verdict. The writer answers each one; an LLM reader
+always finds some, so a review whose only findings are PLAIN may still be VERDICT: SEND.
 "A recruiter would pass on this" is a WARN — the decision to apply is the operator's.
 
 ## VERDICT

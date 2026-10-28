@@ -176,3 +176,48 @@ def test_nested_parentheticals_are_rejected():
 def test_colon_list_summary_is_rejected():
     listy = CLEAN.replace("in Python.", "in Python: pipelines, checks and dashboards.")
     assert any("summary" in p for p in check_plain_language(listy))
+
+
+def test_bullet_word_boundary():
+    bullet = "- Owned system architecture. AWS work was **featured as a case study**."
+    at = CLEAN.replace(bullet, "- " + " ".join(["w"] * 30))
+    over = CLEAN.replace(bullet, "- " + " ".join(["w"] * 31))
+    assert not any("words" in p for p in check_plain_language(at))
+    assert any("31 words" in p for p in check_plain_language(over))
+
+
+def test_markdown_link_parens_are_not_counted():
+    linked = CLEAN.replace("on an 82-query set", "on an 82-query set (synthetic), see [repo](https://x.io/a)")
+    assert check_plain_language(linked) == []
+
+
+def test_url_in_summary_is_not_a_colon_list():
+    url = CLEAN.replace("in Python.", "in Python, see https://example.com.")
+    assert check_plain_language(url) == []
+
+
+def test_only_a_summary_heading_starts_the_summary():
+    other = CLEAN.replace("## Core Skills", "## Project Profile\n\nSee: this.\n\n## Core Skills")
+    assert check_plain_language(other) == []
+
+
+def test_full_width_semicolon_and_long_cjk_bullet_are_rejected():
+    zh = CLEAN.replace("Owned system architecture.", "负责系统架构；搭建团队")
+    assert any("semicolon" in p for p in check_plain_language(zh))
+    long_zh = CLEAN.replace("Owned system architecture.", "数" * 62)
+    assert any("words" in p for p in check_plain_language(long_zh))
+
+
+def test_legacy_layout_still_gets_the_plain_language_check():
+    glued = CLEAN.replace("reached **Recall@5 0.99** on", "reached **Recall@5 0.99**; ran on")
+    early = glued + "\n### Early Career (2005–2014)\n\nroles\n"
+    problems = render_cv.validate(early, allow_legacy_layout=True)
+    assert any("semicolon" in p for p in problems)
+    assert not any("pre-2014" in p for p in problems)
+
+
+def test_redteam_rubric_keeps_plain_out_of_the_verdict():
+    from job_hunt.services import redteam
+    rubric = next(v for v in vars(redteam).values() if isinstance(v, str) and "## 3. HR READ" in v)
+    assert "PLAIN is a third label, neither BLOCK nor WARN" in rubric
+    assert "may still be VERDICT: SEND" in rubric
