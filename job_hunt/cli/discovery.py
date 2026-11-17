@@ -453,6 +453,14 @@ def scan(
     console.print(f"Skipped by filters: {result.skipped_filtered}")
     console.print(f"New jobs: {result.new_jobs}")
     console.print(f"Skipped duplicates: {result.skipped_duplicates}")
+    if result.location_skips:
+        from collections import Counter
+
+        # Printed every run so a wrong drop is seen the day it starts: on
+        # 2026-11-03 "Victoria, Capital" x58 would have stood out at once.
+        top = Counter(result.location_skips).most_common(25)
+        console.print("Most common dropped locations (all in data/scan-location-skips.tsv):")
+        console.print("  " + "; ".join(f"{loc or '(blank)'} x{n}" for loc, n in top))
     for error in result.errors:
         console.print(f"[yellow]warning:[/yellow] {error}")
     table = Table("Company", "Title", "Location", "Portal", "URL")
