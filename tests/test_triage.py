@@ -397,6 +397,27 @@ def test_urls_already_in_the_tracker_are_skipped():
     assert rank(rows, limit=5, seen_urls=urls) == []
 
 
+def test_tracker_apply_link_hides_the_posting_it_belongs_to():
+    """The tracker keeps the ATS *apply* link; the pipeline keeps the posting.
+
+    A posting on a venture studio's Lever board was recorded as
+    `jobs.lever.co/<studio>/<id>/apply` and came back in triage as
+    `jobs.lever.co/<studio>/<id>` under the studio's name — neither the URL
+    nor the (company, role) pair matched, and a second résumé was built.
+    """
+    urls, _pairs = tracker_seen(
+        "| 1 | 2026-09-29 | Portfolio Co (Studio Fund) | Software Engineer | N/A | Applied | ✅ | "
+        "manual | url=https://jobs.lever.co/StudioFund/90b9/apply **SENT** |\n"
+        "| 2 | 2026-09-29 | Acme | Engineer | N/A | Applied | ✅ | manual | "
+        "url=https://jobs.ashbyhq.com/acme/34fd/application |\n"
+    )
+    rows = parse_pipeline(
+        "- [ ] https://jobs.lever.co/StudioFund/90b9 | Studio Fund | Software Engineer | Canada | source: x\n"
+        "- [ ] https://jobs.ashbyhq.com/acme/34fd | Acme Labs | Developer | Canada | source: x\n"
+    )
+    assert rank(rows, limit=5, seen_urls=urls) == []
+
+
 def test_applied_ai_outranks_generic_full_stack():
     """Role shape is a tier list, not a tally.
 
