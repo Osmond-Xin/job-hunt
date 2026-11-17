@@ -139,6 +139,7 @@ The mechanism, all deterministic:
 | Where a posting can be lost | What now catches it |
 |---|---|
 | `scan`'s positive title filter — a discard never reaches `data/pipeline.md` | near misses are written to `data/scan-near-misses.tsv` |
+| `scan`'s Canada location filter — on 2026-11-03 it silently dropped 457 Canadian or open-remote rows (all of Adzuna and GNWT, "2 Locations", bare "Remote") | Canada-only boards skip it (`CANADA_ONLY_PORTALS`); every drop is written with its location to `data/scan-location-skips.tsv`, and the scan log prints the most common dropped locations — **read that line after every scan**; a Canadian place in it is a bug |
 | `triage` — one-role-per-employer, "large employer", a generic title ranked below the cut | `job-hunt triage --second-look N` reads the body of up to N such rows |
 | the second look itself | every posting read is logged with its verdict in `data/second-look-log.tsv`; unread pages are retried, never counted as clean |
 

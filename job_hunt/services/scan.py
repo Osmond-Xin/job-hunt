@@ -68,6 +68,9 @@ class ScanResult(BaseModel):
     skipped_filtered: int = 0
     new_jobs: int = 0
     skipped_duplicates: int = 0
+    # The raw location of every row the Canada filter dropped, so the run can
+    # say what it dropped. See CANADA_ONLY_PORTALS for why that matters.
+    location_skips: list[str] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
     jobs: list[ScannedJob] = Field(default_factory=list)
 
@@ -401,11 +404,17 @@ def _accept_jobs(
         if count_fetched:
             result.fetched_jobs += 1
         result.matched_jobs += 1
-        if not include_non_canada and not _passes_canada_filter(job.location):
+        if (
+            not include_non_canada
+            and job.portal not in CANADA_ONLY_PORTALS
+            and not _passes_canada_filter(job.location)
+        ):
             result.skipped_filtered += 1
+            result.location_skips.append(job.location or "")
             job.status = "skipped_location"
             if apply:
                 _append_scan_history(job)
+                _record_location_skip(job)
             continue
         pair = _company_role_key(job.company, job.title)
         if job.url in known_urls or (pair is not None and pair in known_company_roles):
@@ -906,6 +915,40 @@ def is_job_posting_url(url: str) -> bool:
     return not any(frag in lowered for frag in _NON_POSTING_PATH_FRAGMENTS)
 
 
+# Boards that list Canadian postings only, by construction: the Adzuna country
+# path is pinned to "ca", Job Bank / SaskJobs / WorkBC / WorkPEI are Canadian
+# job boards, and the rest are Canadian governments and public bodies. Their
+# rows skip the Canada filter, because a second geographic check there can only
+# drop Canadian postings. Measured 2026-11-03: the filter dropped all 238 Adzuna
+# rows it was given ("Victoria, Capital", "Laval, Laval region", "London,
+# Middlesex" read as England) and all 15 GNWT rows ("Fort Simpson", "Tulita",
+# "Across the NWT"). A portal belongs here only if every row it can produce
+# is in Canada; a Canadian company's own ATS board does not qualify.
+CANADA_ONLY_PORTALS = frozenset({
+    "adzuna", "jobbank", "saskjobs", "workbc", "workpei",
+    "gnwt", "ab_gov", "ns_gov", "mb_gov", "nb_gov", "nu_gov",
+    "cmhc", "nrc", "wrha", "nsha", "hsn",
+})
+
+# A location that names no place at all. Workday and Built In write "2
+# Locations" for a multi-site posting (116 rows dropped 2026-11-03, among them
+# Cohere's North America FDE roles), and a remote posting with no region
+# ("Remote", "Remote, Global", "Remote, AMER": 87 that day) is open to someone
+# in Canada. Both are unknown, and unknown is kept.
+_N_LOCATIONS_RE = re.compile(r"\s*\d+\s+locations?\s*", re.I)
+_OPEN_REMOTE_WORDS = frozenset({
+    "remote", "anywhere", "worldwide", "global", "globally", "distributed",
+    "amer", "americas", "fully", "first", "work", "from", "home", "wfh",
+})
+
+
+def _names_no_place(location: str) -> bool:
+    if _N_LOCATIONS_RE.fullmatch(location):
+        return True
+    words = re.findall(r"[a-z]+", location.lower())
+    return bool(words) and set(words) <= _OPEN_REMOTE_WORDS
+
+
 def _passes_canada_filter(location: str) -> bool:
     """Keep a job unless it has a location that is clearly non-Canadian.
 
@@ -916,6 +959,8 @@ def _passes_canada_filter(location: str) -> bool:
     """
     # Not a string, or only whitespace: unknown, which is accepted like "".
     if not isinstance(location, str) or not location.strip():
+        return True
+    if _names_no_place(location):
         return True
     return _location_matches_canada(location)
 
@@ -1327,6 +1372,37 @@ def _record_near_miss(job: ScannedJob) -> None:
         )
 
 
+# Every row the Canada filter drops, with the location it was dropped for.
+# scan-history.tsv records only the status, so until 2026-11-03 a dropped row's
+# location existed nowhere, and 457 Canadian or open-to-Canada postings a day
+# went unseen. The ledger makes the filter's decisions reviewable; the scan
+# command prints the most common dropped locations from the same run.
+LOCATION_SKIP_PATH = Path("data/scan-location-skips.tsv")
+_location_skip_urls: set[str] | None = None
+
+
+def _record_location_skip(job: ScannedJob) -> None:
+    global _location_skip_urls
+    if _location_skip_urls is None:
+        _location_skip_urls = set()
+        if LOCATION_SKIP_PATH.exists():
+            with LOCATION_SKIP_PATH.open(encoding="utf-8", newline="") as handle:
+                _location_skip_urls = {row[0] for row in csv.reader(handle, delimiter="\t") if row}
+    if job.url in _location_skip_urls:
+        return
+    _location_skip_urls.add(job.url)
+    LOCATION_SKIP_PATH.parent.mkdir(parents=True, exist_ok=True)
+    new_file = not LOCATION_SKIP_PATH.exists()
+    with LOCATION_SKIP_PATH.open("a", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle, delimiter="\t")
+        if new_file:
+            writer.writerow(["url", "first_seen", "portal", "title", "company", "location"])
+        writer.writerow(
+            [job.url, dt.date.today().isoformat(), job.portal, job.title, job.company,
+             job.location or ""]
+        )
+
+
 def _location_matches_canada(location: str) -> bool:
     """Return true for locations that look viable for Canadian work authorization.
 
@@ -1675,8 +1751,19 @@ def parse_search_result_title(text: str) -> tuple[str | None, str | None]:
 
 
 def _known_urls() -> set[str]:
+    """URLs already handled. A row the location filter dropped was never
+    admitted, so it is not "known": otherwise a filter fix could never let it
+    in — the next run would call it a duplicate (2026-11-03: 456 rescued rows
+    would all have been)."""
     urls: set[str] = set()
-    for path in [Path("data/scan-history.tsv"), Path("data/pipeline.md"), Path("data/applications.md")]:
+    history = Path("data/scan-history.tsv")
+    if history.exists():
+        # Split by line, not csv.reader: one stray quote in a title would make
+        # the reader swallow the lines after it.
+        for line in history.read_text(encoding="utf-8").splitlines():
+            if not line.rstrip().endswith("\tskipped_location"):
+                urls.update(re.findall(r"https?://[^\s)|]+", line))
+    for path in [Path("data/pipeline.md"), Path("data/applications.md")]:
         if path.exists():
             urls.update(re.findall(r"https?://[^\s)|]+", path.read_text(encoding="utf-8")))
     return urls
