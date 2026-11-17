@@ -72,6 +72,13 @@ Layout v2 (2026-09-30): no pre-2014 roles, no bachelor's years, Experience above
 at most one bold span per line, a summary of 60 words or fewer. `render_cv.py` refuses the
 mechanical ones. Read the brief before writing; `tailor_cv.md` does not reach hand-written work.
 
+**Rule zero of the brief (2026-10-27): a person reads it, so it must read like a person wrote it.**
+One through-line, a summary that is a statement not a list, one thing per bullet (no semicolons,
+≤30 words). `render_cv.py` refuses the shapes (the hard gate); the red team labels the rest PLAIN, and each
+PLAIN line gets fixed or answered. Before
+handing any artifact over, read it yourself as the recruiter would. A clean factual review is not
+evidence that it reads well.
+
 ## 3. Record what was sent
 
 **An application that is not in `data/applications.md` did not happen** — not for

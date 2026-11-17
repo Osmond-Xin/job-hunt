@@ -44,6 +44,13 @@ sharper selection and ordering.
 
 Rewrite the master CV into a tailored resume body for THIS role.
 
+**A person reads this, so it must read like a person wrote it — this outranks every rule below.**
+Pick one through-line for this role and keep only what backs it up. The summary is a plain statement,
+not a colon-led list. One bullet says one thing — what he did and what came of it — in about 20 words,
+never more than 30, with no semicolons and at most one parenthesis. Use the JD's nouns where a person
+would, never by pasting its phrases. Leave out anything that needs explaining before it reads as a
+strength. Fewer, cleaner bullets beat more, denser ones.
+
 ### Selection & ordering
 
 - **No Professional Summary section**: the PDF template already renders a tailored summary

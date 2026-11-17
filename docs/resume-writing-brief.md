@@ -9,6 +9,42 @@ August, four human interviews). With that few interviews, nothing below is prove
 what the red team's HR reads kept reporting and what page one actually showed. Record
 `layout: v2` in each run's `apply-notes.md` so the response rate can be compared later.
 
+## Rule zero: a person reads this, so write like a person (2026-10-27)
+
+Everything below is subordinate to this. Meet the posting's requirements **in plain speech**; when a
+rule below pulls toward stuffing, this one wins.
+
+A résumé built on 10-27 had a summary of this shape:
+
+> Recent graduate with hands-on work building data pipelines and checking their numbers: a pipeline
+> joining many sources, validated against past data; manual work replaced by scheduled jobs; and a
+> result withdrawn after re-checking.
+
+Every fact in it was true and it passed the red team. It was still unreadable: a colon, then three facts
+glued with semicolons, then an item ("withdrawn result") that sounds like a failure until explained. This
+was not sudden: measured over `output/`, the median bullet grew from ~25 words in mid-September to ~30,
+with 40–50% over 30 words. Each rule added to this brief and to the facts file made sentences carry
+more, and no rule asked whether they still read as speech.
+
+1. **One through-line.** Before writing, say in one sentence who he is *for this posting* (for a data
+   role: "builds data systems a business can trust its numbers from"). The summary states it; every bullet is chosen
+   because it backs it up. A true, JD-matching fact that does not back it up is left out.
+2. **The summary is a statement, not a list.** Who he is, the one or two strongest proofs as sentences, the
+   degree. No colon-led list.
+3. **One bullet, one thing**: what he did, and what came of it. Aim for 20 words. No semicolons, at most one
+   parenthesis. Two facts are two bullets — or one of them goes.
+4. **Fewer, cleaner bullets beat more, denser ones.** A role with one good bullet is fine.
+5. **Use the JD's nouns where a person would**, never by pasting its phrases. Keyword echo is the surest
+   sign of a machine.
+6. **Leave out anything that needs explaining** before it reads as a strength (a withdrawn result, an
+   internal project term, a long caveat). Caveats the facts file makes mandatory stay, in the fewest words.
+7. **Read it aloud as if to the hiring manager across a table.** If you would not say it that way, rewrite.
+
+`render_cv.py` refuses the mechanical shapes (`check_plain_language`): a bullet over 30 words, a semicolon in
+a bullet, more than one parenthesis in a bullet, a colon in the summary. That is the hard gate. The red
+team's HR read also labels lines **PLAIN**; answer each one (fix it, or say why not). On 10-27 the reviewer
+marked mandatory caveats PLAIN too, so PLAIN is a prompt to look, not a verdict.
+
 ## What went wrong in the v1 layout
 
 | Seen on the rendered page | Why it costs interviews | Rule now |
@@ -59,7 +95,8 @@ So each posting goes through four steps, written into the run's `apply-notes.md`
    Rank them by where they appear (title, first paragraph, first duties) and how often they repeat.
    Skip the benefits boilerplate and the preferred-skills tail.
 3. **Evidence map.** For each ask, pick the single strongest supported fact (cite the `profile/cv.md`
-   line), then rewrite it **in the posting's vocabulary**. Leave a gap as a gap; never fill it.
+   line), then rewrite it in the posting's vocabulary **where that still reads as plain speech** (rule
+   zero). Leave a gap as a gap; never fill it. The map decides what goes in, not how it is phrased.
    Worked example, Fortinet release-QA (JD: "spec-driven test plans", "verify before human review",
    "auditable AI insights"):
    | Ask | v1 wording (internal) | Mapped wording (same fact) |

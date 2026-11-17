@@ -98,7 +98,7 @@ Recent Master of Data Analytics graduate who builds **LLM applications** in Pyth
 
 ### Technical Director — Iqidao | Dec 2014 – May 2021
 
-- Owned system architecture; AWS work **featured as a case study**.
+- Owned system architecture. AWS work was **featured as a case study**.
 
 ## Selected Projects
 
@@ -147,3 +147,32 @@ def test_skill_group_labels_are_not_counted_as_bold():
 def test_long_summary_is_rejected():
     long = CLEAN.replace("in Python.", "in Python. " + "word " * 60)
     assert any("summary" in p for p in check_screen_signals(long))
+
+
+# --- plain language (2026-10-27) ------------------------------------------------
+
+check_plain_language = render_cv.check_plain_language
+
+
+def test_clean_cv_reads_plainly():
+    assert check_plain_language(CLEAN) == []
+
+
+def test_long_bullet_is_rejected():
+    long = CLEAN.replace("Owned system architecture.", "Owned " + "word " * 30)
+    assert any("words" in p for p in check_plain_language(long))
+
+
+def test_semicolon_bullet_is_rejected():
+    glued = CLEAN.replace("reached **Recall@5 0.99** on", "reached **Recall@5 0.99**; ran on")
+    assert any("semicolon" in p for p in check_plain_language(glued))
+
+
+def test_nested_parentheticals_are_rejected():
+    noisy = CLEAN.replace("on an 82-query set", "on an 82-query set (synthetic) (toy scale)")
+    assert any("parentheticals" in p for p in check_plain_language(noisy))
+
+
+def test_colon_list_summary_is_rejected():
+    listy = CLEAN.replace("in Python.", "in Python: pipelines, checks and dashboards.")
+    assert any("summary" in p for p in check_plain_language(listy))

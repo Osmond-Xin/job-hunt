@@ -121,6 +121,37 @@ def check_screen_signals(markdown: str) -> list[str]:
     return problems
 
 
+BULLET_MAX_WORDS = 30
+
+
+def check_plain_language(markdown: str) -> list[str]:
+    """Shapes that make a résumé read as machine-generated, decided 2026-10-27.
+
+    A résumé that passed the red team still read as machine output: a summary that
+    was a colon-led list, bullets gluing three facts together. Measured over output/, the
+    median bullet had crept from ~25 words (mid-September) to ~30, with 40-50% over
+    30 words and semicolons rising from 09-22. One bullet says one thing."""
+    problems = []
+    in_summary = False
+    for line in markdown.split("\n"):
+        if line.startswith("## "):
+            in_summary = bool(re.search(r"Summary|Profile", line, re.I))
+            continue
+        text = line.strip()
+        if in_summary and ":" in text:
+            problems.append(f"summary contains a colon-led list: {text[:70]!r}")
+        if not text.startswith("- "):
+            continue
+        words = len(text[2:].split())
+        if words > BULLET_MAX_WORDS:
+            problems.append(f"bullet is {words} words (max {BULLET_MAX_WORDS}): {text[:70]!r}")
+        if ";" in text:
+            problems.append(f"bullet glues clauses with a semicolon: {text[:70]!r}")
+        if text.count("(") > 1:
+            problems.append(f"bullet has {text.count('(')} parentheticals (max 1): {text[:70]!r}")
+    return problems
+
+
 def md_inline(text: str) -> str:
     """Convert inline markdown (bold, italic, code, links) to HTML."""
     text = html.escape(text, quote=False)
@@ -379,7 +410,8 @@ def main() -> None:
             + "\nTailoring reorders bullets, skills and projects — never dated roles."
         )
     if not args.allow_legacy_layout:
-        signals = check_screen_signals(source.read_text(encoding="utf-8"))
+        text = source.read_text(encoding="utf-8")
+        signals = check_screen_signals(text) + check_plain_language(text)
         if signals:
             raise SystemExit(
                 "REJECTED (nothing rendered): first-pass screening signals.\n  "
