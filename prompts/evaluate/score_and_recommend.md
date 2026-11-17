@@ -132,8 +132,9 @@ Output a JSON object with this exact schema — no prose outside the JSON:
 
 ### pdf_content quality rules (both modes)
 
-- `summary_angle`: 2–3 sentences positioning the candidate for THIS role, mirroring the JD's
-  own vocabulary where the CV honestly supports it. **At most 80 words**, and count them —
+- `summary_angle`: 2–3 plain sentences positioning the candidate for THIS role, using the JD's
+  nouns where a person would and the CV honestly supports them — a statement, never a colon-led
+  list (rule zero of `docs/resume-writing-brief.md`, 2026-10-27). **At most 60 words**, and count them —
   "2–3 sentences" alone does not bound this, and on 2026-09-06 a four-clause 130-word
   summary helped push the header to 304 words, which cost the resume body nine blocks to
   the two-page trimmer. The summary shares one page with the employment evidence; every
@@ -177,8 +178,9 @@ Output a JSON object with this exact schema — no prose outside the JSON:
 - `top_bullets`: select the 3 strongest bullets **from the CV text above** (not from the
   summaries) and rewrite their surface language to the JD's vocabulary. Keep every number,
   metric, employer, and scope exactly as the CV states it — never merge metrics across
-  bullets, never round up. **Max 40 words per bullet** — a recruiter scans highlights;
-  a paragraph-length bullet defeats the section. One URL per bullet at most.
+  bullets, never round up. **Max 30 words per bullet, one thing per bullet, no semicolons** — a
+  recruiter scans highlights; a paragraph-length bullet defeats the section and reads as
+  machine-generated. One URL per bullet at most.
   **A claim's caveat is part of the claim.** Where the CV qualifies a claim in parentheses
   — a retired page, a synthetic corpus, a simulated deployment, an expired credential —
   carry the qualifier across, compressed if you must ("page since retired"), but never

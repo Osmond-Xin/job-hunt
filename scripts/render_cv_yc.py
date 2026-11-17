@@ -11,10 +11,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from render_cv import ROOT, render  # noqa: E402
+from render_cv import ROOT, render, validate  # noqa: E402
 
 
 def main() -> None:
+    problems = validate((ROOT / "profile" / "cv-yc.md").read_text(encoding="utf-8"), allow_legacy_layout=True)
+    if problems:
+        raise SystemExit("REJECTED (nothing rendered):\n  " + "\n  ".join(problems))
     render(
         source=ROOT / "profile" / "cv-yc.md",
         out_dir=ROOT / "output" / "cv-yc",

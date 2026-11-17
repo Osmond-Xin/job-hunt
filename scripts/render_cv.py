@@ -121,6 +121,67 @@ def check_screen_signals(markdown: str) -> list[str]:
     return problems
 
 
+BULLET_MAX_WORDS = 30
+_LINK = re.compile(r"\[([^\]]*)\]\([^)]*\)")
+_URL = re.compile(r"https?://\S+")
+_CJK = re.compile(r"[\u3400-\u9fff]")
+_SUMMARY_HEADING = re.compile(r"(?:Professional\s+)?(?:Summary|Profile)", re.I)
+
+
+def _visible(text: str) -> str:
+    """What the reader sees: link text without its URL, bare URLs removed."""
+    return _URL.sub("", _LINK.sub(r"\1", text))
+
+
+def _length(text: str) -> int:
+    """Words, with two CJK characters counted as one word (the profile/cn/ variants)."""
+    cjk = len(_CJK.findall(text))
+    return len(_CJK.sub(" ", text).split()) + cjk // 2
+
+
+def check_plain_language(markdown: str) -> list[str]:
+    """Shapes that make a résumé read as machine-generated, decided 2026-10-27.
+
+    A résumé that passed the red team still read as machine output: a summary that
+    was a colon-led list, bullets gluing three facts together. Measured over output/, the
+    median bullet had crept from ~25 words (mid-September) to ~30, with 40-50% over
+    30 words and semicolons rising from 09-22. One bullet says one thing."""
+    problems = []
+    in_summary = False
+    for line in markdown.split("\n"):
+        text = line.strip()
+        if text.startswith("#"):
+            if text.startswith("## "):
+                in_summary = bool(_SUMMARY_HEADING.fullmatch(text[3:].strip()))
+            elif text.startswith("# "):
+                in_summary = False
+            continue
+        seen = _visible(text)
+        if in_summary and re.search(r"[:：]", seen):
+            problems.append(f"summary contains a colon-led list: {text[:70]!r}")
+        if not text.startswith("- "):
+            continue
+        words = _length(seen[2:])
+        if words > BULLET_MAX_WORDS:
+            problems.append(f"bullet is {words} words (max {BULLET_MAX_WORDS}): {text[:70]!r}")
+        if re.search(r"[;；]", seen):
+            problems.append(f"bullet glues clauses with a semicolon: {text[:70]!r}")
+        parens = len(re.findall(r"[(（]", seen))
+        if parens > 1:
+            problems.append(f"bullet has {parens} parentheticals (max 1): {text[:70]!r}")
+    return problems
+
+
+def validate(markdown: str, allow_legacy_layout: bool = False) -> list[str]:
+    """Every refusal a CV gets before it is rendered. The plain-language check runs on
+    every path, including --allow-legacy-layout and the render_cv_yc wrapper: a legacy
+    variant is still read by a person."""
+    problems = check_plain_language(markdown)
+    if not allow_legacy_layout:
+        problems = check_screen_signals(markdown) + problems
+    return problems
+
+
 def md_inline(text: str) -> str:
     """Convert inline markdown (bold, italic, code, links) to HTML."""
     text = html.escape(text, quote=False)
@@ -359,7 +420,7 @@ def main() -> None:
     ap.add_argument(
         "--allow-legacy-layout",
         action="store_true",
-        help="Skip the screening-signal check (for the full-history profile/ variants only)",
+        help="Skip the layout screening-signal check (for the full-history profile/ variants only); the plain-language check still runs",
     )
     args = ap.parse_args()
 
@@ -378,14 +439,13 @@ def main() -> None:
             + "\n  ".join(out_of_order)
             + "\nTailoring reorders bullets, skills and projects — never dated roles."
         )
-    if not args.allow_legacy_layout:
-        signals = check_screen_signals(source.read_text(encoding="utf-8"))
-        if signals:
-            raise SystemExit(
-                "REJECTED (nothing rendered): first-pass screening signals.\n  "
-                + "\n  ".join(signals)
-                + "\nSee docs/resume-writing-brief.md."
-            )
+    signals = validate(source.read_text(encoding="utf-8"), args.allow_legacy_layout)
+    if signals:
+        raise SystemExit(
+            "REJECTED (nothing rendered): first-pass screening signals.\n  "
+            + "\n  ".join(signals)
+            + "\nSee docs/resume-writing-brief.md."
+        )
 
     pdf_path = render(source, out_dir, args.title or f"Yi Xin — {source.stem}", args.pdf_name)
 

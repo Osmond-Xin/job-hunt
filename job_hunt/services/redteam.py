@@ -82,11 +82,21 @@ on the page.
 - What reads as a red flag: gaps, career direction, seniority mismatch, over- or
   under-qualification?
 - If you rejected this in 40 seconds, what would the reason be?
+- Does it read as if a person wrote it, or as machine-generated filler? Quote every line
+  that a recruiter would take as AI output: a summary that is a colon-led list of
+  achievements; a bullet that strings three or more facts together with semicolons, colons
+  or nested parentheses; JD phrases pasted in verbatim where no person would say them; a
+  caveat or explanation that only makes sense to someone who knows the backstory; an item
+  that needs a sentence of explanation before it reads as a strength. Label each one PLAIN.
+  Never PLAIN: a skills section (a keyword list by design), header and contact lines, and a
+  caveat the ground truth makes mandatory. Missing evidence is never PLAIN; it stays a WARN.
 
 Rate each finding BLOCK or WARN on the same scale as the TARGETING pass: BLOCK for
 something on the page that is untrue, inflated, or self-contradictory; WARN for anything
-that is merely weak, thin, or missing. "A recruiter would pass on this" is a WARN — the
-decision to apply is the operator's.
+that is merely weak, thin, or missing. PLAIN is a third label, neither BLOCK nor WARN: list
+PLAIN findings, but leave them out of the verdict. The writer answers each one; an LLM reader
+always finds some, so a review whose only findings are PLAIN may still be VERDICT: SEND.
+"A recruiter would pass on this" is a WARN — the decision to apply is the operator's.
 
 ## VERDICT
 One line, exactly one of:
