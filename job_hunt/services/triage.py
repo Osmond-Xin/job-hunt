@@ -837,8 +837,13 @@ def tracker_seen(tracker_text: str) -> tuple[set[str], set[tuple[str, str]]]:
     "Government of New Brunswick — Finance and Treasury Board, OCIO" against
     "Government of New Brunswick", and "AI Integration and Automation
     Specialist (Competition 16958)" against the bare title.
+
+    A Lever or Ashby link recorded at the apply step ends in `/apply` or
+    `/application`; the posting itself does not, so both forms count as seen.
+    A venture studio's portfolio posting came back that way, under the studio's name.
     """
     urls = set(re.findall(r"https?://[^\s|)\]]+", tracker_text))
+    urls |= {re.sub(r"/(apply|application)/?$", "", url) for url in urls}
     pairs: set[tuple[str, str]] = set()
     for line in tracker_text.splitlines():
         if not line.startswith("|"):
